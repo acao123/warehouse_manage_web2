@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'system',  # 系统管理模块
+    'ac_data',  # AC栅格数据管理模块
 ]
 
 MIDDLEWARE = [
@@ -161,3 +162,7 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = True  # 浏览器关闭时session过期
 AUTH_PASSWORD_VALIDATORS = []
 
 X_FRAME_OPTIONS = 'SAMEORIGIN'
+
+# 文件上传配置
+DATA_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB
