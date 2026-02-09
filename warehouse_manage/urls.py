@@ -17,6 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from system import views
+from ac_data import views as ac_views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -58,4 +59,11 @@ urlpatterns = [
 
     # 任务管理
      path('system/core/down_report/', views.core_down_report, name='down_report'),
+    
+    # AC栅格数据管理
+    path('ac/data/list/', ac_views.ac_list_page_view, name='ac_list_page'),
+    path('ac/data/list/data/', ac_views.ac_list_view, name='ac_list'),
+    path('ac/data/upload/', ac_views.ac_upload_view, name='ac_upload'),
+    path('ac/data/edit/', ac_views.ac_edit_view, name='ac_edit'),
+    path('ac/data/delete/', ac_views.ac_delete_view, name='ac_delete'),
 ]

@@ -111,3 +111,25 @@ INSERT INTO `sys_user_roles` (`user_id`, `role_id`) VALUES
 --    user = User.objects.get(username='admin')
 --    user.set_password('admin888')
 --    user.save()
+
+-- AC栅格数据表
+CREATE TABLE IF NOT EXISTS `ac_tif` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `local_path` varchar(200) NOT NULL DEFAULT '' COMMENT 'AC数据服务器地址',
+  `ac_name` varchar(200) NOT NULL COMMENT 'AC文件名称：上传时文件名称',
+  `ac_local_name` varchar(200) NOT NULL COMMENT 'AC文件本地名称：格式为id_起始经度_结束经度_起始纬度_结束纬度',
+  `start_longitude` DECIMAL(11, 7) DEFAULT NULL COMMENT '起始经度',
+  `end_longitude` DECIMAL(11, 7) DEFAULT NULL COMMENT '结束经度',
+  `start_latitude` DECIMAL(11, 7) DEFAULT NULL COMMENT '起始纬度',
+  `end_latitude` DECIMAL(11, 7) DEFAULT NULL COMMENT '结束纬度',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_ac_name` (`ac_name`),
+  KEY `idx_longitude` (`start_longitude`,`end_longitude`,`start_latitude`,`end_latitude`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AC栅格数据表';
+
+-- 插入AC栅格测试数据
+INSERT INTO `ac_tif` (`id`, `local_path`, `ac_name`, `ac_local_name`, `start_longitude`, `end_longitude`, `start_latitude`, `end_latitude`) VALUES
+(1, 'data/ac/1_100.0000000_110.0000000_30.0000000_40.0000000.tif', 'test_china_region.tif', '1_100.0000000_110.0000000_30.0000000_40.0000000.tif', 100.0000000, 110.0000000, 30.0000000, 40.0000000),
+(2, 'data/ac/2_120.0000000_130.0000000_25.0000000_35.0000000.tif', 'test_east_china.tif', '2_120.0000000_130.0000000_25.0000000_35.0000000.tif', 120.0000000, 130.0000000, 25.0000000, 35.0000000);

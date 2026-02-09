@@ -31,6 +31,10 @@ db.sqlite3-journal
 /media
 /staticfiles
 
+# Uploaded AC files (but keep directory with .gitkeep)
+/data/ac/*.tif
+/data/ac/temp/
+
 # IDE
 .idea/
 .vscode/

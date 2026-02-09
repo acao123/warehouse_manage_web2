@@ -30,7 +30,8 @@ SECRET_KEY = 'django-insecure-0s@+_!ww(1mwd^!w%u85#je)s_m#dh4z01op&xm1yhpm2+*x!x
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+# 开发环境允许所有主机；生产环境应设置为具体域名
+ALLOWED_HOSTS = ['*'] if DEBUG else []
 
 
 # Application definition
@@ -43,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'system',  # 系统管理模块
+    'ac_data',  # AC栅格数据管理模块
 ]
 
 MIDDLEWARE = [
@@ -161,3 +163,7 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = True  # 浏览器关闭时session过期
 AUTH_PASSWORD_VALIDATORS = []
 
 X_FRAME_OPTIONS = 'SAMEORIGIN'
+
+# 文件上传配置
+DATA_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB

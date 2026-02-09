@@ -2,11 +2,11 @@
 
 > Warehouse Management System Backend
 
-基于 Django + MySQL + LayUI + JavaScript + HTML 的仓库管理系统后台
+基于 Django + MySQL + LayUI + JavaScript + HTML + GDAL 的仓库管理系统后台
 
 ## 项目简介
 
-这是一个企业级的仓库管理系统后台，实现了完整的用户权限管理体系，包括用户管理、角色管理、菜单管理等核心功能。系统采用现代化的Web技术栈，代码质量高，安全性强，易于扩展。
+这是一个企业级的仓库管理系统后台，实现了完整的用户权限管理体系和AC栅格数据管理功能，包括用户管理、角色管理、菜单管理、AC栅格文件管理等核心功能。系统采用现代化的Web技术栈，代码质量高，安全性强，易于扩展。
 
 ## 技术架构
 
@@ -17,6 +17,7 @@
 | Python | 3.x | 编程语言 |
 | Django | 4.2.26 | Web框架，提供MVC架构、ORM、中间件等核心功能 |
 | Pillow | 10.3.0 | 图像处理库，用于生成登录验证码 |
+| GDAL | 3.6.2 | 地理空间数据抽象库，用于处理TIF文件和提取地理坐标 |
 | SQLite | 3.x | 测试环境数据库 |
 | MySQL | 8.0+ | 生产环境数据库 |
 
@@ -33,19 +34,24 @@
 ### 技术使用位置说明
 
 #### Django框架
-- **models.py**: 定义数据模型（User、Role、Menu）
-- **views.py**: 业务逻辑处理（登录、用户管理、角色管理、菜单管理）
+- **models.py**: 定义数据模型（User、Role、Menu、AcTif）
+- **views.py**: 业务逻辑处理（登录、用户管理、角色管理、菜单管理、AC数据管理）
 - **urls.py**: URL路由配置
 - **middleware.py**: 登录验证中间件，保证系统安全
-- **settings.py**: 项目配置（数据库、Session、静态文件等）
+- **settings.py**: 项目配置（数据库、Session、静态文件、文件上传等）
 
 #### Pillow
-- **views.py - generate_captcha()**: 生成4位数字验证码图片，包含干扰线
+- **system/views.py - generate_captcha()**: 生成4位数字验证码图片，包含干扰线
+
+#### GDAL
+- **ac_data/views.py - ac_upload_view()**: 从上传的TIF文件中提取地理坐标范围（GeoTransform）
+- **地理数据处理**: 读取栅格数据的经纬度边界信息
 
 #### LayUI
 - **templates/*.html**: 所有前端页面使用LayUI组件
-- **表格组件**: 用户列表、角色列表、菜单列表的数据展示
+- **表格组件**: 用户列表、角色列表、菜单列表、AC数据列表的数据展示
 - **表单组件**: 用户、角色、菜单的添加和编辑表单
+- **上传组件**: AC文件上传功能
 - **树形组件**: 角色管理中的菜单权限树形选择
 - **弹窗组件**: 新增/编辑功能的模态弹窗
 
@@ -90,7 +96,16 @@
 - [x] 关键字搜索（LIKE模糊查询）
 - [x] 菜单排序
 
-### 5. 权限控制 ✓
+### 5. AC栅格数据管理 ✓
+- [x] AC文件上传（支持.tif格式，最大200MB）
+- [x] 使用GDAL自动提取地理坐标范围
+- [x] AC数据列表展示（分页、搜索）
+- [x] 多条件搜索（文件名称、本地名称、经纬度范围）
+- [x] 编辑AC文件名称
+- [x] 删除AC文件（同时删除服务器文件）
+- [x] 自动生成本地文件名（id_经度_纬度格式）
+
+### 6. 权限控制 ✓
 - [x] 基于角色的菜单显示
 - [x] 不同角色登录显示不同菜单
 - [x] 登录验证中间件
@@ -99,39 +114,48 @@
 ## 项目结构
 
 ```
-warehouse_manage_web/
+warehouse_manage_web2/
 ├── warehouse_manage/          # Django项目配置
-│   ├── settings.py           # 配置文件（数据库切换、Session等）
+│   ├── settings.py           # 配置文件（数据库切换、Session、文件上传等）
 │   ├── urls.py               # 总路由配置
 │   ├── wsgi.py               # WSGI配置
 │   └── asgi.py               # ASGI配置
 ├── apps/
-│   └── system/               # 系统管理模块
-│       ├── models.py         # 数据模型（User、Role、Menu）
-│       ├── views.py          # 视图函数（所有业务逻辑）
-│       ├── middleware.py     # 登录验证中间件
-│       ├── management/       # 管理命令
-│       │   └── commands/
-│       │       └── init_data.py  # 初始化测试数据命令
+│   ├── system/               # 系统管理模块
+│   │   ├── models.py         # 数据模型（User、Role、Menu）
+│   │   ├── views.py          # 视图函数（所有业务逻辑）
+│   │   ├── middleware.py     # 登录验证中间件
+│   │   ├── management/       # 管理命令
+│   │   │   └── commands/
+│   │   │       └── init_data.py  # 初始化测试数据命令
+│   │   └── migrations/       # 数据库迁移文件
+│   └── ac_data/              # AC栅格数据管理模块
+│       ├── models.py         # 数据模型（AcTif）
+│       ├── views.py          # 视图函数（AC数据CRUD、文件上传）
+│       ├── apps.py           # 应用配置
 │       └── migrations/       # 数据库迁移文件
 ├── templates/                # HTML模板
 │   ├── login.html           # 登录页面
 │   ├── index.html           # 主工作台页面
-│   └── system/              # 系统管理模块页面
-│       ├── user_list.html   # 用户列表
-│       ├── user_form.html   # 用户表单
-│       ├── role_list.html   # 角色列表
-│       ├── role_form.html   # 角色表单
-│       ├── menu_list.html   # 菜单列表
-│       └── menu_form.html   # 菜单表单
+│   ├── system/              # 系统管理模块页面
+│   │   ├── user_list.html   # 用户列表
+│   │   ├── user_form.html   # 用户表单
+│   │   ├── role_list.html   # 角色列表
+│   │   ├── role_form.html   # 角色表单
+│   │   ├── menu_list.html   # 菜单列表
+│   │   └── menu_form.html   # 菜单表单
+│   └── ac_data/             # AC数据管理模块页面
+│       └── ac_list.html     # AC数据列表（含上传、编辑、删除）
 ├── static/                  # 静态资源
 │   ├── layui/              # LayUI框架
 │   ├── css/                # 自定义CSS
 │   ├── js/                 # 自定义JS
 │   └── images/             # 图片资源
+├── data/                   # 数据存储目录
+│   └── ac/                 # AC栅格文件存储目录
 ├── sql/
-│   └── init.sql            # MySQL初始化SQL
-├── requirements.txt        # Python依赖包
+│   └── init.sql            # MySQL初始化SQL（包含ac_tif表）
+├── requirements.txt        # Python依赖包（Django、Pillow、GDAL等）
 ├── manage.py              # Django管理脚本
 └── README.md              # 项目说明文档
 ```
@@ -344,6 +368,131 @@ python manage.py shell
 ```bash
 python manage.py collectstatic
 ```
+
+### 4. GDAL安装问题
+GDAL是地理空间数据处理库，需要先安装系统库再安装Python绑定。
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install gdal-bin libgdal-dev
+export CPLUS_INCLUDE_PATH=/usr/include/gdal
+export C_INCLUDE_PATH=/usr/include/gdal
+pip install GDAL==3.6.2
+```
+
+**CentOS/RHEL:**
+```bash
+sudo yum install gdal gdal-devel
+pip install GDAL==3.6.2
+```
+
+**macOS:**
+```bash
+brew install gdal
+pip install GDAL==3.6.2
+```
+
+**验证安装:**
+```bash
+python -c "from osgeo import gdal; print(gdal.__version__)"
+```
+
+**注意:** 如果GDAL未安装，AC文件上传功能仍可使用，但无法自动提取地理坐标，经纬度字段将为空。
+
+## AC栅格数据管理模块 API 文档
+
+### 1. 页面访问
+- **URL**: `/ac/data/list/`
+- **方法**: GET
+- **说明**: 返回AC数据管理页面
+
+### 2. 获取AC数据列表
+- **URL**: `/ac/data/list/data/`
+- **方法**: GET
+- **参数**:
+  - `page`: 页码（默认1）
+  - `limit`: 每页数量（默认10）
+  - `ac_name`: 文件名称（模糊查询）
+  - `ac_local_name`: 文件本地名称（模糊查询）
+  - `start_longitude`: 起始经度（精确查询）
+  - `end_longitude`: 结束经度（精确查询）
+  - `start_latitude`: 起始纬度（精确查询）
+  - `end_latitude`: 结束纬度（精确查询）
+- **返回格式**:
+```json
+{
+  "code": 0,
+  "msg": "成功",
+  "count": 100,
+  "data": [
+    {
+      "id": 1,
+      "local_path": "data/ac/1_100.0000000_110.0000000_30.0000000_40.0000000.tif",
+      "ac_name": "test_china_region.tif",
+      "ac_local_name": "1_100.0000000_110.0000000_30.0000000_40.0000000.tif",
+      "start_longitude": "100.0000000",
+      "end_longitude": "110.0000000",
+      "start_latitude": "30.0000000",
+      "end_latitude": "40.0000000",
+      "created_at": "2024-01-01 10:00:00",
+      "updated_at": "2024-01-01 10:00:00"
+    }
+  ]
+}
+```
+
+### 3. 上传AC文件
+- **URL**: `/ac/data/upload/`
+- **方法**: POST
+- **Content-Type**: multipart/form-data
+- **参数**:
+  - `file`: TIF文件（最大200MB）
+- **返回格式**:
+```json
+{
+  "code": 0,
+  "msg": "上传成功"
+}
+```
+- **说明**:
+  - 只允许上传.tif文件
+  - 文件大小限制200MB
+  - 自动使用GDAL提取地理坐标
+  - 文件命名格式: `{id}_{start_longitude}_{end_longitude}_{start_latitude}_{end_latitude}.tif`
+  - 文件保存在 `data/ac/` 目录
+
+### 4. 编辑AC数据
+- **URL**: `/ac/data/edit/`
+- **方法**: POST
+- **参数**:
+  - `id`: AC数据ID
+  - `ac_name`: 新的文件名称
+- **返回格式**:
+```json
+{
+  "code": 0,
+  "msg": "修改成功"
+}
+```
+- **说明**: 仅允许修改文件名称字段，不影响服务器上的实际文件
+
+### 5. 删除AC数据
+- **URL**: `/ac/data/delete/`
+- **方法**: POST
+- **参数**:
+  - `id`: AC数据ID
+- **返回格式**:
+```json
+{
+  "code": 0,
+  "msg": "删除成功"
+}
+```
+- **说明**: 
+  - 删除数据库记录
+  - 同时删除服务器上的实际文件
+  - 操作不可恢复
 
 ## 项目状态
 
