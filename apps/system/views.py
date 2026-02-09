@@ -15,6 +15,18 @@ def user_form_view(request):
     """返回用户表单页面"""
     return render(request, 'system/user_form.html')
 
+def role_form_view(request):
+    """返回角色表单页面"""
+    return render(request, 'system/role_form.html')
+
+def memu_form_view(request):
+    """返回菜单表单页面"""
+    return render(request, 'system/menu_form.html')
+
+def core_down_report(request):
+    """返回菜单表单页面"""
+    return render(request, 'system/down_report.html')
+
 # ==================== 认证相关视图 ====================
 
 def generate_captcha():

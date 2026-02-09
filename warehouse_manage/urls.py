@@ -45,7 +45,8 @@ urlpatterns = [
     path('system/role/edit/', views.role_edit_view, name='role_edit'),
     path('system/role/delete/', views.role_delete_view, name='role_delete'),
     path('system/role/all/', views.get_all_roles_view, name='role_all'),
-    
+    path('system/role/form/', views.role_form_view, name='role_form'),
+
     # 菜单管理
     path('system/menu/list/', views.menu_list_view, name='menu_list'),
     path('system/menu/add/', views.menu_add_view, name='menu_add'),
@@ -53,4 +54,8 @@ urlpatterns = [
     path('system/menu/delete/', views.menu_delete_view, name='menu_delete'),
     path('system/menu/tree/', views.menu_tree_view, name='menu_tree'),
     path('system/menu/parent-list/', views.menu_parent_list_view, name='menu_parent_list'),
+    path('system/memu/form/', views.memu_form_view, name='menu_form'),
+
+    # 任务管理
+     path('system/core/down_report/', views.core_down_report, name='down_report'),
 ]

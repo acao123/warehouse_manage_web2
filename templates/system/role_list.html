@@ -42,7 +42,7 @@
                 elem: '#roleTable',
                 url: '/system/role/list/',
                 page: true,
-                height: 'full-150',
+                height: 'full-70',
                 cols: [[
                     {field: 'id', title: 'ID', width: 80, sort: true},
                     {field: 'role_name', title: '角色名称', width: 200},
@@ -98,16 +98,17 @@
             
             // 新增角色
             window.addRole = function() {
-                layer.open({
+                parent.layer.open({
                     type: 2,
                     title: '新增角色',
                     area: ['600px', '500px'],
-                    content: 'role_form.html',
+                    content: '/system/role/form/',
                     btn: ['保存', '取消'],
                     yes: function(index, layero){
-                        var iframeWindow = window[layero.find('iframe')[0]['name']];
+                        var iframe = layero.find('iframe')[0];
+                        var iframeWindow = iframe.contentWindow;
                         iframeWindow.submitForm(function(){
-                            layer.close(index);
+                            parent.layer.close(index);
                             tableIns.reload();
                         });
                     }
@@ -116,16 +117,17 @@
             
             // 编辑角色
             window.editRole = function(id) {
-                layer.open({
+                parent.layer.open({
                     type: 2,
                     title: '编辑角色',
                     area: ['600px', '500px'],
-                    content: 'role_form.html?id=' + id,
+                    content: '/system/role/form/?id=' + id,
                     btn: ['保存', '取消'],
                     yes: function(index, layero){
-                        var iframeWindow = window[layero.find('iframe')[0]['name']];
+                        var iframe = layero.find('iframe')[0];
+                        var iframeWindow = iframe.contentWindow;
                         iframeWindow.submitForm(function(){
-                            layer.close(index);
+                            parent.layer.close(index);
                             tableIns.reload();
                         });
                     }
