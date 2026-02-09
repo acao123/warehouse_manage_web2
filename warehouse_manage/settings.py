@@ -30,7 +30,8 @@ SECRET_KEY = 'django-insecure-0s@+_!ww(1mwd^!w%u85#je)s_m#dh4z01op&xm1yhpm2+*x!x
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+# 开发环境允许所有主机；生产环境应设置为具体域名
+ALLOWED_HOSTS = ['*'] if DEBUG else []
 
 
 # Application definition

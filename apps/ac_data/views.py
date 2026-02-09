@@ -132,10 +132,17 @@ def ac_upload_view(request):
             
             # 计算经纬度范围
             # GeoTransform: [左上角X, 像素宽度, 旋转, 左上角Y, 旋转, 像素高度(负值)]
-            start_longitude = Decimal(str(geo_transform[0]))
-            start_latitude = Decimal(str(geo_transform[3] + geo_transform[5] * height))
-            end_longitude = Decimal(str(geo_transform[0] + geo_transform[1] * width))
-            end_latitude = Decimal(str(geo_transform[3]))
+            # 注意：左上角Y是最大纬度，加上负的像素高度*高度得到最小纬度
+            min_longitude = Decimal(str(geo_transform[0]))
+            max_latitude = Decimal(str(geo_transform[3]))  # 左上角Y是最大纬度
+            max_longitude = Decimal(str(geo_transform[0] + geo_transform[1] * width))
+            min_latitude = Decimal(str(geo_transform[3] + geo_transform[5] * height))  # 最小纬度
+            
+            # 为了保持与数据库字段名一致，使用start/end命名
+            start_longitude = min_longitude
+            end_longitude = max_longitude
+            start_latitude = min_latitude
+            end_latitude = max_latitude
             
             dataset = None  # 关闭数据集
             
@@ -159,7 +166,7 @@ def ac_upload_view(request):
             end_latitude=end_latitude,
         )
         
-        # 生成本地文件名
+        # 生成本地文件名（保留7位小数精度）
         if start_longitude and end_longitude and start_latitude and end_latitude:
             ac_local_name = f"{ac_tif.id}_{start_longitude}_{end_longitude}_{start_latitude}_{end_latitude}.tif"
         else:
@@ -170,7 +177,9 @@ def ac_upload_view(request):
         os.makedirs(final_dir, exist_ok=True)
         final_file_path = os.path.join(final_dir, ac_local_name)
         
-        os.rename(temp_file_path, final_file_path)
+        # 使用shutil.move处理跨文件系统移动
+        import shutil
+        shutil.move(temp_file_path, final_file_path)
         
         # 更新数据库记录
         ac_tif.ac_local_name = ac_local_name

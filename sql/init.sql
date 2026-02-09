@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS `ac_tif` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `local_path` varchar(200) NOT NULL DEFAULT '' COMMENT 'AC数据服务器地址',
   `ac_name` varchar(200) NOT NULL COMMENT 'AC文件名称：上传时文件名称',
-  `ac_local_name` varchar(200) NOT NULL COMMENT 'AC文件本地名称：id_起始经度_结束经度_起始纬度_结束纬度',
+  `ac_local_name` varchar(200) NOT NULL COMMENT 'AC文件本地名称：格式为id_起始经度_结束经度_起始纬度_结束纬度',
   `start_longitude` DECIMAL(11, 7) DEFAULT NULL COMMENT '起始经度',
   `end_longitude` DECIMAL(11, 7) DEFAULT NULL COMMENT '结束经度',
   `start_latitude` DECIMAL(11, 7) DEFAULT NULL COMMENT '起始纬度',
