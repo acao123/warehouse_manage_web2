@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>用户管理</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+</head>
+<body>
+    <div style="padding: 15px;">
+        <!-- 搜索栏 -->
+        <div class="layui-form" style="margin-bottom: 15px;">
+            <div class="layui-inline">
+                <input type="text" id="searchKeyword" placeholder="搜索用户名/昵称/手机号" class="layui-input">
+            </div>
+            <div class="layui-inline">
+                <button class="layui-btn" onclick="searchUsers()">搜索</button>
+                <button class="layui-btn layui-btn-primary" onclick="resetSearch()">重置</button>
+                <button class="layui-btn layui-btn-normal" onclick="addUser()">新增用户</button>
+            </div>
+        </div>
+        
+        <!-- 数据表格 -->
+        <table class="layui-hide" id="userTable" lay-filter="userTable"></table>
+    </div>
+
+    <!-- 操作列按钮模板 -->
+    <script type="text/html" id="toolbarTpl">
+        <a class="layui-btn layui-btn-xs" lay-event="edit">编辑</a>
+        <a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="del">删除</a>
+    </script>
+
+    <script src="/static/layui/layui/layui.js"></script>
+    <script>
+        layui.use(['table', 'layer', 'form'], function(){
+            var table = layui.table;
+            var layer = layui.layer;
+            var form = layui.form;
+            
+            // 渲染表格
+            var tableIns = table.render({
+                elem: '#userTable',
+                url: '/system/user/list/',
+                page: true,
+                cols: [[
+                    {field: 'id', title: 'ID', width: 80, sort: true},
+                    {field: 'username', title: '用户名', width: 150},
+                    {field: 'nickname', title: '昵称', width: 120},
+                    {field: 'department', title: '部门', width: 150},
+                    {field: 'phone', title: '手机号', width: 130},
+                    {field: 'gender', title: '性别', width: 80},
+                    {field: 'status', title: '状态', width: 80},
+                    {field: 'position', title: '岗位', width: 120},
+                    {field: 'roles', title: '角色'},
+                    {field: 'created_at', title: '创建时间', width: 180},
+                    {fixed: 'right', title: '操作', toolbar: '#toolbarTpl', width: 150}
+                ]]
+            });
+            
+            // 监听工具条
+            table.on('tool(userTable)', function(obj){
+                var data = obj.data;
+                if(obj.event === 'edit'){
+                    editUser(data.id);
+                } else if(obj.event === 'del'){
+                    layer.confirm('确定删除该用户吗？', function(index){
+                        $.post('/system/user/delete/', {id: data.id}, function(res){
+                            if(res.code === 0){
+                                layer.msg('删除成功');
+                                tableIns.reload();
+                            } else {
+                                layer.msg(res.msg);
+                            }
+                        });
+                        layer.close(index);
+                    });
+                }
+            });
+            
+            // 搜索功能
+            window.searchUsers = function() {
+                tableIns.reload({
+                    where: {
+                        keyword: $('#searchKeyword').val()
+                    },
+                    page: {
+                        curr: 1
+                    }
+                });
+            };
+            
+            // 重置搜索
+            window.resetSearch = function() {
+                $('#searchKeyword').val('');
+                tableIns.reload({
+                    where: {},
+                    page: {
+                        curr: 1
+                    }
+                });
+            };
+            
+               // 新增用户
+            window.addUser = function() {
+                parent.layer.open({
+                    type: 2,
+                    title: '新增用户',
+                    area: ['600px', '550px'],
+                    content: '/system/user/form/',
+                    btn: ['保存', '取消'],
+                    yes: function(index, layero){
+                        // 通过parent.document查找弹窗中的iframe
+                        var iframe = layero.find('iframe')[0];
+                        var iframeWindow = iframe.contentWindow;
+                        iframeWindow.submitForm(function(){
+                            parent.layer.close(index);
+                            tableIns.reload();
+                        });
+                    }
+                });
+            };
+            
+            // 编辑用户
+            window.editUser = function(id) {
+                parent.layer.open({
+                    type: 2,
+                    title: '编辑用户',
+                    area: ['600px', '550px'],
+                    content: '/system/user/form/?id=' + id,
+                    btn: ['保存', '取消'],
+                    yes: function(index, layero){
+                        var iframe = layero.find('iframe')[0];
+                        var iframeWindow = iframe.contentWindow;
+                        iframeWindow.submitForm(function(){
+                            parent.layer.close(index);
+                            tableIns.reload();
+                        });
+                    }
+                });
+            };
+        });
+    </script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</body>
+</html>

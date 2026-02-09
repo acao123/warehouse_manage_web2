@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>角色管理</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+</head>
+<body>
+    <div style="padding: 15px;">
+        <!-- 搜索栏 -->
+        <div class="layui-form" style="margin-bottom: 15px;">
+            <div class="layui-inline">
+                <input type="text" id="searchKeyword" placeholder="搜索角色名称" class="layui-input">
+            </div>
+            <div class="layui-inline">
+                <button class="layui-btn" onclick="searchRoles()">搜索</button>
+                <button class="layui-btn layui-btn-primary" onclick="resetSearch()">重置</button>
+                <button class="layui-btn layui-btn-normal" onclick="addRole()">新增角色</button>
+            </div>
+        </div>
+        
+        <!-- 数据表格 -->
+        <table class="layui-hide" id="roleTable" lay-filter="roleTable"></table>
+    </div>
+
+    <!-- 操作列按钮模板 -->
+    <script type="text/html" id="toolbarTpl">
+        <a class="layui-btn layui-btn-xs" lay-event="edit">编辑</a>
+        <a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="del">删除</a>
+    </script>
+
+    <script src="/static/layui/layui/layui.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        layui.use(['table', 'layer'], function(){
+            var table = layui.table;
+            var layer = layui.layer;
+            
+            // 渲染表格
+            var tableIns = table.render({
+                elem: '#roleTable',
+                url: '/system/role/list/',
+                page: true,
+                cols: [[
+                    {field: 'id', title: 'ID', width: 80, sort: true},
+                    {field: 'role_name', title: '角色名称', width: 200},
+                    {field: 'role_key', title: '角色英文名称', width: 200},
+                    {field: 'menus', title: '关联菜单'},
+                    {field: 'created_at', title: '创建时间', width: 180},
+                    {fixed: 'right', title: '操作', toolbar: '#toolbarTpl', width: 150}
+                ]]
+            });
+            
+            // 监听工具条
+            table.on('tool(roleTable)', function(obj){
+                var data = obj.data;
+                if(obj.event === 'edit'){
+                    editRole(data.id);
+                } else if(obj.event === 'del'){
+                    layer.confirm('确定删除该角色吗？', function(index){
+                        $.post('/system/role/delete/', {id: data.id}, function(res){
+                            if(res.code === 0){
+                                layer.msg('删除成功');
+                                tableIns.reload();
+                            } else {
+                                layer.msg(res.msg);
+                            }
+                        });
+                        layer.close(index);
+                    });
+                }
+            });
+            
+            // 搜索功能
+            window.searchRoles = function() {
+                tableIns.reload({
+                    where: {
+                        keyword: $('#searchKeyword').val()
+                    },
+                    page: {
+                        curr: 1
+                    }
+                });
+            };
+            
+            // 重置搜索
+            window.resetSearch = function() {
+                $('#searchKeyword').val('');
+                tableIns.reload({
+                    where: {},
+                    page: {
+                        curr: 1
+                    }
+                });
+            };
+            
+            // 新增角色
+            window.addRole = function() {
+                layer.open({
+                    type: 2,
+                    title: '新增角色',
+                    area: ['600px', '500px'],
+                    content: 'role_form.html',
+                    btn: ['保存', '取消'],
+                    yes: function(index, layero){
+                        var iframeWindow = window[layero.find('iframe')[0]['name']];
+                        iframeWindow.submitForm(function(){
+                            layer.close(index);
+                            tableIns.reload();
+                        });
+                    }
+                });
+            };
+            
+            // 编辑角色
+            window.editRole = function(id) {
+                layer.open({
+                    type: 2,
+                    title: '编辑角色',
+                    area: ['600px', '500px'],
+                    content: 'role_form.html?id=' + id,
+                    btn: ['保存', '取消'],
+                    yes: function(index, layero){
+                        var iframeWindow = window[layero.find('iframe')[0]['name']];
+                        iframeWindow.submitForm(function(){
+                            layer.close(index);
+                            tableIns.reload();
+                        });
+                    }
+                });
+            };
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>角色表单</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+</head>
+<body style="padding: 15px;">
+    <form class="layui-form" id="roleForm" lay-filter="roleForm">
+        <input type="hidden" name="id" id="roleId">
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">角色名称</label>
+            <div class="layui-input-block">
+                <input type="text" name="role_name" required lay-verify="required" 
+                       placeholder="请输入角色名称" class="layui-input">
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">角色英文名称</label>
+            <div class="layui-input-block">
+                <input type="text" name="role_key" required lay-verify="required" 
+                       placeholder="请输入角色英文名称" class="layui-input">
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">菜单权限</label>
+            <div class="layui-input-block">
+                <div id="menuTree" style="max-height: 300px; overflow-y: auto; border: 1px solid #e6e6e6; padding: 10px;"></div>
+            </div>
+        </div>
+    </form>
+
+    <script src="/static/layui/layui/layui.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        layui.use(['form', 'layer', 'tree'], function(){
+            var form = layui.form;
+            var layer = layui.layer;
+            var tree = layui.tree;
+            
+            // 获取URL参数
+            function getUrlParam(name) {
+                var reg = new RegExp("(^|&)" + name + "=([^&]*)(&|$)");
+                var r = window.location.search.substr(1).match(reg);
+                if (r != null) return unescape(r[2]); return null;
+            }
+            
+            var roleId = getUrlParam('id');
+            var menuTreeIns;
+            
+            // 加载菜单树
+            $.get('/system/menu/tree/', function(data){
+                menuTreeIns = tree.render({
+                    elem: '#menuTree',
+                    data: data,
+                    showCheckbox: true,
+                    id: 'menuTreeId'
+                });
+                
+                // 如果是编辑模式，加载角色数据
+                if(roleId){
+                    loadRoleData(roleId);
+                }
+            });
+            
+            // 加载角色数据
+            function loadRoleData(id) {
+                $.get('/system/role/edit/', {id: id}, function(res){
+                    if(res.code === 0){
+                        var data = res.data;
+                        $('#roleId').val(data.id);
+                        $('input[name="role_name"]').val(data.role_name);
+                        $('input[name="role_key"]').val(data.role_key);
+                        
+                        // 设置菜单选择
+                        tree.setChecked('menuTreeId', data.menu_ids);
+                    }
+                });
+            }
+            
+            // 提交表单
+            window.submitForm = function(callback) {
+                var roleId = $('#roleId').val();
+                var roleName = $('input[name="role_name"]').val();
+                var roleKey = $('input[name="role_key"]').val();
+                
+                if(!roleName){
+                    layer.msg('请输入角色名称');
+                    return;
+                }
+                if(!roleKey){
+                    layer.msg('请输入角色英文名称');
+                    return;
+                }
+                
+                // 获取选中的菜单
+                var checkedData = tree.getChecked('menuTreeId');
+                var menuIds = [];
+                
+                function collectIds(nodes) {
+                    nodes.forEach(function(node){
+                        menuIds.push(node.id);
+                        if(node.children && node.children.length > 0){
+                            collectIds(node.children);
+                        }
+                    });
+                }
+                collectIds(checkedData);
+                
+                var url = roleId ? '/system/role/edit/' : '/system/role/add/';
+                var formData = {
+                    role_name: roleName,
+                    role_key: roleKey,
+                    'menu_ids[]': menuIds
+                };
+                
+                if(roleId){
+                    formData.id = roleId;
+                }
+                
+                $.post(url, formData, function(res){
+                    if(res.code === 0){
+                        layer.msg(res.msg);
+                        callback();
+                    } else {
+                        layer.msg(res.msg);
+                    }
+                });
+            };
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>仓库管理系统 - 登录</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0;
+            font-family: 'Microsoft YaHei', sans-serif;
+        }
+        .login-container {
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            width: 400px;
+        }
+        .login-title {
+            text-align: center;
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .captcha-img {
+            cursor: pointer;
+            height: 38px;
+            border: 1px solid #e6e6e6;
+            border-radius: 2px;
+        }
+        .error-msg {
+            color: #ff5722;
+            font-size: 12px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-title">乙方宝清缓存</div>
+        {% if error %}
+        <div class="error-msg">{{ error }}</div>
+        {% endif %}
+        <form class="layui-form" method="post" action="/login/">
+            {% csrf_token %}
+            <div class="layui-form-item">
+                <label class="layui-form-label">用户名</label>
+                <div class="layui-input-block">
+                    <input type="text" name="username" required lay-verify="required" 
+                           placeholder="请输入用户名" autocomplete="off" class="layui-input">
+                </div>
+            </div>
+            <div class="layui-form-item">
+                <label class="layui-form-label">密码</label>
+                <div class="layui-input-block">
+                    <input type="password" name="password" required lay-verify="required" 
+                           placeholder="请输入密码" autocomplete="off" class="layui-input">
+                </div>
+            </div>
+            <div class="layui-form-item">
+                <label class="layui-form-label">验证码</label>
+                <div class="layui-input-inline" style="width: 150px;">
+                    <input type="text" name="captcha" required lay-verify="required" 
+                           placeholder="请输入验证码" autocomplete="off" class="layui-input">
+                </div>
+                <div class="layui-form-mid">
+                    <img src="{{ captcha_img }}" class="captcha-img" id="captchaImg" 
+                         title="点击刷新验证码" onclick="refreshCaptcha()">
+                </div>
+            </div>
+            <div class="layui-form-item">
+                <div class="layui-input-block">
+                    <button class="layui-btn layui-btn-fluid" lay-submit lay-filter="loginSubmit">登录</button>
+                </div>
+            </div>
+        </form>
+        <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
+            测试账号：admin / admin888 或 test / test123
+        </div>
+    </div>
+
+    <script src="/static/layui/layui/layui.js"></script>
+    <script>
+        function refreshCaptcha() {
+            fetch('/captcha/')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('captchaImg').src = data.captcha_img;
+                });
+        }
+    </script>
+</body>
+</html>

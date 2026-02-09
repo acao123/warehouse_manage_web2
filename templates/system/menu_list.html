@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>菜单管理</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+</head>
+<body>
+    <div style="padding: 15px;">
+        <!-- 搜索栏 -->
+        <div class="layui-form" style="margin-bottom: 15px;">
+            <div class="layui-inline">
+                <input type="text" id="searchKeyword" placeholder="搜索菜单名称" class="layui-input">
+            </div>
+            <div class="layui-inline">
+                <button class="layui-btn" onclick="searchMenus()">搜索</button>
+                <button class="layui-btn layui-btn-primary" onclick="resetSearch()">重置</button>
+                <button class="layui-btn layui-btn-normal" onclick="addMenu()">新增菜单</button>
+            </div>
+        </div>
+        
+        <!-- 数据表格 -->
+        <table class="layui-hide" id="menuTable" lay-filter="menuTable"></table>
+    </div>
+
+    <!-- 操作列按钮模板 -->
+    <script type="text/html" id="toolbarTpl">
+        {% verbatim %}
+        {{# if(d.level < 1) { }}
+        <a class="layui-btn layui-btn-xs layui-btn-normal" lay-event="add">添加子菜单</a>
+        {{# } else { }}
+        <span class="layui-btn layui-btn-xs layui-btn-disabled">不可添加</span>
+        {{# } }}
+        {% endverbatim %}
+        <a class="layui-btn layui-btn-xs" lay-event="edit">编辑</a>
+        <a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="del">删除</a>
+    </script>
+
+    <script src="/static/layui/layui/layui.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        layui.use(['table', 'layer'], function(){
+            var table = layui.table;
+            var layer = layui.layer;
+            
+            // 渲染表格
+            var tableIns = table.render({
+                elem: '#menuTable',
+                url: '/system/menu/list/',
+                page: false,
+                cols: [[
+                    {field: 'id', title: 'ID', width: 80, sort: true},
+                    {field: 'menu_name', title: '菜单名称', width: 200},
+                    {field: 'parent_name', title: '父级菜单', width: 200},
+                    {field: 'menu_order', title: '显示顺序', width: 100},
+                    {field: 'route_path', title: '路由地址'},
+                    {field: 'created_at', title: '创建时间', width: 180},
+                    {fixed: 'right', title: '操作', toolbar: '#toolbarTpl', width: 280}
+                ]]
+            });
+            
+            // 监听工具条
+            table.on('tool(menuTable)', function(obj){
+                var data = obj.data;
+                if(obj.event === 'add'){
+                    addMenu(data.id);
+                } else if(obj.event === 'edit'){
+                    editMenu(data.id);
+                } else if(obj.event === 'del'){
+                    layer.confirm('确定删除该菜单吗？', function(index){
+                        $.post('/system/menu/delete/', {id: data.id}, function(res){
+                            if(res.code === 0){
+                                layer.msg('删除成功');
+                                tableIns.reload();
+                            } else {
+                                layer.msg(res.msg);
+                            }
+                        });
+                        layer.close(index);
+                    });
+                }
+            });
+            
+            // 搜索功能
+            window.searchMenus = function() {
+                tableIns.reload({
+                    where: {
+                        keyword: $('#searchKeyword').val()
+                    }
+                });
+            };
+            
+            // 重置搜索
+            window.resetSearch = function() {
+                $('#searchKeyword').val('');
+                tableIns.reload({
+                    where: {}
+                });
+            };
+            
+            // 新增菜单
+            window.addMenu = function(parentId) {
+                var url = 'menu_form.html';
+                if(parentId){
+                    url += '?parent_id=' + parentId;
+                }
+                layer.open({
+                    type: 2,
+                    title: '新增菜单',
+                    area: ['500px', '400px'],
+                    content: url,
+                    btn: ['保存', '取消'],
+                    yes: function(index, layero){
+                        var iframeWindow = window[layero.find('iframe')[0]['name']];
+                        iframeWindow.submitForm(function(){
+                            layer.close(index);
+                            tableIns.reload();
+                        });
+                    }
+                });
+            };
+            
+            // 编辑菜单
+            window.editMenu = function(id) {
+                layer.open({
+                    type: 2,
+                    title: '编辑菜单',
+                    area: ['500px', '400px'],
+                    content: 'menu_form.html?id=' + id,
+                    btn: ['保存', '取消'],
+                    yes: function(index, layero){
+                        var iframeWindow = window[layero.find('iframe')[0]['name']];
+                        iframeWindow.submitForm(function(){
+                            layer.close(index);
+                            tableIns.reload();
+                        });
+                    }
+                });
+            };
+        });
+    </script>
+</body>
+</html>

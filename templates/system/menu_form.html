@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>菜单表单</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+</head>
+<body style="padding: 15px;">
+    <form class="layui-form" id="menuForm" lay-filter="menuForm">
+        <input type="hidden" name="id" id="menuId">
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">菜单名称</label>
+            <div class="layui-input-block">
+                <input type="text" name="menu_name" required lay-verify="required" 
+                       placeholder="请输入菜单名称" class="layui-input">
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">父级菜单</label>
+            <div class="layui-input-block">
+                <select name="parent_id" id="parentSelect" lay-filter="parentSelect">
+                    <option value="0">主目录</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">显示顺序</label>
+            <div class="layui-input-block">
+                <input type="number" name="menu_order" value="0" 
+                       placeholder="请输入显示顺序" class="layui-input">
+            </div>
+        </div>
+        
+        <div class="layui-form-item">
+            <label class="layui-form-label">路由地址</label>
+            <div class="layui-input-block">
+                <input type="text" name="route_path" 
+                       placeholder="请输入路由地址" class="layui-input">
+            </div>
+        </div>
+    </form>
+
+    <script src="/static/layui/layui/layui.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        layui.use(['form', 'layer'], function(){
+            var form = layui.form;
+            var layer = layui.layer;
+            
+            // 获取URL参数
+            function getUrlParam(name) {
+                var reg = new RegExp("(^|&)" + name + "=([^&]*)(&|$)");
+                var r = window.location.search.substr(1).match(reg);
+                if (r != null) return unescape(r[2]); return null;
+            }
+            
+            var menuId = getUrlParam('id');
+            var parentId = getUrlParam('parent_id');
+            
+            // 加载父级菜单列表
+            $.get('/system/menu/parent-list/', function(res){
+                if(res.code === 0){
+                    var html = '';
+                    res.data.forEach(function(menu){
+                        html += '<option value="' + menu.id + '">' + menu.menu_name + '</option>';
+                    });
+                    $('#parentSelect').html(html);
+                    
+                    // 如果有指定父菜单
+                    if(parentId){
+                        $('#parentSelect').val(parentId);
+                    }
+                    
+                    form.render('select');
+                    
+                    // 如果是编辑模式，加载菜单数据
+                    if(menuId){
+                        loadMenuData(menuId);
+                    }
+                }
+            });
+            
+            // 加载菜单数据
+            function loadMenuData(id) {
+                $.get('/system/menu/edit/', {id: id}, function(res){
+                    if(res.code === 0){
+                        var data = res.data;
+                        $('#menuId').val(data.id);
+                        $('input[name="menu_name"]').val(data.menu_name);
+                        $('#parentSelect').val(data.parent_id);
+                        $('input[name="menu_order"]').val(data.menu_order);
+                        $('input[name="route_path"]').val(data.route_path);
+                        form.render();
+                    }
+                });
+            }
+            
+            // 提交表单
+            window.submitForm = function(callback) {
+                var menuId = $('#menuId').val();
+                var menuName = $('input[name="menu_name"]').val();
+                
+                if(!menuName){
+                    layer.msg('请输入菜单名称');
+                    return;
+                }
+                
+                var url = menuId ? '/system/menu/edit/' : '/system/menu/add/';
+                var formData = $('#menuForm').serialize();
+                
+                $.post(url, formData, function(res){
+                    if(res.code === 0){
+                        layer.msg(res.msg);
+                        callback();
+                    } else {
+                        layer.msg(res.msg);
+                    }
+                });
+            };
+        });
+    </script>
+</body>
+</html>
