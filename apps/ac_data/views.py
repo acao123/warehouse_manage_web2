@@ -3,7 +3,6 @@ from decimal import Decimal
 from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.db.models import Q
 from django.conf import settings
 from .models import AcTif
 
@@ -139,15 +138,35 @@ def ac_upload_view(request):
             min_latitude = Decimal(str(geo_transform[3] + geo_transform[5] * height))  # 最小纬度
             
             # 为了保持与数据库字段名一致，使用start/end命名
+            # 最小经度小于73 赋值为73 最大经度大于136 赋值136
+            # 最小纬度小于3 赋值为3 最大纬度大于54 赋值54
+            # 使用 Decimal 进行比较并处理 None 情况
+            MIN_LON = Decimal('73')
+            MAX_LON = Decimal('136')
+            MIN_LAT = Decimal('3')
+            MAX_LAT = Decimal('54')
+
             start_longitude = min_longitude
+            if start_longitude is not None and start_longitude < MIN_LON:
+                start_longitude = MIN_LON
+
             end_longitude = max_longitude
+            if end_longitude is not None and end_longitude > MAX_LON:
+                end_longitude = MAX_LON
+
             start_latitude = min_latitude
+            if start_latitude is not None and start_latitude < MIN_LAT:
+                start_latitude = MIN_LAT
+
             end_latitude = max_latitude
-            
+            if end_latitude is not None and end_latitude > MAX_LAT:
+                end_latitude = MAX_LAT
+
             dataset = None  # 关闭数据集
             
         except ImportError:
             # GDAL未安装，使用默认值
+            gdal = None
             start_longitude = None
             end_longitude = None
             start_latitude = None
@@ -160,10 +179,10 @@ def ac_upload_view(request):
         ac_tif = AcTif.objects.create(
             ac_name=file_name,
             ac_local_name='',  # 暂时为空，获取ID后更新
-            start_longitude=start_longitude,
-            end_longitude=end_longitude,
-            start_latitude=start_latitude,
-            end_latitude=end_latitude,
+            start_longitude=None,
+            end_longitude=None,
+            start_latitude=None,
+            end_latitude=None,
         )
         
         # 生成本地文件名（保留7位小数精度）
