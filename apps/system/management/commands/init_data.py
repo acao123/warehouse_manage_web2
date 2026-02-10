@@ -27,7 +27,8 @@ class Command(BaseCommand):
         menu_system = Menu.objects.create(
             menu_name='系统管理',
             menu_order=1,
-            route_path=''
+            route_path='',
+            menu_icon='layui-icon-set'
         )
         
         # 二级菜单
@@ -35,21 +36,24 @@ class Command(BaseCommand):
             menu_name='用户管理',
             parent=menu_system,
             menu_order=1,
-            route_path='/system/user/list/'
+            route_path='/system/user/list/',
+            menu_icon='layui-icon-user'
         )
         
         menu_role = Menu.objects.create(
             menu_name='角色管理',
             parent=menu_system,
             menu_order=2,
-            route_path='/system/role/list/'
+            route_path='/system/role/list/',
+            menu_icon='layui-icon-group'
         )
         
         menu_menu = Menu.objects.create(
             menu_name='菜单管理',
             parent=menu_system,
             menu_order=3,
-            route_path='/system/menu/list/'
+            route_path='/system/menu/list/',
+            menu_icon='layui-icon-menu-fill'
         )
         
         # 创建角色
