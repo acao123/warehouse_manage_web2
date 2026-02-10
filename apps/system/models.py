@@ -12,6 +12,7 @@ class Menu(models.Model):
                                related_name='children', verbose_name='父级菜单')
     menu_order = models.IntegerField(default=0, verbose_name='显示顺序')
     route_path = models.CharField(max_length=200, blank=True, verbose_name='路由地址')
+    menu_icon = models.CharField(max_length=50, blank=True, default='layui-icon-app', verbose_name='菜单图标')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 

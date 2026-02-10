@@ -166,6 +166,7 @@ def index_view(request):
         menu_dict[menu.id] = {
             'id': menu.id,
             'name': menu.menu_name,
+            'icon': menu.menu_icon,
             'route': menu.route_path,
             'children': []
         }
@@ -543,6 +544,7 @@ def menu_list_view(request):
                     'parent_name': menu.parent.menu_name if menu.parent else '主目录',
                     'menu_order': menu.menu_order,
                     'route_path': menu.route_path,
+                    'menu_icon': menu.menu_icon,
                     'level': menu.get_level(),
                     'created_at': menu.created_at.strftime('%Y-%m-%d %H:%M:%S')
                 })
@@ -573,6 +575,7 @@ def menu_tree_view(request):
         menu_dict[menu.id] = {
             'id': menu.id,
             'title': menu.menu_name,
+            'icon': menu.menu_icon,
             'children': []
         }
     
@@ -617,6 +620,7 @@ def menu_add_view(request):
             parent_id = request.POST.get('parent_id', '0')
             menu_order = int(request.POST.get('menu_order', 0))
             route_path = request.POST.get('route_path', '').strip()
+            menu_icon = request.POST.get('menu_icon', 'layui-icon-app').strip()
             
             # 验证父菜单
             parent = None
@@ -631,7 +635,8 @@ def menu_add_view(request):
                 menu_name=menu_name,
                 parent=parent,
                 menu_order=menu_order,
-                route_path=route_path
+                route_path=route_path,
+                menu_icon=menu_icon
             )
             
             return JsonResponse({'code': 0, 'msg': '添加成功'})
@@ -657,7 +662,8 @@ def menu_edit_view(request):
                 'menu_name': menu.menu_name,
                 'parent_id': menu.parent_id if menu.parent_id else 0,
                 'menu_order': menu.menu_order,
-                'route_path': menu.route_path
+                'route_path': menu.route_path,
+                'menu_icon': menu.menu_icon
             }
         })
     
@@ -669,6 +675,7 @@ def menu_edit_view(request):
             parent_id = request.POST.get('parent_id', '0')
             menu_order = int(request.POST.get('menu_order', 0))
             route_path = request.POST.get('route_path', '').strip()
+            menu_icon = request.POST.get('menu_icon', 'layui-icon-app').strip()
             
             # 验证父菜单
             parent = None
@@ -685,6 +692,7 @@ def menu_edit_view(request):
             menu.parent = parent
             menu.menu_order = menu_order
             menu.route_path = route_path
+            menu.menu_icon = menu_icon
             menu.save()
             
             return JsonResponse({'code': 0, 'msg': '修改成功'})

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS `sys_menu` (
   `parent_id` bigint DEFAULT NULL COMMENT '父级菜单ID',
   `menu_order` int NOT NULL DEFAULT '0' COMMENT '显示顺序',
   `route_path` varchar(200) NOT NULL DEFAULT '' COMMENT '路由地址',
+  `menu_icon` varchar(50) NOT NULL DEFAULT 'layui-icon-app' COMMENT '菜单图标',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
@@ -74,11 +75,11 @@ CREATE TABLE IF NOT EXISTS `sys_user_roles` (
 -- 插入测试数据
 
 -- 插入菜单数据
-INSERT INTO `sys_menu` (`id`, `menu_name`, `parent_id`, `menu_order`, `route_path`) VALUES
-(1, '系统管理', NULL, 1, ''),
-(2, '用户管理', 1, 1, '/system/user/list/'),
-(3, '角色管理', 1, 2, '/system/role/list/'),
-(4, '菜单管理', 1, 3, '/system/menu/list/');
+INSERT INTO `sys_menu` (`id`, `menu_name`, `parent_id`, `menu_order`, `route_path`, `menu_icon`) VALUES
+(1, '系统管理', NULL, 1, '', 'layui-icon-set'),
+(2, '用户管理', 1, 1, '/system/user/list/', 'layui-icon-user'),
+(3, '角色管理', 1, 2, '/system/role/list/', 'layui-icon-group'),
+(4, '菜单管理', 1, 3, '/system/menu/list/', 'layui-icon-menu-fill');
 
 -- 插入角色数据
 INSERT INTO `sys_role` (`id`, `role_name`, `role_key`) VALUES
