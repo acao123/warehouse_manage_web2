@@ -148,10 +148,6 @@
     <!-- 头部 -->
     <div class="layui-header">
         <div class="layui-logo">地震滑坡灾害评估系统</div>
-        <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="切换侧边栏" aria-expanded="true"
-                type="button">
-            <i class="layui-icon layui-icon-shrink-right" id="toggleIcon"></i>
-        </button>
         <ul class="layui-nav layui-layout-right">
             <li class="layui-nav-item">
                 <a href="javascript:;">
@@ -159,7 +155,7 @@
                     {{ user.nickname }}
                 </a>
                 <dl class="layui-nav-child">
-                    <dd><a href="javascript:;" onclick="logout()">退出登录</a></dd>
+                    <dd><a href="javascript:" onclick="logout()">退出登录</a></dd>
                 </dl>
             </li>
         </ul>
