@@ -134,3 +134,20 @@ CREATE TABLE IF NOT EXISTS `ac_tif` (
 INSERT INTO `ac_tif` (`id`, `local_path`, `ac_name`, `ac_local_name`, `start_longitude`, `end_longitude`, `start_latitude`, `end_latitude`) VALUES
 (1, 'data/ac/1_100.0000000_110.0000000_30.0000000_40.0000000.tif', 'test_china_region.tif', '1_100.0000000_110.0000000_30.0000000_40.0000000.tif', 100.0000000, 110.0000000, 30.0000000, 40.0000000),
 (2, 'data/ac/2_120.0000000_130.0000000_25.0000000_35.0000000.tif', 'test_east_china.tif', '2_120.0000000_130.0000000_25.0000000_35.0000000.tif', 120.0000000, 130.0000000, 25.0000000, 35.0000000);
+
+
+-- 中国历史发震记录表
+CREATE TABLE `earthquake_record` (
+	`id` BIGINT ( 20 ) NOT NULL AUTO_INCREMENT,
+	`longitude` FLOAT NOT NULL COMMENT '经度',
+	`latitude` FLOAT NOT NULL COMMENT '纬度',
+	`foc_depth` FLOAT DEFAULT NULL COMMENT '深度（千米）',
+	`loc_name` VARCHAR ( 100 ) NOT NULL COMMENT '参考位置',
+	`magnitude` FLOAT NOT NULL COMMENT '震级',
+	`quake_time` datetime DEFAULT NULL COMMENT '发震时刻',
+	`quake_time_str` VARCHAR ( 50 ) DEFAULT NULL COMMENT '发震时刻str',
+	`del_flag` INT ( 1 ) NOT NULL DEFAULT '0' COMMENT '删除标记 0-正常 1-已删除',
+	`create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+	`update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+	  PRIMARY KEY (`id`)
+) ENGINE = INNODB AUTO_INCREMENT = 1 DEFAULT CHARSET = utf8mb4 ROW_FORMAT = COMPACT COMMENT = '中国历史发震记录表';
