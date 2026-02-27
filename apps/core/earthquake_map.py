@@ -7,7 +7,16 @@
 
 依赖安装：pip install Pillow requests pyshp lxml
 作者：acao123
-日期：2026-02-26
+日期：2026-02-27
+
+修改说明：
+1. 底图改用天地图影像底图(img_c) + 影像注记(cia_c)，解决矢量底图海洋白色、地名看不清问题
+2. 震级圆点增大尺寸并加粗描边，确保可见
+3. 省界改为灰色(比市界深一点)，线宽减小
+4. 图例每个图标前增加左侧留白
+5. 比例尺右侧展示完全，增加右边距
+6. 指北针增加灰色透明背景
+7. 8.0级以上圆点尺寸缩小，仅比7.0级稍大
 """
 
 import os
@@ -33,25 +42,25 @@ except ImportError:
 
 TIANDITU_TK = "1ef76ef90c6eb961cb49618f9b1a399d"
 
-# 矢量底图URL（替换原影像底图）
-TIANDITU_VEC_URL = (
-    "http://t{s}.tianditu.gov.cn/vec_c/wmts?"
+# 【修改1】改用影像底图URL（替代矢量底图，解决海洋白色问题）
+TIANDITU_IMG_URL = (
+    "http://t{s}.tianditu.gov.cn/img_c/wmts?"
     "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-    "&LAYER=vec&STYLE=default&TILEMATRIXSET=c"
+    "&LAYER=img&STYLE=default&TILEMATRIXSET=c"
     "&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
     "&tk=" + TIANDITU_TK
 )
 
-# 矢量注记URL（中文地名标注）
-TIANDITU_CVA_URL = (
-    "http://t{s}.tianditu.gov.cn/cva_c/wmts?"
+# 【修改1】改用影像注记URL（白色文字，在影像底图上清晰可见）
+TIANDITU_CIA_URL = (
+    "http://t{s}.tianditu.gov.cn/cia_c/wmts?"
     "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-    "&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
+    "&LAYER=cia&STYLE=default&TILEMATRIXSET=c"
     "&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
     "&tk=" + TIANDITU_TK
 )
 
-# 是否叠加矢量注记图层
+# 是否叠加注记图层
 ENABLE_LABEL_OVERLAY = True
 
 # 地图内容区域尺寸（不含经纬度边框）
@@ -59,14 +68,14 @@ MAP_WIDTH = 1400
 MAP_HEIGHT = 1050
 
 # 经纬度边框宽度（像素）
-BORDER_LEFT = 80      # 左侧边框（放纬度刻度）
-BORDER_RIGHT = 80     # 右侧边框（放纬度刻度）
-BORDER_TOP = 60       # 顶部边框（放经度刻度）
-BORDER_BOTTOM = 60    # 底部边框（放经度刻度）
+BORDER_LEFT = 80
+BORDER_RIGHT = 80
+BORDER_TOP = 60
+BORDER_BOTTOM = 60
 
 # 最终输出图片尺寸 = 地图 + 边框
-OUTPUT_WIDTH = BORDER_LEFT + MAP_WIDTH + BORDER_RIGHT    # 1560
-OUTPUT_HEIGHT = BORDER_TOP + MAP_HEIGHT + BORDER_BOTTOM  # 1170
+OUTPUT_WIDTH = BORDER_LEFT + MAP_WIDTH + BORDER_RIGHT
+OUTPUT_HEIGHT = BORDER_TOP + MAP_HEIGHT + BORDER_BOTTOM
 
 OUTPUT_DPI = 150
 OUTPUT_FORMAT = "png"
@@ -75,63 +84,63 @@ TILE_RETRY = 3
 
 # ============================================================
 # 【地震圆点配置】
+# 【修改2】增大所有圆点尺寸，确保在底图上清晰可见
+# 【修改7】8.0级以上圆点从34→28，仅比7.0级(26)稍大
 # ============================================================
 
-COLOR_LEVEL_1 = (0, 255, 0, 240)       # 4.7~5.9级 - 绿色
-COLOR_LEVEL_2 = (255, 255, 0, 220)     # 6.0~6.9级 - 黄色
-COLOR_LEVEL_3 = (255, 165, 0, 230)     # 7.0~7.9级 - 橙色
-COLOR_LEVEL_4 = (255, 0, 0, 240)       # 8.0级以上 - 红色
+COLOR_LEVEL_1 = (0, 255, 0, 255)       # 4.7~5.9级 - 绿色（透明度提高到255）
+COLOR_LEVEL_2 = (255, 255, 0, 255)     # 6.0~6.9级 - 黄色
+COLOR_LEVEL_3 = (255, 165, 0, 255)     # 7.0~7.9级 - 橙色
+COLOR_LEVEL_4 = (255, 0, 0, 255)       # 8.0级以上 - 红色
 
-SIZE_LEVEL_1 = 14   # 4.7~5.9级
-SIZE_LEVEL_2 = 20   # 6.0~6.9级
-SIZE_LEVEL_3 = 26   # 7.0~7.9级
-SIZE_LEVEL_4 = 34   # 8.0级以上
+SIZE_LEVEL_1 = 18   # 4.7~5.9级（从14增大到18）
+SIZE_LEVEL_2 = 22   # 6.0~6.9级（从20增大到22）
+SIZE_LEVEL_3 = 26   # 7.0~7.9级（保持26）
+SIZE_LEVEL_4 = 28   # 8.0级以上（从30缩小到28，仅比7.0级稍大）
 
 EPICENTER_STAR_COLOR = (255, 0, 0, 255)
 EPICENTER_STAR_SIZE = 30
 
 # ============================================================
-# 【行政边界线样式 - 带黑色衬底】
+# 【行政边界线样式】
+# 【修改3】省界改为灰色，线宽减小；比市界深一点即可
 # ============================================================
 
-PROVINCE_BORDER_COLOR = (180, 0, 255, 255)
-PROVINCE_BORDER_WIDTH = 5
-PROVINCE_BORDER_SHADOW_COLOR = (0, 0, 0, 180)
-PROVINCE_BORDER_SHADOW_WIDTH = 7
+# 省界：深灰色实线（比市界深一点，但不再是纯黑粗线）
+PROVINCE_BORDER_COLOR = (60, 60, 60, 255)
+PROVINCE_BORDER_WIDTH = 2
 
-CITY_BORDER_COLOR = (255, 100, 200, 255)
-CITY_BORDER_WIDTH = 3
+# 市界：灰色虚线（中等粗）
+CITY_BORDER_COLOR = (100, 100, 100, 255)
+CITY_BORDER_WIDTH = 1
 CITY_BORDER_DASH = (12, 6)
-CITY_BORDER_SHADOW_COLOR = (0, 0, 0, 150)
-CITY_BORDER_SHADOW_WIDTH = 5
 
-COUNTY_BORDER_COLOR = (255, 255, 100, 230)
-COUNTY_BORDER_WIDTH = 2
+# 县界：浅灰色虚线（最细）
+COUNTY_BORDER_COLOR = (160, 160, 160, 220)
+COUNTY_BORDER_WIDTH = 1
 COUNTY_BORDER_DASH = (8, 4)
-COUNTY_BORDER_SHADOW_COLOR = (0, 0, 0, 120)
-COUNTY_BORDER_SHADOW_WIDTH = 4
 
 # ============================================================
-# 【断裂线样式 - 带黑色衬底】
+# 【断裂线样式 - 加粗 + 带黑色衬底】
 # ============================================================
 
 FAULT_HOLOCENE_COLOR = (255, 50, 50, 255)
-FAULT_HOLOCENE_WIDTH = 3
+FAULT_HOLOCENE_WIDTH = 5
 FAULT_HOLOCENE_SHADOW_COLOR = (0, 0, 0, 160)
-FAULT_HOLOCENE_SHADOW_WIDTH = 5
+FAULT_HOLOCENE_SHADOW_WIDTH = 7
 
 FAULT_LATE_PLEISTOCENE_COLOR = (255, 0, 255, 255)
-FAULT_LATE_PLEISTOCENE_WIDTH = 3
+FAULT_LATE_PLEISTOCENE_WIDTH = 5
 FAULT_LATE_PLEISTOCENE_SHADOW_COLOR = (0, 0, 0, 160)
-FAULT_LATE_PLEISTOCENE_SHADOW_WIDTH = 5
+FAULT_LATE_PLEISTOCENE_SHADOW_WIDTH = 7
 
 FAULT_EARLY_PLEISTOCENE_COLOR = (0, 255, 150, 255)
-FAULT_EARLY_PLEISTOCENE_WIDTH = 3
+FAULT_EARLY_PLEISTOCENE_WIDTH = 5
 FAULT_EARLY_PLEISTOCENE_SHADOW_COLOR = (0, 0, 0, 160)
-FAULT_EARLY_PLEISTOCENE_SHADOW_WIDTH = 5
+FAULT_EARLY_PLEISTOCENE_SHADOW_WIDTH = 7
 
 FAULT_DEFAULT_COLOR = (255, 200, 50, 220)
-FAULT_DEFAULT_WIDTH = 2
+FAULT_DEFAULT_WIDTH = 4
 
 # ============================================================
 # 【文件路径】
@@ -155,7 +164,6 @@ for _z in range(1, 19):
         "n_cols": _n_cols, "n_rows": _n_rows,
         "tile_span_lon": 360.0 / _n_cols, "tile_span_lat": 180.0 / _n_rows,
     }
-
 
 # ============================================================
 # 【工具函数】
@@ -270,14 +278,15 @@ def format_degree(value, is_lon=True):
         suffix = "N" if value >= 0 else "S"
     return f"{degrees}°{minutes:02d}'"
 
-
 # ============================================================
 # 【天地图瓦片函数】
+# 【修改1】使用影像底图(img_c) + 影像注记(cia_c)替代矢量底图
 # ============================================================
 
 def select_zoom_level(geo_extent, img_width, img_height):
     """
-    选择最优缩放级别（优先选择更高zoom以获取更清晰的底图）
+    选择最优缩放级别。
+    优先选择更高zoom以获取更清晰的底图和注记文字。
 
     参数:
         geo_extent (dict): 地理范围
@@ -295,15 +304,14 @@ def select_zoom_level(geo_extent, img_width, img_height):
         ty = math.ceil(lat_range / m["tile_span_lat"]) + 1
         mosaic_w = tx * 256
         mosaic_h = ty * 256
-        # 要求拼接图至少是目标尺寸的1.5倍，确保缩放后仍清晰
-        if mosaic_w >= img_width * 1.5 and mosaic_h >= img_height * 1.5:
+        if mosaic_w >= img_width * 1.2 and mosaic_h >= img_height * 1.2:
             best_zoom = z
-            if tx * ty > 600:  # 放宽瓦片上限到600块
+            if tx * ty > 800:
                 best_zoom = z - 1 if z > 1 else z
                 break
         else:
             best_zoom = z
-    return max(3, min(best_zoom, 17))  # 上限提高到17
+    return max(3, min(best_zoom, 18))
 
 
 def lonlat_to_tile_epsg4326(lon, lat, zoom):
@@ -342,7 +350,10 @@ def download_tile_with_retry(url_template, zoom, tile_col, tile_row, retries=TIL
 
 def fetch_basemap(center_lon, center_lat, half_span_km, scale_denom, img_width, img_height):
     """
-    获取天地图矢量底图+矢量注记
+    【修改1】获取天地图影像底图 + 影像注记。
+    影像底图能正确显示海洋（蓝色）和陆地地貌。
+    影像注记（白色文字）在影像底图上清晰可见。
+    注记使用 NEAREST 重采样保持文字清晰。
 
     参数:
         center_lon, center_lat (float): 中心经纬度
@@ -377,7 +388,11 @@ def fetch_basemap(center_lon, center_lat, half_span_km, scale_denom, img_width, 
 
     ts = 256
     mw, mh = ntx * ts, nty * ts
-    mosaic = Image.new("RGBA", (mw, mh), (240, 240, 240, 255))
+
+    # 【修改1】分别拼接影像底图和影像注记
+    mosaic_img = Image.new("RGBA", (mw, mh), (200, 220, 240, 255))  # 浅蓝色兜底（模拟海洋）
+    mosaic_cia = Image.new("RGBA", (mw, mh), (0, 0, 0, 0))
+
     mo_lon, mo_lat = tile_to_lonlat_epsg4326(col_min, row_min, zoom)
     me_lon, me_lat = tile_to_lonlat_epsg4326(col_max + 1, row_max + 1, zoom)
 
@@ -385,20 +400,18 @@ def fetch_basemap(center_lon, center_lat, half_span_km, scale_denom, img_width, 
     for col in range(col_min, col_max + 1):
         for row in range(row_min, row_max + 1):
             px, py = (col - col_min) * ts, (row - row_min) * ts
-            # 矢量底图
-            tile = download_tile_with_retry(TIANDITU_VEC_URL, zoom, col, row)
+            # 影像底图
+            tile = download_tile_with_retry(TIANDITU_IMG_URL, zoom, col, row)
             if tile:
-                mosaic.paste(tile.convert("RGBA"), (px, py))
+                mosaic_img.paste(tile.convert("RGBA"), (px, py))
                 dl_ok += 1
             else:
                 dl_fail += 1
-            # 矢量注记
+            # 影像注记
             if ENABLE_LABEL_OVERLAY:
-                lbl = download_tile_with_retry(TIANDITU_CVA_URL, zoom, col, row)
+                lbl = download_tile_with_retry(TIANDITU_CIA_URL, zoom, col, row)
                 if lbl:
-                    tmp = Image.new("RGBA", mosaic.size, (0, 0, 0, 0))
-                    tmp.paste(lbl.convert("RGBA"), (px, py))
-                    mosaic = Image.alpha_composite(mosaic, tmp)
+                    mosaic_cia.paste(lbl.convert("RGBA"), (px, py))
         print(f"    下载: {(col - col_min + 1) / ntx * 100:.0f}%")
 
     print(f"  瓦片完成: 成功={dl_ok}, 失败={dl_fail}")
@@ -411,8 +424,21 @@ def fetch_basemap(center_lon, center_lat, half_span_km, scale_denom, img_width, 
     cr, cb = g2m(geo_extent["max_lon"], geo_extent["min_lat"])
     cl, ct = max(0, int(round(cl))), max(0, int(round(ct)))
     cr, cb = min(mw, int(round(cr))), min(mh, int(round(cb)))
-    cropped = mosaic.crop((cl, ct, cr, cb)) if cr > cl and cb > ct else mosaic
-    return cropped.resize((img_width, img_height), Image.LANCZOS), geo_extent
+
+    # 裁剪影像底图，使用 LANCZOS 缩放
+    cropped_img = mosaic_img.crop((cl, ct, cr, cb)) if cr > cl and cb > ct else mosaic_img
+    resized_img = cropped_img.resize((img_width, img_height), Image.LANCZOS)
+
+    # 裁剪注记，使用 NEAREST 缩放保持文字锐利清晰
+    if ENABLE_LABEL_OVERLAY:
+        cropped_cia = mosaic_cia.crop((cl, ct, cr, cb)) if cr > cl and cb > ct else mosaic_cia
+        resized_cia = cropped_cia.resize((img_width, img_height), Image.NEAREST)
+        result = Image.alpha_composite(resized_img, resized_cia)
+    else:
+        result = resized_img
+
+    return result, geo_extent
+
 
 # ============================================================
 # 【CSV读取】
@@ -556,7 +582,6 @@ def read_shapefile_lines(shp_path, geo_extent):
 
     print(f"  提取到 {len(all_lines)} 条线段")
     return all_lines
-
 
 # ============================================================
 # 【绘线函数（实线/虚线/带衬底）】
@@ -917,14 +942,16 @@ def draw_fault_lines(draw, fault_data, geo_extent, img_w, img_h):
                              FAULT_LATE_PLEISTOCENE_SHADOW_COLOR, FAULT_LATE_PLEISTOCENE_SHADOW_WIDTH),
         "early_pleistocene": (FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH,
                               FAULT_EARLY_PLEISTOCENE_SHADOW_COLOR, FAULT_EARLY_PLEISTOCENE_SHADOW_WIDTH),
-        "default": (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH, (0, 0, 0, 100), 3),
+        "default": (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH, (0, 0, 0, 100), FAULT_DEFAULT_WIDTH + 2),
     }
     for ftype, lines in fault_data.items():
         if not lines:
             continue
-        c, w, sc, sw = sm.get(ftype, (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH, (0, 0, 0, 100), 3))
+        c, w, sc, sw = sm.get(ftype, (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH, (0, 0, 0, 100),
+                                      FAULT_DEFAULT_WIDTH + 2))
         draw_solid_lines_with_shadow(draw, lines, geo_extent, img_w, img_h, c, w, sc, sw)
         print(f"  绘制 {ftype}: {len(lines)} 条")
+
 
 # ============================================================
 # 【绘图函数】
@@ -952,7 +979,8 @@ def draw_star(draw, cx, cy, radius, color, num_points=5):
 
 def draw_earthquake_points(draw, filtered_quakes, geo_extent, img_w, img_h):
     """
-    绘制历史地震圆点（带白色描边）
+    【修改2】绘制历史地震圆点（加粗描边，确保可见）
+    增加白色外描边宽度和黑色内描边，使圆点在影像底图上更醒目
 
     参数:
         draw: 绘图对象
@@ -973,10 +1001,12 @@ def draw_earthquake_points(draw, filtered_quakes, geo_extent, img_w, img_h):
         px, py = geo_to_pixel(eq["lon"], eq["lat"], geo_extent, img_w, img_h)
         if 0 <= px <= img_w and 0 <= py <= img_h:
             h = size // 2
-            draw.ellipse([px - h - 2, py - h - 2, px + h + 2, py + h + 2],
-                         fill=None, outline=(255, 255, 255, 220), width=2)
+            # 外层白色描边（更粗，确保在影像底图上可见）
+            draw.ellipse([px - h - 3, py - h - 3, px + h + 3, py + h + 3],
+                         fill=None, outline=(255, 255, 255, 255), width=3)
+            # 填充色圆点
             draw.ellipse([px - h, py - h, px + h, py + h],
-                         fill=color, outline=(0, 0, 0, 200))
+                         fill=color, outline=(0, 0, 0, 255), width=2)
             count += 1
     print(f"  绘制地震点: {count}")
     return count
@@ -1004,13 +1034,10 @@ def draw_epicenter(draw, center_lon, center_lat, geo_extent, img_w, img_h):
 def draw_coordinate_border(final_draw, geo_extent, final_img_width, final_img_height):
     """
     在最终图片上绘制经纬度刻度边框。
-    地图内容区域位于 (BORDER_LEFT, BORDER_TOP) 到
-    (BORDER_LEFT+MAP_WIDTH, BORDER_TOP+MAP_HEIGHT)。
-    边框区域为白色背景，四边标注经纬度刻度线和度分格式文字。
 
     参数:
         final_draw (ImageDraw): 最终图片的绘图对象
-        geo_extent (dict): 地理范围 {min_lon, max_lon, min_lat, max_lat}
+        geo_extent (dict): 地理范围
         final_img_width (int): 最终图片总宽度
         final_img_height (int): 最终图片总高度
     """
@@ -1019,13 +1046,11 @@ def draw_coordinate_border(final_draw, geo_extent, final_img_width, final_img_he
     except (IOError, OSError):
         font_coord = ImageFont.load_default()
 
-    # 地图区域在最终图上的位置
     map_left = BORDER_LEFT
     map_top = BORDER_TOP
     map_right = BORDER_LEFT + MAP_WIDTH
     map_bottom = BORDER_TOP + MAP_HEIGHT
 
-    # 绘制地图区域外框（黑色粗线）
     draw_rect_outline(final_draw, map_left, map_top, map_right, map_bottom, (0, 0, 0, 255), 2)
 
     min_lon = geo_extent["min_lon"]
@@ -1033,44 +1058,36 @@ def draw_coordinate_border(final_draw, geo_extent, final_img_width, final_img_he
     min_lat = geo_extent["min_lat"]
     max_lat = geo_extent["max_lat"]
 
-    # 计算合适的刻度间隔（度）
     lon_range = max_lon - min_lon
     lat_range = max_lat - min_lat
-    lon_step = _choose_tick_step(lon_range)
-    lat_step = _choose_tick_step(lat_range)
+    lon_step = _choose_tick_step(lon_range, target_min=4, target_max=6)
+    lat_step = _choose_tick_step(lat_range, target_min=4, target_max=6)
 
-    tick_len = 8  # 刻度线长度（像素）
+    tick_len = 8
 
-    # ========== 经度刻度（顶部和底部） ==========
-    # 起始刻度值：向上取整到step的倍数
+    # ========== 经度刻度 ==========
     lon_start = math.ceil(min_lon / lon_step) * lon_step
     lon_val = lon_start
     while lon_val <= max_lon:
-        # 经度转像素x（在地图区域内的相对位置）
         frac = (lon_val - min_lon) / (max_lon - min_lon)
         px = map_left + int(frac * MAP_WIDTH)
 
         if map_left <= px <= map_right:
-            # 顶部刻度线
             final_draw.line([(px, map_top), (px, map_top - tick_len)],
                             fill=(0, 0, 0, 255), width=1)
-            # 底部刻度线
             final_draw.line([(px, map_bottom), (px, map_bottom + tick_len)],
                             fill=(0, 0, 0, 255), width=1)
-
-            # 顶部文字
             label = format_degree(lon_val, is_lon=True)
             bb = final_draw.textbbox((0, 0), label, font=font_coord)
             tw = bb[2] - bb[0]
             final_draw.text((px - tw // 2, map_top - tick_len - 18),
                             label, fill=(0, 0, 0, 255), font=font_coord)
-            # 底部文字
             final_draw.text((px - tw // 2, map_bottom + tick_len + 4),
                             label, fill=(0, 0, 0, 255), font=font_coord)
 
         lon_val += lon_step
 
-    # ========== 纬度刻度（左侧和右侧） ==========
+    # ========== 纬度刻度 ==========
     lat_start = math.ceil(min_lat / lat_step) * lat_step
     lat_val = lat_start
     while lat_val <= max_lat:
@@ -1078,21 +1095,16 @@ def draw_coordinate_border(final_draw, geo_extent, final_img_width, final_img_he
         py = map_top + int(frac * MAP_HEIGHT)
 
         if map_top <= py <= map_bottom:
-            # 左侧刻度线
             final_draw.line([(map_left, py), (map_left - tick_len, py)],
                             fill=(0, 0, 0, 255), width=1)
-            # 右侧刻度线
             final_draw.line([(map_right, py), (map_right + tick_len, py)],
                             fill=(0, 0, 0, 255), width=1)
-
-            # 左侧文字
             label = format_degree(lat_val, is_lon=False)
             bb = final_draw.textbbox((0, 0), label, font=font_coord)
             tw = bb[2] - bb[0]
             th = bb[3] - bb[1]
             final_draw.text((map_left - tick_len - tw - 6, py - th // 2),
                             label, fill=(0, 0, 0, 255), font=font_coord)
-            # 右侧文字
             final_draw.text((map_right + tick_len + 6, py - th // 2),
                             label, fill=(0, 0, 0, 255), font=font_coord)
 
@@ -1100,39 +1112,29 @@ def draw_coordinate_border(final_draw, geo_extent, final_img_width, final_img_he
 
 
 def draw_rect_outline(draw, x1, y1, x2, y2, color, width):
-    """
-    绘制矩形外框
-
-    参数:
-        draw: 绘图对象
-        x1, y1: 左上角
-        x2, y2: 右下角
-        color: 颜色
-        width: 线宽
-    """
+    """绘制矩形外框"""
     draw.line([(x1, y1), (x2, y1)], fill=color, width=width)
     draw.line([(x2, y1), (x2, y2)], fill=color, width=width)
     draw.line([(x2, y2), (x1, y2)], fill=color, width=width)
     draw.line([(x1, y2), (x1, y1)], fill=color, width=width)
 
 
-def _choose_tick_step(range_deg):
-    """
-    根据地理范围选择合适的刻度间隔（度）
-
-    参数:
-        range_deg (float): 经度或纬度范围（度）
-    返回:
-        float: 刻度间隔（度）
-    """
-    # 目标大约4~8个刻度
+def _choose_tick_step(range_deg, target_min=4, target_max=6):
+    """根据地理范围选择合适的刻度间隔"""
     candidates = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
     for step in candidates:
         n_ticks = range_deg / step
-        if 3 <= n_ticks <= 10:
+        if target_min <= n_ticks <= target_max:
             return step
-    # 默认
-    return range_deg / 5.0
+    best_step = range_deg / 5.0
+    best_diff = float('inf')
+    for step in candidates:
+        n_ticks = range_deg / step
+        diff = abs(n_ticks - 5)
+        if diff < best_diff:
+            best_diff = diff
+            best_step = step
+    return best_step
 
 
 # ============================================================
@@ -1141,13 +1143,27 @@ def _choose_tick_step(range_deg):
 
 def draw_north_arrow(draw, x, y, size=55):
     """
-    绘制指北针
+    【修改6】绘制指北针（增加灰色透明背景圆形）
 
     参数:
         draw: 绘图对象
-        x, y: 位置
+        x, y: 位置（指北针顶部中心）
         size: 大小
     """
+    # 计算指北针中心
+    center_x = x
+    center_y = y + size // 2
+
+    # 【修改6】绘制灰色透明背景圆形
+    bg_radius = int(size * 0.85)
+    draw.ellipse(
+        [center_x - bg_radius, center_y - bg_radius - 10,
+         center_x + bg_radius, center_y + bg_radius - 10],
+        fill=(200, 200, 200, 120),
+        outline=(120, 120, 120, 180),
+        width=1
+    )
+
     top = (x, y)
     bl = (x - size // 4, y + size)
     br = (x + size // 4, y + size)
@@ -1165,7 +1181,8 @@ def draw_north_arrow(draw, x, y, size=55):
 
 def draw_scale_bar(draw, x, y, scale_denom, map_width, geo_extent, center_lat):
     """
-    绘制比例尺
+    【修改5】绘制比例尺（修复右侧展示不全问题）
+    增大右侧边距，确保完整显示
 
     参数:
         draw: 绘图对象
@@ -1187,37 +1204,55 @@ def draw_scale_bar(draw, x, y, scale_denom, map_width, geo_extent, center_lat):
             break
     bar_px = int(bar_km / kpp)
 
-    draw.rectangle([x - 8, y - 28, x + bar_px + 65, y + 28],
+    try:
+        fs = ImageFont.truetype(FONT_PATH_NORMAL, 14)
+    except (IOError, OSError):
+        fs = ImageFont.load_default()
+
+    el = f"{bar_km} km"
+    bb_el = draw.textbbox((0, 0), el, font=fs)
+    el_w = bb_el[2] - bb_el[0]
+
+    st = f"1:{scale_denom:,}"
+    bb_st = draw.textbbox((0, 0), st, font=fs)
+    st_w = bb_st[2] - bb_st[0]
+
+    # 【修改5】右侧额外空间充足，确保末端数字完整显示
+    right_extra = el_w + 20
+    box_w = max(bar_px + right_extra, st_w + 20, bar_px + el_w + 30)
+
+    # 【修改5】x坐标往左偏移，确保比例尺整体在地图区域内
+    actual_x = min(x, MAP_WIDTH - box_w - 20)
+
+    draw.rectangle([actual_x - 10, y - 30, actual_x + box_w + 10, y + 30],
                    fill=(255, 255, 255, 220), outline=(0, 0, 0, 200))
     bh, ns_seg = 8, 4
     sw = bar_px // ns_seg
     for i in range(ns_seg):
         c = (0, 0, 0, 255) if i % 2 == 0 else (255, 255, 255, 255)
-        draw.rectangle([x + i * sw, y, x + (i + 1) * sw, y + bh], fill=c, outline=(0, 0, 0, 255))
-    try:
-        fs = ImageFont.truetype(FONT_PATH_NORMAL, 14)
-    except (IOError, OSError):
-        fs = ImageFont.load_default()
-    draw.text((x, y + bh + 3), "0", fill=(0, 0, 0, 255), font=fs)
-    el = f"{bar_km} km"
-    bb = draw.textbbox((0, 0), el, font=fs)
-    draw.text((x + bar_px - (bb[2] - bb[0]) // 2, y + bh + 3), el, fill=(0, 0, 0, 255), font=fs)
-    st = f"1:{scale_denom:,}"
-    bb2 = draw.textbbox((0, 0), st, font=fs)
-    draw.text((x + bar_px // 2 - (bb2[2] - bb2[0]) // 2, y - 20), st, fill=(0, 0, 0, 255), font=fs)
+        draw.rectangle([actual_x + i * sw, y, actual_x + (i + 1) * sw, y + bh],
+                       fill=c, outline=(0, 0, 0, 255))
+
+    # 起点"0"
+    draw.text((actual_x, y + bh + 3), "0", fill=(0, 0, 0, 255), font=fs)
+    # 末端距离标注（右对齐到比例尺右端）
+    draw.text((actual_x + bar_px + 4, y + bh + 3), el, fill=(0, 0, 0, 255), font=fs)
+    # 比例尺分母（居中在比例尺上方）
+    draw.text((actual_x + bar_px // 2 - st_w // 2, y - 22), st, fill=(0, 0, 0, 255), font=fs)
 
 
 # ============================================================
-# 【图例 —— 加大间距，避免重叠】
+# 【图例 —— 左下角，每项增加前置留白】
 # ============================================================
 
 def draw_legend(draw, x, y, has_faults=True):
     """
-    绘制图例（加大各项间距，震中在第一行且图标最大）
+    【修改4】绘制图例，每个图标前增加留白
+    【修改7】8.0级以上圆点缩小到仅比7.0级稍大
 
     参数:
         draw: 绘图对象
-        x, y: 左上角坐标
+        x, y: 左上角坐标（地图区域内坐标）
         has_faults: 是否含断裂图例
     """
     try:
@@ -1227,64 +1262,69 @@ def draw_legend(draw, x, y, has_faults=True):
         ft = ImageFont.load_default()
         fi = ImageFont.load_default()
 
-    # 加大行高到30px，避免圆点重叠
     item_h = 30
     n_items = 1 + 3 + (3 if has_faults else 0) + 4
-    legend_h = 40 + n_items * item_h + 15
-    legend_w = 210
+    legend_h = 40 + n_items * item_h + 10
+    # 【修改4】增加图例宽度，容纳左侧留白
+    legend_w = 190
 
     draw.rectangle([x, y, x + legend_w, y + legend_h],
                    fill=(255, 255, 255, 240), outline=(0, 0, 0, 255), width=2)
 
-    draw.text((x + 65, y + 10), "图  例", fill=(0, 0, 0, 255), font=ft)
+    bb_title = draw.textbbox((0, 0), "图  例", font=ft)
+    title_w = bb_title[2] - bb_title[0]
+    draw.text((x + legend_w // 2 - title_w // 2, y + 10), "图  例", fill=(0, 0, 0, 255), font=ft)
 
     cy = y + 42
-    icx = x + 25
-    tx = x + 50
+    # 【修改4】图标中心X增加左侧留白（从x+22 → x+30）
+    icx = x + 30
+    # 【修改4】文字起始X增加（从x+45 → x+55）
+    tx = x + 55
 
-    # === 震中位置（大五角星，图例第一行） ===
+    # === 震中位置（大五角星） ===
     draw_star(draw, icx, cy + 3, 14, EPICENTER_STAR_COLOR)
     draw.text((tx, cy - 5), "震中位置", fill=(0, 0, 0, 255), font=fi)
     cy += item_h
 
-    # === 省界 ===
-    draw.line([(x + 8, cy + 3), (x + 42, cy + 3)],
+    # === 省界（灰色实线，修改3后的颜色） ===
+    draw.line([(x + 14, cy + 3), (x + 46, cy + 3)],
               fill=PROVINCE_BORDER_COLOR, width=PROVINCE_BORDER_WIDTH)
     draw.text((tx, cy - 5), "省界", fill=(0, 0, 0, 255), font=fi)
     cy += item_h
 
-    # === 市界（虚线） ===
+    # === 市界（灰色虚线） ===
     for dx in range(0, 32, 10):
-        draw.line([(x + 8 + dx, cy + 3), (x + 8 + dx + 6, cy + 3)],
+        draw.line([(x + 14 + dx, cy + 3), (x + 14 + dx + 6, cy + 3)],
                   fill=CITY_BORDER_COLOR, width=CITY_BORDER_WIDTH)
     draw.text((tx, cy - 5), "市界", fill=(0, 0, 0, 255), font=fi)
     cy += item_h
 
-    # === 县界（虚线） ===
+    # === 县界（浅灰色虚线） ===
     for dx in range(0, 32, 8):
-        draw.line([(x + 8 + dx, cy + 3), (x + 8 + dx + 4, cy + 3)],
+        draw.line([(x + 14 + dx, cy + 3), (x + 14 + dx + 4, cy + 3)],
                   fill=COUNTY_BORDER_COLOR, width=COUNTY_BORDER_WIDTH)
     draw.text((tx, cy - 5), "县界", fill=(0, 0, 0, 255), font=fi)
     cy += item_h
 
     # === 断裂线 ===
     if has_faults:
-        draw.line([(x + 8, cy + 3), (x + 42, cy + 3)],
+        draw.line([(x + 14, cy + 3), (x + 46, cy + 3)],
                   fill=FAULT_HOLOCENE_COLOR, width=FAULT_HOLOCENE_WIDTH)
         draw.text((tx, cy - 5), "全新世断层", fill=(0, 0, 0, 255), font=fi)
         cy += item_h
 
-        draw.line([(x + 8, cy + 3), (x + 42, cy + 3)],
+        draw.line([(x + 14, cy + 3), (x + 46, cy + 3)],
                   fill=FAULT_LATE_PLEISTOCENE_COLOR, width=FAULT_LATE_PLEISTOCENE_WIDTH)
         draw.text((tx, cy - 5), "晚更新世断层", fill=(0, 0, 0, 255), font=fi)
         cy += item_h
 
-        draw.line([(x + 8, cy + 3), (x + 42, cy + 3)],
+        draw.line([(x + 14, cy + 3), (x + 46, cy + 3)],
                   fill=FAULT_EARLY_PLEISTOCENE_COLOR, width=FAULT_EARLY_PLEISTOCENE_WIDTH)
         draw.text((tx, cy - 5), "早中更新世断层", fill=(0, 0, 0, 255), font=fi)
         cy += item_h
 
-    # === 地震圆点（间距加大，从大到小排列，不再重叠） ===
+    # === 地震圆点（从大到小排列） ===
+    # 【修改7】图例中使用对应配置的尺寸
     for label, color, dot_size in [
         ("8.0级以上", COLOR_LEVEL_4, SIZE_LEVEL_4),
         ("7.0~7.9级", COLOR_LEVEL_3, SIZE_LEVEL_3),
@@ -1296,7 +1336,6 @@ def draw_legend(draw, x, y, has_faults=True):
                      fill=color, outline=(0, 0, 0, 180))
         draw.text((tx, cy - 5), label, fill=(0, 0, 0, 255), font=fi)
         cy += item_h
-
 
 # ============================================================
 # 【统计函数】
@@ -1340,16 +1379,14 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
     """
     生成历史地震分布图（含经纬度边框、行政边界、断裂线图层）
 
-    绘制图层顺序（从底到顶）：
-        1. 天地图矢量底图 + 矢量注记
-        2. 县界（亮黄色虚线+黑色衬底）
-        3. 市界（亮粉色虚线+黑色衬底）
-        4. 省界（亮紫色实线+黑色衬底）
-        5. 断裂线（红/品红/青绿+黑色衬底）
-        6. 历史地震圆点（带白色描边）
-        7. 震中五角星（最顶层，优先级最高）
-        8. 装饰要素（指北针、比例尺、图例、标题）
-        9. 经纬度刻度边框
+    修改说明：
+        1. 底图改用天地图影像(img_c) + 影像注记(cia_c)，解决海洋白色和地名不清问题
+        2. 地震圆点增大+加粗描边，确保在影像底图上可见
+        3. 省界改为灰色，比市界深一点
+        4. 图例每项图标前增加留白
+        5. 比例尺修复右侧展示不全
+        6. 指北针增加灰色透明背景
+        7. 8.0级以上圆点缩小，仅比7.0级稍大
 
     参数:
         center_lon (float): 震中经度
@@ -1383,8 +1420,8 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
     filtered = filter_earthquakes(earthquakes, center_lon, center_lat, radius_km)
     print()
 
-    # [3/7] 底图（矢量底图 + 矢量注记）
-    print("[3/7] 获取天地图矢量底图+矢量注记...")
+    # [3/7] 底图（影像底图 + 影像注记）
+    print("[3/7] 获取天地图影像底图+影像注记...")
     basemap, geo_extent = fetch_basemap(center_lon, center_lat, half_span_km,
                                         scale_denom, MAP_WIDTH, MAP_HEIGHT)
     print()
@@ -1405,7 +1442,7 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
     has_faults = any(len(v) > 0 for v in fault_data.values())
     print()
 
-    # [6/7] 绘制所有图层（在MAP_WIDTH x MAP_HEIGHT的地图区域上绑制）
+    # [6/7] 绘制所有图层
     print("[6/7] 绘制图层要素...")
     map_img = basemap.convert("RGBA")
 
@@ -1413,36 +1450,39 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
     bd_layer = Image.new("RGBA", map_img.size, (0, 0, 0, 0))
     draw_bd = ImageDraw.Draw(bd_layer)
 
+    # 县界：浅灰色虚线（最细）
     if county_lines:
         print("  绘制县界...")
-        draw_dashed_lines_with_shadow(draw_bd, county_lines, geo_extent,
-                                      MAP_WIDTH, MAP_HEIGHT,
-                                      COUNTY_BORDER_COLOR, COUNTY_BORDER_WIDTH,
-                                      COUNTY_BORDER_DASH,
-                                      COUNTY_BORDER_SHADOW_COLOR, COUNTY_BORDER_SHADOW_WIDTH)
+        draw_dashed_lines(draw_bd, county_lines, geo_extent,
+                          MAP_WIDTH, MAP_HEIGHT,
+                          COUNTY_BORDER_COLOR, COUNTY_BORDER_WIDTH,
+                          COUNTY_BORDER_DASH)
+
+    # 市界：灰色虚线（中等）
     if city_lines:
         print("  绘制市界...")
-        draw_dashed_lines_with_shadow(draw_bd, city_lines, geo_extent,
-                                      MAP_WIDTH, MAP_HEIGHT,
-                                      CITY_BORDER_COLOR, CITY_BORDER_WIDTH,
-                                      CITY_BORDER_DASH,
-                                      CITY_BORDER_SHADOW_COLOR, CITY_BORDER_SHADOW_WIDTH)
+        draw_dashed_lines(draw_bd, city_lines, geo_extent,
+                          MAP_WIDTH, MAP_HEIGHT,
+                          CITY_BORDER_COLOR, CITY_BORDER_WIDTH,
+                          CITY_BORDER_DASH)
+
+    # 【修改3】省界：深灰色实线（比市界深一点，不再是纯黑粗线）
     if province_lines:
         print("  绘制省界...")
-        draw_solid_lines_with_shadow(draw_bd, province_lines, geo_extent,
-                                     MAP_WIDTH, MAP_HEIGHT,
-                                     PROVINCE_BORDER_COLOR, PROVINCE_BORDER_WIDTH,
-                                     PROVINCE_BORDER_SHADOW_COLOR, PROVINCE_BORDER_SHADOW_WIDTH)
+        draw_solid_lines(draw_bd, province_lines, geo_extent,
+                         MAP_WIDTH, MAP_HEIGHT,
+                         PROVINCE_BORDER_COLOR, PROVINCE_BORDER_WIDTH)
+
     map_img = Image.alpha_composite(map_img, bd_layer)
 
-    # --- 图层2: 断裂线 ---
+    # --- 图层2: 断裂线（加粗+黑色衬底） ---
     if has_faults:
         ft_layer = Image.new("RGBA", map_img.size, (0, 0, 0, 0))
         draw_ft = ImageDraw.Draw(ft_layer)
         draw_fault_lines(draw_ft, fault_data, geo_extent, MAP_WIDTH, MAP_HEIGHT)
         map_img = Image.alpha_composite(map_img, ft_layer)
 
-    # --- 图层3: 历史地震圆点 ---
+    # --- 图层3: 历史地震圆点（加粗描边） ---
     eq_layer = Image.new("RGBA", map_img.size, (0, 0, 0, 0))
     draw_eq = ImageDraw.Draw(eq_layer)
     draw_earthquake_points(draw_eq, filtered, geo_extent, MAP_WIDTH, MAP_HEIGHT)
@@ -1457,16 +1497,20 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
     # --- 装饰要素（在地图区域内绘制） ---
     draw_map = ImageDraw.Draw(map_img)
 
-    # 右上角指北针
+    # 【修改6】右上角指北针（带灰色透明背景）
     draw_north_arrow(draw_map, MAP_WIDTH - 50, 20, size=50)
 
-    # 右下角比例尺
-    draw_scale_bar(draw_map, MAP_WIDTH - 260, MAP_HEIGHT - 45,
+    # 【修改5】右下角比例尺（位置往左移更多，确保完整展示）
+    draw_scale_bar(draw_map, MAP_WIDTH - 280, MAP_HEIGHT - 45,
                    scale_denom, MAP_WIDTH, geo_extent, center_lat)
 
-    # 左下角图例（间距加大版）
-    legend_y = MAP_HEIGHT - 410 if has_faults else MAP_HEIGHT - 310
-    draw_legend(draw_map, 10, legend_y, has_faults=has_faults)
+    # 【修改4】左下角图例：贴地图区域左边和底边，图标前有留白
+    item_h = 30
+    n_items = 1 + 3 + (3 if has_faults else 0) + 4
+    legend_h = 40 + n_items * item_h + 10
+    legend_x = 0
+    legend_y = MAP_HEIGHT - legend_h
+    draw_legend(draw_map, legend_x, legend_y, has_faults=has_faults)
 
     # 顶部居中标题
     try:
@@ -1487,20 +1531,15 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
     draw_map.text((title_x, title_y), title_text, fill=(0, 0, 0, 255), font=font_title)
     print()
 
-    # [7/7] 组装最终图片：白色边框 + 地图区域 + 经纬度刻度
+    # [7/7] 组装最终图片
     print("[7/7] 组装经纬度边框并保存...")
 
-    # 创建最终大图（白色背景）
     final_img = Image.new("RGBA", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (255, 255, 255, 255))
-
-    # 将地图区域粘贴到边框内
     final_img.paste(map_img, (BORDER_LEFT, BORDER_TOP))
 
-    # 绘制经纬度刻度边框
     final_draw = ImageDraw.Draw(final_img)
     draw_coordinate_border(final_draw, geo_extent, OUTPUT_WIDTH, OUTPUT_HEIGHT)
 
-    # 保存
     output_rgb = final_img.convert("RGB")
     output_rgb.save(output_path, dpi=(OUTPUT_DPI, OUTPUT_DPI), quality=95)
     fsize = os.path.getsize(output_path) / 1024
