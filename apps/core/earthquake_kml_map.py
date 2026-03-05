@@ -85,24 +85,99 @@
 
 
 '''
+'''
+你好，你是一名优秀的程序员和地质专家。
+基于QGIS 3.40.15使用python将信息系统GIS中的.kml添加底图+省、市、县界+断裂，然后根据要求输出png图
+说明：
+	实现步骤如下：
+    (1).kml文件的xml格式打开是这样的：
+	<?xml version="1.0" encoding="UTF-8"?>
+	<kml xmlns="http://www.opengis.net/kml/2.2">
+	<Document>
+	<Placemark><name>4度</name>
+	<description></description>
+	<LineString><coordinates>
+	114.78551111594,39.444015151372,0 114.78440837926,39.4460985825,0 114.78327632395,39.448172529053,0 114.78211508894,...
+	</coordinates></LineString>
+	</Placemark>
+	<Placemark><name>5度</name>
+	<description></description>
+	<LineString><coordinates>
+	114.54659841049,39.369129104779,0 114.54620255623,39.369877072372,...
+	</coordinates></LineString>
+	</Placemark>
+	<Placemark><name>6度</name>
+	<description></description>
+	<LineString><coordinates>
+	114.42167259312,39.329939431831,0 114.42160044682,39.330076196429,0 114.421526587,...
+	</coordinates></LineString>
+	</Placemark>
+	</Document>
+	</kml>
+    从该xml中可以获取到烈度 比如说4度，5度，6度(在qgis中显示为烈度圈)，
+    需要获取所有的烈度(烈度圈一定是一圈套一圈，越外层烈度依次递减)
+	2）底图(使用天地图矢量底图+矢量注记)：
+		TIANDITU_TK = "1ef76ef90c6eb961cb49618f9b1a399d"
+		# 矢量底图URL
+		TIANDITU_VEC_URL = (
+			"http://t{s}.tianditu.gov.cn/vec_c/wmts?"
+			"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+			"&LAYER=vec&STYLE=default&TILEMATRIXSET=c"
+			"&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
+			"&tk=" + TIANDITU_TK
+		)
+
+		# 矢量注记URL
+		TIANDITU_CVA_URL = (
+			"http://t{s}.tianditu.gov.cn/cva_c/wmts?"
+			"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+			"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
+			"&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
+			"&tk=" + TIANDITU_TK
+		)
+	3）指北针放在底图的右上角，白色背景，指针左侧是黑色右侧是白色，上边和底图对齐，右侧和底图对齐，参考制图布局参考图2.png
+	4）烈度使用罗马数字(I（1）、V（5）、X（10）...)
+	5）字体字号(所有字体，英文用times New Roman，中文用宋体，图例两个字用黑体)
+	6）右上角说明说明文字为用户输出+分析得出(文字不会超过450字)，注意说明文字字号可以使用常量设置，左右缩进 文字不能超过输出的画布，首字缩进2个字符
+		用户输入：据中国地震台网正式测定:2026年01月26日14时56分甘隶甘南州选部县(103.25",34.06')发生5.5级地震,震源深度10千米。综合考虑震中附近地质构造背景、地震波衰减特性，估计了本次地震的地震动预测图。预计极震区地震烈度可达X度，极震区面积估算为X平方千米,地震烈度VI度以上区域面积达X平方千米。
+
+		需要分析的是极震区地震烈度可达X度为最大烈度，极震区面积估算为X平方千米为最大烈度面积，
+		地震烈度VI度以上区域面积达X平方千米为烈度VI度以上区域的面积
+	7）比例尺使用线段比例尺，放在图右下位置，下面为制图时间：XX年XX月XX日(当前时间)
+	说明：省界shp文件位置：../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp
+	      市界shp文件位置：../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp
+	      县界shp文件位置：../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp
+		  全国六代图断裂位置:../../data/geology/断层/全国六代图断裂.KMZ
+	8）比例尺使用线段比例尺，根据用户传入的震级动态调整比例尺比值。
+	说明：震级M＜6时，比例尺设置为1：150000，震级6≤M＜7时，比例尺设置为1：500000；震级M≥7时，比例尺设置为1：1500000
+
+	省界、市界、县界、全国六代图断裂位置使用常量，kml文件、说明文字通过传参
+	注释是中文注释，要求方法和参数需要有中文注释
+	代码需要无bug可运行，并写出测试方法，代码分四部分输出。
+	图例参考：代码earthquake_map.py，但是在该制图图例在图正下方，图例标题 三行四列布局 超过12个图例不展示，烈度图例用线段表示
+	布局参考图：制图布局参考图2.png
+
+┌─────────────────────────────────┐─────────────────┤
+│                         N(指北针)│  说明文字（9pt宋体│
+│                                 │  首行2字缩进      │
+│          地图框                  │   总字数≤450字）
+│  (含天地图底图+省市县界+           │                  │
+│   断裂+烈度圈+震中)               │                  │
+│                                 │                  │
+│                                 │  比例尺（动态档位） │
+│                                 │  制图日期         │
+├─────────────────────────────────┴──────────────────┤
+│           图例（三行四列，黑体标题"图  例"）            │
+└────────────────────────────────────────────────────┤
+
+
+'''
 # -*- coding: utf-8 -*-
 """
 地震烈度图生成脚本（基于Python + Pillow + QGIS风格布局）
 功能：根据用户输入的KML烈度圈文件，绘制地震烈度分布图，
       叠加天地图底图、省界、市界、县界、断裂图层，
       带经纬度边框、指北针、比例尺、图例、说明文字，并输出PNG图片。
-
-依赖安装：pip install Pillow requests pyshp lxml
-作者：acao123
-日期：2026-03-05
-"""
-
-# -*- coding: utf-8 -*-
-"""
-地震烈度图生成脚本（基于Python + Pillow + QGIS风格布局）
-功能：根据用户输入的KML烈度圈文件，绘制地震烈度分布图，
-      叠加天地图底图、省界、市界、县界、断裂图层，
-      带经纬度��框、指北针、比例尺、图例、说明文字，并输出PNG图片。
 
 依赖安装：pip install Pillow requests pyshp lxml
 作者：acao123
@@ -207,16 +282,16 @@ FONT_PATH_TIMES = "C:/Windows/Fonts/times.ttf"
 # ============================================================
 
 # 说明文字字号常量
-INFO_TEXT_FONT_SIZE = 14
+INFO_TEXT_FONT_SIZE = 18
 
 # 图例标题"图 例"字体大小
-LEGEND_TITLE_FONT_SIZE = 16
+LEGEND_TITLE_FONT_SIZE = 20
 
 # 图例内容文字字体大小
-LEGEND_ITEM_FONT_SIZE = 11
+LEGEND_ITEM_FONT_SIZE = 16
 
 # 制图日期字体大小
-DATE_FONT_SIZE = 11
+DATE_FONT_SIZE = 18
 
 # ============================================================
 # 【行政边界线样式】
@@ -299,7 +374,7 @@ for _z in range(1, 19):
 
 def int_to_roman(num):
     """
-    将阿拉��数字转换为罗马数字
+    将阿拉伯数字转换为罗马数字
 
     参数:
         num (int): 阿拉伯数字（1-12）
@@ -456,6 +531,7 @@ def load_font(font_path, size, fallback_path=None):
                 pass
         return ImageFont.load_default()
 
+
 # ============================================================
 # 【天地图瓦片函数】
 # ============================================================
@@ -551,7 +627,6 @@ def download_tile_with_retry(url_template, zoom, tile_col, tile_row, retries=TIL
             else:
                 print(f"    瓦片失败: z={zoom} col={tile_col} row={tile_row}: {e}")
     return None
-
 
 def fetch_basemap(geo_extent, img_width, img_height):
     """
@@ -1078,7 +1153,6 @@ def _extract_all_linestring_coords(pm, nsmap, ns):
                 all_lines.append(pts)
     return all_lines
 
-
 # ============================================================
 # 【绘制函数】
 # ============================================================
@@ -1572,13 +1646,15 @@ def _wrap_text_with_indent(text, font, max_width, draw, indent_chars=2):
 
     return lines
 
+
 # ============================================================
-# 【底部图例绘制】
+# 【底部图例绘制】- 修改：整体居中，具体图例项左对齐
 # ============================================================
 
 def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
     """
-    绘制底部图例（三行四列布局，最多12个图例项，内容居中显示）
+    绘制底部图例（三行四列布局，最多12个图例项）
+    整体在单元格内居中对齐，但每个具体图例项内部是左对齐（图标在左，文字在右）
 
     参数:
         draw: ImageDraw对象
@@ -1636,91 +1712,109 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
     # 只显示前12个
     legend_items = legend_items[:12]
 
-    # 计算每个图例项的实际宽度，用于居中
+    # 图标宽度和间距常量
     icon_width = 25  # 图标宽度
     text_gap = 5     # 图标和文字之间的间距
 
-    for idx, item in enumerate(legend_items):
-        row = idx // cols
-        col = idx % cols
-
-        # 计算当前单元格中心位置
-        cell_center_x = x + col * col_width + col_width // 2
-        item_y = start_y + row * row_height + row_height // 2
-
+    # 首先计算所有图例项的宽度，找出最大宽度用于统一对齐
+    item_widths = []
+    for item in legend_items:
         item_type = item[0]
         label = item[1]
 
         # 计算文字宽度
         text_bbox = draw.textbbox((0, 0), label, font=item_font)
         text_width = text_bbox[2] - text_bbox[0]
-        text_height = text_bbox[3] - text_bbox[1]
 
-        # 计算整个图例项（图标+间距+文字）的总宽度
+        # 计算整个图例项的总宽度
         if item_type == "epicenter":
             total_width = 10 + text_gap + text_width  # 圆点直径10
         else:
             total_width = icon_width + text_gap + text_width
 
-        # 计算图标起始位置（居中）
-        item_x = cell_center_x - total_width // 2
+        item_widths.append(total_width)
 
-        # 绘制图例图标
+    for idx, item in enumerate(legend_items):
+        row = idx // cols
+        col = idx % cols
+
+        # 计算当前单元格的位置
+        cell_left = x + col * col_width
+        cell_center_x = cell_left + col_width // 2
+        item_y = start_y + row * row_height + row_height // 2
+
+        item_type = item[0]
+        label = item[1]
+
+        # 获取当前项的宽度
+        total_width = item_widths[idx]
+
+        # 计算文字高度用于垂直居中
+        text_bbox = draw.textbbox((0, 0), label, font=item_font)
+        text_height = text_bbox[3] - text_bbox[1]
+
+        # 【关键修改】整体居中：计算图例项的起始X位置，使整体在单元格内居中
+        # 但图例项内部保持左对齐（图标在左，文字紧跟在右）
+        item_start_x = cell_center_x - total_width // 2
+
+        # 绘制图例图标（从item_start_x开始，保持内部左对齐）
         if item_type == "epicenter":
             # 震中：红色实心圆
             r = 5
-            draw.ellipse([item_x, item_y - r, item_x + r * 2, item_y + r],
+            draw.ellipse([item_start_x, item_y - r, item_start_x + r * 2, item_y + r],
                          fill=EPICENTER_COLOR, outline=(0, 0, 0, 255))
-            text_x = item_x + r * 2 + text_gap
+            text_x = item_start_x + r * 2 + text_gap
 
         elif item_type == "intensity":
             # 烈度圈：线段
             intensity = item[2]
             color = INTENSITY_COLORS.get(intensity, (255, 0, 0, 200))
-            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
+            draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=color, width=INTENSITY_LINE_WIDTH)
-            text_x = item_x + icon_width + text_gap
+            text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "fault_holocene":
             # 全新世断层：使用与图层一致的颜色
-            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
+            draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=FAULT_HOLOCENE_COLOR, width=FAULT_HOLOCENE_WIDTH)
-            text_x = item_x + icon_width + text_gap
+            text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "fault_late":
             # 晚更新世断层：使用与图层一致的颜色
-            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
+            draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=FAULT_LATE_PLEISTOCENE_COLOR, width=FAULT_LATE_PLEISTOCENE_WIDTH)
-            text_x = item_x + icon_width + text_gap
+            text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "fault_early":
             # 早中更新世断层：使用与图层一致的颜色
-            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
+            draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=FAULT_EARLY_PLEISTOCENE_COLOR, width=FAULT_EARLY_PLEISTOCENE_WIDTH)
-            text_x = item_x + icon_width + text_gap
+            text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "province":
-            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
+            # 省界：实线
+            draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=PROVINCE_BORDER_COLOR, width=PROVINCE_BORDER_WIDTH)
-            text_x = item_x + icon_width + text_gap
+            text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "city":
-            # 虚线
+            # 市界：虚线
             for dx in range(0, icon_width, 8):
-                draw.line([(item_x + dx, item_y), (item_x + dx + 5, item_y)],
+                draw.line([(item_start_x + dx, item_y), (item_start_x + dx + 5, item_y)],
                           fill=CITY_BORDER_COLOR, width=CITY_BORDER_WIDTH)
-            text_x = item_x + icon_width + text_gap
+            text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "county":
+            # 县界：虚线
             for dx in range(0, icon_width, 6):
-                draw.line([(item_x + dx, item_y), (item_x + dx + 3, item_y)],
+                draw.line([(item_start_x + dx, item_y), (item_start_x + dx + 3, item_y)],
                           fill=COUNTY_BORDER_COLOR, width=COUNTY_BORDER_WIDTH)
-            text_x = item_x + icon_width + text_gap
+            text_x = item_start_x + icon_width + text_gap
 
         else:
-            text_x = item_x
+            text_x = item_start_x
 
-        # 绘制文字标签（垂直居中）
+        # 绘制文字标签（垂直居中，水平紧跟图标）
         draw.text((text_x, item_y - text_height // 2), label, fill=(0, 0, 0, 255), font=item_font)
 
 
@@ -1752,7 +1846,6 @@ def generate_analysis_text(intensity_data, areas):
                 f"地震烈度VI度以上区域面积达{vi_above_area:.0f}平方千米。")
 
     return analysis
-
 
 # ============================================================
 # 【主函数】
