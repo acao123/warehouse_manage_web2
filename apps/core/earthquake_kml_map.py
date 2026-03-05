@@ -97,6 +97,18 @@
 日期：2026-03-05
 """
 
+# -*- coding: utf-8 -*-
+"""
+地震烈度图生成脚本（基于Python + Pillow + QGIS风格布局）
+功能：根据用户输入的KML烈度圈文件，绘制地震烈度分布图，
+      叠加天地图底图、省界、市界、县界、断裂图层，
+      带经纬度��框、指北针、比例尺、图例、说明文字，并输出PNG图片。
+
+依赖安装：pip install Pillow requests pyshp lxml
+作者：acao123
+日期：2026-03-05
+"""
+
 import os
 import sys
 import math
@@ -167,6 +179,9 @@ OUTPUT_DPI = 150
 TILE_TIMEOUT = 20
 TILE_RETRY = 3
 
+# 地图边框线宽（像素）- 用于统一地图框和图例框的线宽
+MAP_BORDER_WIDTH = 2
+
 # ============================================================
 # 【SHP文件路径常量】
 # ============================================================
@@ -187,8 +202,21 @@ FONT_PATH_SONGTI = "C:/Windows/Fonts/simsun.ttc"
 # Times New Roman（英文用）
 FONT_PATH_TIMES = "C:/Windows/Fonts/times.ttf"
 
+# ============================================================
+# 【字体大小常量】
+# ============================================================
+
 # 说明文字字号常量
 INFO_TEXT_FONT_SIZE = 14
+
+# 图例标题"图 例"字体大小
+LEGEND_TITLE_FONT_SIZE = 16
+
+# 图例内容文字字体大小
+LEGEND_ITEM_FONT_SIZE = 11
+
+# 制图日期字体大小
+DATE_FONT_SIZE = 11
 
 # ============================================================
 # 【行政边界线样式】
@@ -209,25 +237,23 @@ COUNTY_BORDER_WIDTH = 1
 COUNTY_BORDER_DASH = (8, 4)
 
 # ============================================================
-# 【断裂线样式】
+# 【断裂线样式】- 统一图层和图例颜色
 # ============================================================
 
-FAULT_HOLOCENE_COLOR = (255, 50, 50, 255)
-FAULT_HOLOCENE_WIDTH = 3
-FAULT_HOLOCENE_SHADOW_COLOR = (0, 0, 0, 160)
-FAULT_HOLOCENE_SHADOW_WIDTH = 5
+# 全新世断层：红色
+FAULT_HOLOCENE_COLOR = (255, 0, 0, 255)
+FAULT_HOLOCENE_WIDTH = 2
 
+# 晚更新世断层：紫红色
 FAULT_LATE_PLEISTOCENE_COLOR = (255, 0, 255, 255)
-FAULT_LATE_PLEISTOCENE_WIDTH = 3
-FAULT_LATE_PLEISTOCENE_SHADOW_COLOR = (0, 0, 0, 160)
-FAULT_LATE_PLEISTOCENE_SHADOW_WIDTH = 5
+FAULT_LATE_PLEISTOCENE_WIDTH = 2
 
-FAULT_EARLY_PLEISTOCENE_COLOR = (0, 255, 150, 255)
-FAULT_EARLY_PLEISTOCENE_WIDTH = 3
-FAULT_EARLY_PLEISTOCENE_SHADOW_COLOR = (0, 0, 0, 160)
-FAULT_EARLY_PLEISTOCENE_SHADOW_WIDTH = 5
+# 早中更新世断层：青绿色
+FAULT_EARLY_PLEISTOCENE_COLOR = (0, 200, 150, 255)
+FAULT_EARLY_PLEISTOCENE_WIDTH = 2
 
-FAULT_DEFAULT_COLOR = (255, 200, 50, 220)
+# 默认断层颜色
+FAULT_DEFAULT_COLOR = (200, 150, 50, 220)
 FAULT_DEFAULT_WIDTH = 2
 
 # ============================================================
@@ -250,7 +276,7 @@ INTENSITY_COLORS = {
 INTENSITY_LINE_WIDTH = 3
 
 # ============================================================
-# 【震中标记样式���
+# 【震中标记样式】
 # ============================================================
 
 EPICENTER_COLOR = (255, 0, 0, 255)
@@ -273,7 +299,7 @@ for _z in range(1, 19):
 
 def int_to_roman(num):
     """
-    将阿拉伯数字转换为罗马数字
+    将阿拉��数字转换为罗马数字
 
     参数:
         num (int): 阿拉伯数字（1-12）
@@ -429,7 +455,6 @@ def load_font(font_path, size, fallback_path=None):
             except (IOError, OSError):
                 pass
         return ImageFont.load_default()
-
 
 # ============================================================
 # 【天地图瓦片函数】
@@ -840,7 +865,7 @@ def calculate_epicenter(intensity_data):
 
 
 # ============================================================
-# 【SHP文件读���函数】
+# 【SHP文件读取函数】
 # ============================================================
 
 def read_shapefile_lines(shp_path, geo_extent):
@@ -1124,22 +1149,9 @@ def _draw_dashed_polyline(draw, pts, color, width, dash):
             acc += step
 
 
-def draw_solid_lines_with_shadow(draw, lines, geo_extent, img_w, img_h,
-                                 color, width, shadow_color, shadow_width):
-    """绘制带黑色衬底的实线"""
-    for line in lines:
-        pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in line]
-        if len(pts) >= 2:
-            draw.line(pts, fill=shadow_color, width=shadow_width)
-    for line in lines:
-        pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in line]
-        if len(pts) >= 2:
-            draw.line(pts, fill=color, width=width)
-
-
 def draw_fault_lines(draw, fault_data, geo_extent, img_w, img_h):
     """
-    绘制断裂线
+    绘制断裂线（颜色与图例一致）
 
     参数:
         draw: ImageDraw对象
@@ -1148,21 +1160,19 @@ def draw_fault_lines(draw, fault_data, geo_extent, img_w, img_h):
         img_w (int): 图片宽度
         img_h (int): 图片高度
     """
-    sm = {
-        "holocene": (FAULT_HOLOCENE_COLOR, FAULT_HOLOCENE_WIDTH,
-                     FAULT_HOLOCENE_SHADOW_COLOR, FAULT_HOLOCENE_SHADOW_WIDTH),
-        "late_pleistocene": (FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH,
-                             FAULT_LATE_PLEISTOCENE_SHADOW_COLOR, FAULT_LATE_PLEISTOCENE_SHADOW_WIDTH),
-        "early_pleistocene": (FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH,
-                              FAULT_EARLY_PLEISTOCENE_SHADOW_COLOR, FAULT_EARLY_PLEISTOCENE_SHADOW_WIDTH),
-        "default": (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH, (0, 0, 0, 100), FAULT_DEFAULT_WIDTH + 2),
+    # 使用与图例一致的颜色常量
+    style_map = {
+        "holocene": (FAULT_HOLOCENE_COLOR, FAULT_HOLOCENE_WIDTH),
+        "late_pleistocene": (FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH),
+        "early_pleistocene": (FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH),
+        "default": (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH),
     }
+
     for ftype, lines in fault_data.items():
         if not lines:
             continue
-        c, w, sc, sw = sm.get(ftype, (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH, (0, 0, 0, 100),
-                                      FAULT_DEFAULT_WIDTH + 2))
-        draw_solid_lines_with_shadow(draw, lines, geo_extent, img_w, img_h, c, w, sc, sw)
+        color, width = style_map.get(ftype, (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH))
+        draw_solid_lines(draw, lines, geo_extent, img_w, img_h, color, width)
 
 
 def draw_intensity_circles(draw, intensity_data, geo_extent, img_w, img_h):
@@ -1272,24 +1282,24 @@ def draw_north_arrow(draw, x, y, size=50):
 
     参数:
         draw: ImageDraw对象
-        x (int): 右上角X坐标
-        y (int): 右上角Y坐标
+        x (int): 中心X坐标
+        y (int): 上边缘Y坐标
         size (int): 指北针大小
     """
     # 白色背景
     bg_padding = 8
     bg_x1 = x - size // 2 - bg_padding
-    bg_y1 = y - bg_padding
+    bg_y1 = y
     bg_x2 = x + size // 2 + bg_padding
-    bg_y2 = y + size + bg_padding + 15
+    bg_y2 = y + size + bg_padding + 20
 
     draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2],
                    fill=(255, 255, 255, 255), outline=(0, 0, 0, 255), width=1)
 
     # 指北针箭头
     center_x = x
-    arrow_top = y + 15
-    arrow_bottom = y + size + 5
+    arrow_top = y + 20
+    arrow_bottom = y + size + 10
     arrow_width = size // 4
 
     # 左半边（黑色）
@@ -1312,7 +1322,7 @@ def draw_north_arrow(draw, x, y, size=50):
     font = load_font(FONT_PATH_TIMES, size // 3)
     bbox = draw.textbbox((0, 0), "N", font=font)
     text_w = bbox[2] - bbox[0]
-    draw.text((center_x - text_w // 2, y + 2), "N", fill=(0, 0, 0, 255), font=font)
+    draw.text((center_x - text_w // 2, y + 5), "N", fill=(0, 0, 0, 255), font=font)
 
 
 def draw_scale_bar(draw, x, y, scale_denom, map_width, geo_extent, center_lat):
@@ -1391,8 +1401,8 @@ def draw_coordinate_border(draw, geo_extent, map_left, map_top, map_width, map_h
     map_right = map_left + map_width
     map_bottom = map_top + map_height
 
-    # 绘制边框
-    draw.rectangle([map_left, map_top, map_right, map_bottom], outline=(0, 0, 0, 255), width=2)
+    # 绘制边框（使用统一的边框线宽常量）
+    draw.rectangle([map_left, map_top, map_right, map_bottom], outline=(0, 0, 0, 255), width=MAP_BORDER_WIDTH)
 
     min_lon = geo_extent["min_lon"]
     max_lon = geo_extent["max_lon"]
@@ -1462,9 +1472,9 @@ def _choose_tick_step(range_deg, target_min=4, target_max=6):
 # ============================================================
 
 def draw_info_panel(draw, x, y, width, height, description_text,
-                    scale_denom, geo_extent, center_lat, map_width):
+                    scale_denom, geo_extent, center_lat, map_width, map_top):
     """
-    绘制右侧说明文字区域
+    绘制右侧说明文字区域（指北针在地图框右上角）
 
     参数:
         draw: ImageDraw对象
@@ -1477,20 +1487,23 @@ def draw_info_panel(draw, x, y, width, height, description_text,
         geo_extent (dict): 地理范围
         center_lat (float): 中心纬度
         map_width (int): 地图宽度
+        map_top (int): 地图框顶部Y坐标
     """
     # 白色背景
     draw.rectangle([x, y, x + width, y + height], fill=(255, 255, 255, 255))
 
-    # 指北针（右上角，与地图顶部对齐）
-    north_arrow_x = x + width - 40
-    north_arrow_y = y + 10
-    draw_north_arrow(draw, north_arrow_x, north_arrow_y, size=45)
+    # 指北针放在地图框右上角（上边和地图框上边对齐，右侧和地图框右边对齐）
+    # 地图框右边界是 x（即 BORDER_LEFT + MAP_WIDTH），地图框顶部是 map_top
+    north_arrow_size = 45
+    north_arrow_x = x - 10 - north_arrow_size // 2  # 在地图框内，靠近右边框
+    north_arrow_y = map_top + 5  # 与地图框顶部对齐，稍微下移一点
+    draw_north_arrow(draw, north_arrow_x, north_arrow_y, size=north_arrow_size)
 
     # 说明文字（9pt宋体，首行2字缩进）
     font = load_font(FONT_PATH_SONGTI, INFO_TEXT_FONT_SIZE)
 
     text_x = x + 10
-    text_y = y + 80
+    text_y = y + 10
     text_width = width - 20
 
     # 处理文字换行和首行缩进
@@ -1508,11 +1521,11 @@ def draw_info_panel(draw, x, y, width, height, description_text,
     scale_y = y + height - 70
     draw_scale_bar(draw, scale_x, scale_y, scale_denom, map_width, geo_extent, center_lat)
 
-    # 制图时间
+    # 制图时间（使用常量字体大小）
     current_date = datetime.now()
     date_text = f"{current_date.year}年{current_date.month:02d}月{current_date.day:02d}日"
 
-    date_font = load_font(FONT_PATH_SONGTI, 11)
+    date_font = load_font(FONT_PATH_SONGTI, DATE_FONT_SIZE)
     draw.text((scale_x, scale_y + 30), date_text, fill=(0, 0, 0, 255), font=date_font)
 
 
@@ -1559,14 +1572,13 @@ def _wrap_text_with_indent(text, font, max_width, draw, indent_chars=2):
 
     return lines
 
-
 # ============================================================
 # 【底部图例绘制】
 # ============================================================
 
 def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
     """
-    绘制底部图例（三行四列布局，最多12个图例项）
+    绘制底部图例（三行四列布局，最多12个图例项，内容居中显示）
 
     参数:
         draw: ImageDraw对象
@@ -1577,19 +1589,19 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
         intensity_data (dict): 烈度圈数据
         has_faults (bool): 是否有断裂数据
     """
-    # 白色背景
+    # 白色背景，边框粗细与地图框一致
     draw.rectangle([x, y, x + width, y + height],
-                   fill=(255, 255, 255, 255), outline=(0, 0, 0, 255), width=1)
+                   fill=(255, 255, 255, 255), outline=(0, 0, 0, 255), width=MAP_BORDER_WIDTH)
 
-    # 图例标题（黑体，居中）
-    title_font = load_font(FONT_PATH_HEITI, 16)
+    # 图例标题（黑体，居中，使用常量字体大小）
+    title_font = load_font(FONT_PATH_HEITI, LEGEND_TITLE_FONT_SIZE)
     title = "图  例"
     bbox = draw.textbbox((0, 0), title, font=title_font)
     title_w = bbox[2] - bbox[0]
     draw.text((x + width // 2 - title_w // 2, y + 8), title, fill=(0, 0, 0, 255), font=title_font)
 
-    # 图例项（三行四列）
-    item_font = load_font(FONT_PATH_SONGTI, 11)
+    # 图例项字体（使用常量字体大小）
+    item_font = load_font(FONT_PATH_SONGTI, LEGEND_ITEM_FONT_SIZE)
 
     cols = 4
     rows = 3
@@ -1610,7 +1622,7 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
         roman = int_to_roman(intensity)
         legend_items.append(("intensity", f"{roman}度区", intensity))
 
-    # 断裂
+    # 断裂（使用与图层一致的颜色）
     if has_faults:
         legend_items.append(("fault_holocene", "全新世断层"))
         legend_items.append(("fault_late", "晚更新世断层"))
@@ -1624,15 +1636,34 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
     # 只显示前12个
     legend_items = legend_items[:12]
 
+    # 计算每个图例项的实际宽度，用于居中
+    icon_width = 25  # 图标宽度
+    text_gap = 5     # 图标和文字之间的间距
+
     for idx, item in enumerate(legend_items):
         row = idx // cols
         col = idx % cols
 
-        item_x = x + col * col_width + 15
+        # 计算当前单元格中心位置
+        cell_center_x = x + col * col_width + col_width // 2
         item_y = start_y + row * row_height + row_height // 2
 
         item_type = item[0]
         label = item[1]
+
+        # 计算文字宽度
+        text_bbox = draw.textbbox((0, 0), label, font=item_font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+
+        # 计算整个图例项（图标+间距+文字）的总宽度
+        if item_type == "epicenter":
+            total_width = 10 + text_gap + text_width  # 圆点直径10
+        else:
+            total_width = icon_width + text_gap + text_width
+
+        # 计算图标起始位置（居中）
+        item_x = cell_center_x - total_width // 2
 
         # 绘制图例图标
         if item_type == "epicenter":
@@ -1640,54 +1671,57 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
             r = 5
             draw.ellipse([item_x, item_y - r, item_x + r * 2, item_y + r],
                          fill=EPICENTER_COLOR, outline=(0, 0, 0, 255))
-            text_x = item_x + r * 2 + 8
+            text_x = item_x + r * 2 + text_gap
 
         elif item_type == "intensity":
             # 烈度圈：线段
             intensity = item[2]
             color = INTENSITY_COLORS.get(intensity, (255, 0, 0, 200))
-            draw.line([(item_x, item_y), (item_x + 25, item_y)],
+            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
                       fill=color, width=INTENSITY_LINE_WIDTH)
-            text_x = item_x + 30
+            text_x = item_x + icon_width + text_gap
 
         elif item_type == "fault_holocene":
-            draw.line([(item_x, item_y), (item_x + 25, item_y)],
-                      fill=FAULT_HOLOCENE_COLOR, width=2)
-            text_x = item_x + 30
+            # 全新世断层：使用与图层一致的颜色
+            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
+                      fill=FAULT_HOLOCENE_COLOR, width=FAULT_HOLOCENE_WIDTH)
+            text_x = item_x + icon_width + text_gap
 
         elif item_type == "fault_late":
-            draw.line([(item_x, item_y), (item_x + 25, item_y)],
-                      fill=FAULT_LATE_PLEISTOCENE_COLOR, width=2)
-            text_x = item_x + 30
+            # 晚更新世断层：使用与图层一致的颜色
+            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
+                      fill=FAULT_LATE_PLEISTOCENE_COLOR, width=FAULT_LATE_PLEISTOCENE_WIDTH)
+            text_x = item_x + icon_width + text_gap
 
         elif item_type == "fault_early":
-            draw.line([(item_x, item_y), (item_x + 25, item_y)],
-                      fill=FAULT_EARLY_PLEISTOCENE_COLOR, width=2)
-            text_x = item_x + 30
+            # 早中更新世断层：使用与图层一致的颜色
+            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
+                      fill=FAULT_EARLY_PLEISTOCENE_COLOR, width=FAULT_EARLY_PLEISTOCENE_WIDTH)
+            text_x = item_x + icon_width + text_gap
 
         elif item_type == "province":
-            draw.line([(item_x, item_y), (item_x + 25, item_y)],
+            draw.line([(item_x, item_y), (item_x + icon_width, item_y)],
                       fill=PROVINCE_BORDER_COLOR, width=PROVINCE_BORDER_WIDTH)
-            text_x = item_x + 30
+            text_x = item_x + icon_width + text_gap
 
         elif item_type == "city":
             # 虚线
-            for dx in range(0, 25, 8):
+            for dx in range(0, icon_width, 8):
                 draw.line([(item_x + dx, item_y), (item_x + dx + 5, item_y)],
                           fill=CITY_BORDER_COLOR, width=CITY_BORDER_WIDTH)
-            text_x = item_x + 30
+            text_x = item_x + icon_width + text_gap
 
         elif item_type == "county":
-            for dx in range(0, 25, 6):
+            for dx in range(0, icon_width, 6):
                 draw.line([(item_x + dx, item_y), (item_x + dx + 3, item_y)],
                           fill=COUNTY_BORDER_COLOR, width=COUNTY_BORDER_WIDTH)
-            text_x = item_x + 30
+            text_x = item_x + icon_width + text_gap
 
         else:
             text_x = item_x
 
-        # 绘制文字标签
-        draw.text((text_x, item_y - 6), label, fill=(0, 0, 0, 255), font=item_font)
+        # 绘制文字标签（垂直居中）
+        draw.text((text_x, item_y - text_height // 2), label, fill=(0, 0, 0, 255), font=item_font)
 
 
 # ============================================================
@@ -1714,7 +1748,7 @@ def generate_analysis_text(intensity_data, areas):
     vi_above_area = sum(areas.get(i, 0) for i in intensity_data.keys() if i >= 6)
 
     analysis = (f"预计极震区地震烈度可达{int_to_roman(max_intensity)}度，"
-                f"极震区面积估算为{max_area:.0f}平方千米���"
+                f"极震区面积估算为{max_area:.0f}平方千米，"
                 f"地震烈度VI度以上区域面积达{vi_above_area:.0f}平方千米。")
 
     return analysis
@@ -1808,7 +1842,7 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
 
     map_img = Image.alpha_composite(map_img, bd_layer)
 
-    # 断裂图层
+    # 断裂图层（颜色与图例一致）
     if has_faults:
         ft_layer = Image.new("RGBA", map_img.size, (0, 0, 0, 0))
         draw_ft = ImageDraw.Draw(ft_layer)
@@ -1846,13 +1880,13 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
 
     # 生成分析文字
     analysis_text = generate_analysis_text(intensity_data, areas)
-    full_description = description_text + "\n" + analysis_text
+    full_description = description_text + analysis_text
 
-    # 绘制右侧说明文字区域
+    # 绘制右侧说明文字区域（传入地图框顶部位置）
     info_panel_x = BORDER_LEFT + MAP_WIDTH
     info_panel_y = BORDER_TOP
     draw_info_panel(final_draw, info_panel_x, info_panel_y, INFO_PANEL_WIDTH, MAP_HEIGHT,
-                    full_description, scale_denom, geo_extent, center_lat, MAP_WIDTH)
+                    full_description, scale_denom, geo_extent, center_lat, MAP_WIDTH, BORDER_TOP)
 
     # 绘制底部图例
     legend_x = BORDER_LEFT
