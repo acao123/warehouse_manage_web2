@@ -80,95 +80,7 @@
 │                                 │  比例尺（动态档位） │
 │                                 │  制图日期         │
 ├─────────────────────────────────┴──────────────────┤
-│           图例（三行四列，黑体标题"图  例"）            │
-└────────────────────────────────────────────────────┤
-
-
-'''
-'''
-你好，你是一名优秀的程序员和地质专家。
-基于QGIS 3.40.15使用python将信息系统GIS中的.kml添加底图+省、市、县界+断裂，然后根据要求输出png图
-说明：
-	实现步骤如下：
-    (1).kml文件的xml格式打开是这样的：
-	<?xml version="1.0" encoding="UTF-8"?>
-	<kml xmlns="http://www.opengis.net/kml/2.2">
-	<Document>
-	<Placemark><name>4度</name>
-	<description></description>
-	<LineString><coordinates>
-	114.78551111594,39.444015151372,0 114.78440837926,39.4460985825,0 114.78327632395,39.448172529053,0 114.78211508894,...
-	</coordinates></LineString>
-	</Placemark>
-	<Placemark><name>5度</name>
-	<description></description>
-	<LineString><coordinates>
-	114.54659841049,39.369129104779,0 114.54620255623,39.369877072372,...
-	</coordinates></LineString>
-	</Placemark>
-	<Placemark><name>6度</name>
-	<description></description>
-	<LineString><coordinates>
-	114.42167259312,39.329939431831,0 114.42160044682,39.330076196429,0 114.421526587,...
-	</coordinates></LineString>
-	</Placemark>
-	</Document>
-	</kml>
-    从该xml中可以获取到烈度 比如说4度，5度，6度(在qgis中显示为烈度圈)，
-    需要获取所有的烈度(烈度圈一定是一圈套一圈，越外层烈度依次递减)
-	2）底图(使用天地图矢量底图+矢量注记)：
-		TIANDITU_TK = "1ef76ef90c6eb961cb49618f9b1a399d"
-		# 矢量底图URL
-		TIANDITU_VEC_URL = (
-			"http://t{s}.tianditu.gov.cn/vec_c/wmts?"
-			"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-			"&LAYER=vec&STYLE=default&TILEMATRIXSET=c"
-			"&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
-			"&tk=" + TIANDITU_TK
-		)
-
-		# 矢量注记URL
-		TIANDITU_CVA_URL = (
-			"http://t{s}.tianditu.gov.cn/cva_c/wmts?"
-			"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-			"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
-			"&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
-			"&tk=" + TIANDITU_TK
-		)
-	3）指北针放在底图的右上角，白色背景，指针左侧是黑色右侧是白色，上边和底图对齐，右侧和底图对齐，参考制图布局参考图2.png
-	4）烈度使用罗马数字(I（1）、V（5）、X（10）...)
-	5）字体字号(所有字体，英文用times New Roman，中文用宋体，图例两个字用黑体)
-	6）右上角说明说明文字为用户输出+分析得出(文字不会超过450字)，注意说明文字字号可以使用常量设置，左右缩进 文字不能超过输出的画布，首字缩进2个字符
-		用户输入：据中国地震台网正式测定:2026年01月26日14时56分甘隶甘南州选部县(103.25",34.06')发生5.5级地震,震源深度10千米。综合考虑震中附近地质构造背景、地震波衰减特性，估计了本次地震的地震动预测图。预计极震区地震烈度可达X度，极震区面积估算为X平方千米,地震烈度VI度以上区域面积达X平方千米。
-
-		需要分析的是极震区地震烈度可达X度为最大烈度，极震区面积估算为X平方千米为最大烈度面积，
-		地震烈度VI度以上区域面积达X平方千米为烈度VI度以上区域的面积
-	7）比例尺使用线段比例尺，放在图右下位置，下面为制图时间：XX年XX月XX日(当前时间)
-	说明：省界shp文件位置：../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp
-	      市界shp文件位置：../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp
-	      县界shp文件位置：../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp
-		  全国六代图断裂位置:../../data/geology/断层/全国六代图断裂.KMZ
-	8）比例尺使用线段比例尺，根据用户传入的震级动态调整比例尺比值。
-	说明：震级M＜6时，比例尺设置为1：150000，震级6≤M＜7时，比例尺设置为1：500000；震级M≥7时，比例尺设置为1：1500000
-
-	省界、市界、县界、全国六代图断裂位置使用常量，kml文件、说明文字通过传参
-	注释是中文注释，要求方法和参数需要有中文注释
-	代码需要无bug可运行，并写出测试方法，代码分四部分输出。
-	图例参考：代码earthquake_map.py，但是在该制图图例在图正下方，图例标题 三行四列布局 超过12个图例不展示，烈度图例用线段表示
-	布局参考图：制图布局参考图2.png
-
-┌─────────────────────────────────┐─────────────────┤
-│                         N(指北针)│  说明文字（9pt宋体│
-│                                 │  首行2字缩进      │
-│          地图框                  │   总字数≤450字）
-│  (含天地图底图+省市县界+           │                  │
-│   断裂+烈度圈+震中)               │                  │
-│                                 │                  │
-│                                 │  比例尺（动态档位） │
-│                                 │  制图日期         │
-├─────────────────────────────────┴──────────────────┤
-│           图例（三行四列，黑体标题"图  例"）            │
-└────────────────────────────────────────────────────┤
+│           图例（三行四列，黑体标题"图  例"）           └────────────────────────────────────────────────────┤
 
 
 '''
@@ -238,7 +150,7 @@ MAP_HEIGHT = 900
 INFO_PANEL_WIDTH = 300
 
 # 底部图例区域高度
-LEGEND_HEIGHT = 150
+LEGEND_HEIGHT = 120
 
 # 经纬度边框宽度（像素）
 BORDER_LEFT = 60
@@ -254,7 +166,7 @@ OUTPUT_DPI = 150
 TILE_TIMEOUT = 20
 TILE_RETRY = 3
 
-# 地图边框线宽（像素）- 用于统一地图框和图例框的线宽
+# 地图边框线宽（像素）- 用于统一地图框、图例框和指北针框的线宽
 MAP_BORDER_WIDTH = 2
 
 # ============================================================
@@ -293,21 +205,24 @@ LEGEND_ITEM_FONT_SIZE = 16
 # 制图日期字体大小
 DATE_FONT_SIZE = 18
 
+# 烈度标注字体大小（放大）
+INTENSITY_LABEL_FONT_SIZE = 20
+
 # ============================================================
 # 【行政边界线样式】
 # ============================================================
 
-# 省界：深灰色实线
-PROVINCE_BORDER_COLOR = (60, 60, 60, 255)
+# 省界：灰色实线 R=160 G=160 B=160
+PROVINCE_BORDER_COLOR = (160, 160, 160, 255)
 PROVINCE_BORDER_WIDTH = 2
 
-# 市界：灰色虚线
+# 市界：深灰色虚线
 CITY_BORDER_COLOR = (100, 100, 100, 255)
 CITY_BORDER_WIDTH = 1
 CITY_BORDER_DASH = (12, 6)
 
 # 县界：浅灰色虚线
-COUNTY_BORDER_COLOR = (160, 160, 160, 220)
+COUNTY_BORDER_COLOR = (180, 180, 180, 220)
 COUNTY_BORDER_WIDTH = 1
 COUNTY_BORDER_DASH = (8, 4)
 
@@ -317,38 +232,38 @@ COUNTY_BORDER_DASH = (8, 4)
 
 # 全新世断层：红色
 FAULT_HOLOCENE_COLOR = (255, 0, 0, 255)
-FAULT_HOLOCENE_WIDTH = 2
+FAULT_HOLOCENE_WIDTH = 3
 
 # 晚更新世断层：紫红色
 FAULT_LATE_PLEISTOCENE_COLOR = (255, 0, 255, 255)
-FAULT_LATE_PLEISTOCENE_WIDTH = 2
+FAULT_LATE_PLEISTOCENE_WIDTH = 3
 
 # 早中更新世断层：青绿色
 FAULT_EARLY_PLEISTOCENE_COLOR = (0, 200, 150, 255)
-FAULT_EARLY_PLEISTOCENE_WIDTH = 2
+FAULT_EARLY_PLEISTOCENE_WIDTH = 3
 
-# 默认断层颜色
-FAULT_DEFAULT_COLOR = (200, 150, 50, 220)
-FAULT_DEFAULT_WIDTH = 2
+# 默认断层颜色（未分类断层）
+FAULT_DEFAULT_COLOR = (180, 120, 60, 255)
+FAULT_DEFAULT_WIDTH = 3
 
 # ============================================================
-# 【烈度圈颜色配置】- 使用红色系，外圈浅，内圈深
+# 【烈度圈颜色配置】- 不同烈度使用不同颜色
 # ============================================================
 
 INTENSITY_COLORS = {
-    4: (255, 200, 200, 180),  # IV度 - 浅红
-    5: (255, 150, 150, 200),  # V度 - 较浅红
-    6: (255, 100, 100, 220),  # VI度 - 中红
-    7: (255, 50, 50, 230),  # VII度 - 较深红
-    8: (220, 0, 0, 240),  # VIII度 - 深红
-    9: (180, 0, 0, 250),  # IX度 - 更深红
-    10: (140, 0, 0, 255),  # X度 - 最深红
-    11: (100, 0, 0, 255),  # XI度
-    12: (60, 0, 0, 255),  # XII度
+    4: (0, 150, 255, 255),     # IV度 - 蓝色
+    5: (0, 200, 100, 255),     # V度 - 绿色
+    6: (255, 200, 0, 255),     # VI度 - 黄色
+    7: (255, 150, 0, 255),     # VII度 - 橙色
+    8: (255, 80, 0, 255),      # VIII度 - 深橙色
+    9: (255, 0, 0, 255),       # IX度 - 红色
+    10: (200, 0, 50, 255),     # X度 - 深红色
+    11: (150, 0, 100, 255),    # XI度 - 紫红色
+    12: (100, 0, 150, 255),    # XII度 - 紫色
 }
 
-# 烈度圈线宽
-INTENSITY_LINE_WIDTH = 3
+# 烈度圈线宽 - 比断裂粗
+INTENSITY_LINE_WIDTH = 4
 
 # ============================================================
 # 【震中标记样式】
@@ -628,6 +543,7 @@ def download_tile_with_retry(url_template, zoom, tile_col, tile_row, retries=TIL
                 print(f"    瓦片失败: z={zoom} col={tile_col} row={tile_row}: {e}")
     return None
 
+
 def fetch_basemap(geo_extent, img_width, img_height):
     """
     获取天地图矢量底图+矢量注记
@@ -722,9 +638,6 @@ def parse_intensity_kml(kml_path):
         kml_path (str): KML文件路径
     返回:
         dict: {烈度值: [(lon, lat), ...], ...}
-    说明:
-        KML文件中的name标签包含烈度信息，如"4度"、"5度"等
-        coordinates标签包含烈度圈的坐标点
     """
     intensity_data = {}
 
@@ -753,7 +666,7 @@ def parse_intensity_kml(kml_path):
             # 获取烈度名称
             name = _get_element_text(pm, 'name', nsmap, ns)
 
-            # 从名称中提取烈度值（如"4度" -> 4）
+            # 从名称中提取烈度值
             intensity = _extract_intensity_from_name(name)
             if intensity is None:
                 continue
@@ -860,7 +773,7 @@ def _parse_coordinates(text):
     解析KML coordinates文本
 
     参数:
-        text (str): 坐标文本，格式如 "lon,lat,alt lon,lat,alt ..."
+        text (str): 坐标文本
     返回:
         list: [(lon, lat), ...]
     """
@@ -915,7 +828,7 @@ def calculate_geo_extent_from_intensity(intensity_data, margin_ratio=0.15):
 
 def calculate_epicenter(intensity_data):
     """
-    根据烈度圈数据计算震中位置（取最大烈度圈的中心）
+    根据烈度圈数据计算震中位置
 
     参数:
         intensity_data (dict): 烈度圈数据
@@ -1002,7 +915,7 @@ def read_shapefile_lines(shp_path, geo_extent):
 
 
 # ============================================================
-# 【KMZ断裂解析函数】
+# 【KMZ断裂解析函数】- 修复断裂分类逻辑
 # ============================================================
 
 def parse_kmz_faults(kmz_path, geo_extent):
@@ -1026,6 +939,7 @@ def parse_kmz_faults(kmz_path, geo_extent):
            geo_extent["min_lat"] - ea, geo_extent["max_lat"] + ea)
 
     result = {"holocene": [], "late_pleistocene": [], "early_pleistocene": [], "default": []}
+
     try:
         with zipfile.ZipFile(kmz_path, 'r') as zf:
             kml_files = [n for n in zf.namelist() if n.lower().endswith('.kml')]
@@ -1044,8 +958,8 @@ def parse_kmz_faults(kmz_path, geo_extent):
         print(f"  *** KMZ失败: {e} ***")
 
     total = sum(len(v) for v in result.values())
-    print(f"  断裂: 全新世={len(result['holocene'])}, 晚更新世={len(result['late_pleistocene'])}, "
-          f"早中更新世={len(result['early_pleistocene'])}, 其他={len(result['default'])}, 总={total}")
+    print(f"  断裂统计: 全新世={len(result['holocene'])}, 晚更新世={len(result['late_pleistocene'])}, "
+          f"早中更新世={len(result['early_pleistocene'])}, 其他={len(result['default'])}, 总计={total}")
     return result
 
 
@@ -1056,9 +970,16 @@ def _parse_kml_faults(kml_data, ext, result):
     except Exception as e:
         print(f"    错误: {e}")
         return
+
     ns = root.nsmap.get(None, 'http://www.opengis.net/kml/2.2')
     nsmap = {'kml': ns}
-    sc = _parse_kml_styles(root, nsmap, ns)
+
+    # 解析样式
+    style_colors = _parse_kml_styles(root, nsmap, ns)
+
+    # 解析Folder结构获取断层分类
+    folder_types = _parse_folder_structure(root, nsmap, ns)
+
     pms = root.findall('.//kml:Placemark', nsmap)
     if not pms:
         pms = root.findall('.//{' + ns + '}Placemark')
@@ -1069,7 +990,13 @@ def _parse_kml_faults(kml_data, ext, result):
         name = _get_element_text(pm, 'name', nsmap, ns)
         surl = _get_element_text(pm, 'styleUrl', nsmap, ns)
         desc = _get_element_text(pm, 'description', nsmap, ns)
-        ftype = _classify_fault(name, surl, desc, sc)
+
+        # 获取父级Folder的类型
+        parent_folder_type = _get_parent_folder_type(pm, folder_types, nsmap, ns)
+
+        # 分类断裂类型
+        ftype = _classify_fault_enhanced(name, surl, desc, style_colors, parent_folder_type)
+
         for lc in _extract_all_linestring_coords(pm, nsmap, ns):
             if len(lc) < 2:
                 continue
@@ -1083,6 +1010,96 @@ def _parse_kml_faults(kml_data, ext, result):
                     cur = []
             if len(cur) >= 2:
                 result[ftype].append(cur)
+
+
+def _parse_folder_structure(root, nsmap, ns):
+    """
+    解析KML的Folder结构，获取每个Folder的断层类型
+
+    参数:
+        root: XML根元素
+        nsmap (dict): 命名空间映射
+        ns (str): 默认命名空间
+    返回:
+        dict: {folder_element: fault_type}
+    """
+    folder_types = {}
+
+    folders = root.findall('.//kml:Folder', nsmap)
+    if not folders:
+        folders = root.findall('.//{' + ns + '}Folder')
+    if not folders:
+        folders = root.findall('.//Folder')
+
+    for folder in folders:
+        folder_name = _get_element_text(folder, 'name', nsmap, ns)
+        ftype = _classify_by_folder_name(folder_name)
+        if ftype:
+            folder_types[folder] = ftype
+
+    return folder_types
+
+
+def _classify_by_folder_name(folder_name):
+    """
+    根据Folder名称分类断层类型
+
+    参数:
+        folder_name (str): Folder名称
+    返回:
+        str: 断层类型
+    """
+    if not folder_name:
+        return None
+
+    name_lower = folder_name.lower()
+
+    # 全新世断层
+    if "全新世" in folder_name or "holocene" in name_lower:
+        return "holocene"
+
+    # 晚更新世断层
+    if "晚更新世" in folder_name or "late pleistocene" in name_lower or "晚更新" in folder_name:
+        return "late_pleistocene"
+
+    # 早中更新世断层
+    if any(k in folder_name for k in ["早中更新世", "早更新世", "中更新世", "早-中更新世"]):
+        return "early_pleistocene"
+    if "early" in name_lower and "pleistocene" in name_lower:
+        return "early_pleistocene"
+    if "middle" in name_lower and "pleistocene" in name_lower:
+        return "early_pleistocene"
+
+    return None
+
+
+def _get_parent_folder_type(pm, folder_types, nsmap, ns):
+    """
+    获取Placemark所属Folder的断层类型
+
+    参数:
+        pm: Placemark元素
+        folder_types (dict): Folder类型映射
+        nsmap (dict): 命名空间映射
+        ns (str): 默认命名空间
+    返回:
+        str: 断层类型或None
+    """
+    # 向上查找父级Folder
+    parent = pm.getparent()
+    while parent is not None:
+        if parent in folder_types:
+            return folder_types[parent]
+        # 检查标签名是否为Folder
+        tag_name = parent.tag.split('}')[-1] if '}' in parent.tag else parent.tag
+        if tag_name == 'Folder':
+            folder_name = _get_element_text(parent, 'name', nsmap, ns)
+            ftype = _classify_by_folder_name(folder_name)
+            if ftype:
+                return ftype
+        parent = parent.getparent()
+
+    return None
 
 
 def _parse_kml_styles(root, nsmap, ns):
@@ -1115,15 +1132,48 @@ def _parse_kml_styles(root, nsmap, ns):
     return sc
 
 
-def _classify_fault(name, style_url, description, style_colors):
-    """分类断裂类型"""
+def _classify_fault_enhanced(name, style_url, description, style_colors, parent_folder_type):
+    """
+    增强的断裂分类函数
+
+    参数:
+        name (str): 断层名称
+        style_url (str): 样式URL
+        description (str): 描述
+        style_colors (dict): 样式颜色映射
+        parent_folder_type (str): 父级Folder的断层类型
+    返回:
+        str: 断层类型
+    """
+    # 优先使用父级Folder的类型
+    if parent_folder_type:
+        return parent_folder_type
+
+    # 从名称和描述中识别
     combined = (name + " " + description).lower()
+
     if "全新世" in name or "全新世" in description or "holocene" in combined:
         return "holocene"
     if "晚更新世" in name or "晚更新世" in description or "late pleistocene" in combined:
         return "late_pleistocene"
     if any(k in name or k in description for k in ["早中更新世", "早更新世", "中更新世"]):
         return "early_pleistocene"
+
+    # 从样式颜色识别
+    if style_url and style_url in style_colors:
+        color = style_colors[style_url].lower()
+        # KML颜色格式: aabbggrr (alpha, blue, green, red)
+        if len(color) == 8:
+            # 红色系 -> 全新世
+            if color.endswith('ff') or color.endswith('0000ff'):
+                return "holocene"
+            # 紫红色系 -> 晚更新世
+            if 'ff00ff' in color or 'ff0080' in color:
+                return "late_pleistocene"
+            # 青绿色系 -> 早中更新世
+            if '00c896' in color or '00ff80' in color:
+                return "early_pleistocene"
+
     return "default"
 
 
@@ -1152,6 +1202,7 @@ def _extract_all_linestring_coords(pm, nsmap, ns):
             if pts:
                 all_lines.append(pts)
     return all_lines
+
 
 # ============================================================
 # 【绘制函数】
@@ -1247,6 +1298,7 @@ def draw_fault_lines(draw, fault_data, geo_extent, img_w, img_h):
             continue
         color, width = style_map.get(ftype, (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH))
         draw_solid_lines(draw, lines, geo_extent, img_w, img_h, color, width)
+        print(f"    绘制{ftype}断裂: {len(lines)}条, 颜色={color}")
 
 
 def draw_intensity_circles(draw, intensity_data, geo_extent, img_w, img_h):
@@ -1276,25 +1328,25 @@ def draw_intensity_circles(draw, intensity_data, geo_extent, img_w, img_h):
         area = calculate_polygon_area(coords)
         areas[intensity] = area
 
-        # 获取颜色
-        color = INTENSITY_COLORS.get(intensity, (255, 0, 0, 200))
+        # 获取颜色（不同烈度不同颜色）
+        color = INTENSITY_COLORS.get(intensity, (255, 0, 0, 255))
 
         # 转换为像素坐标
         pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in coords]
 
         if len(pts) >= 2:
             # 绘制闭合曲线
-            pts_closed = pts + [pts[0]]  # 闭合
+            pts_closed = pts + [pts[0]]
             draw.line(pts_closed, fill=color, width=INTENSITY_LINE_WIDTH)
 
-        print(f"    烈度 {intensity}度: 面积约 {area:.1f} 平方千米")
+        print(f"    烈度 {intensity}度: 面积约 {area:.1f} 平方千米, 颜色={color}")
 
     return areas
 
 
 def draw_intensity_labels(draw, intensity_data, geo_extent, img_w, img_h):
     """
-    绘制烈度标注（使用罗马数字）
+    绘制烈度标注（使用罗马数字，字体放大，颜色与烈度圈一致）
 
     参数:
         draw: ImageDraw对象
@@ -1303,29 +1355,38 @@ def draw_intensity_labels(draw, intensity_data, geo_extent, img_w, img_h):
         img_w (int): 图片宽度
         img_h (int): 图片高度
     """
-    font = load_font(FONT_PATH_TIMES, 16)
+    # 使用放大的字体
+    font = load_font(FONT_PATH_TIMES, INTENSITY_LABEL_FONT_SIZE)
 
     for intensity, coords in intensity_data.items():
         if not coords:
             continue
 
-        # 在烈度圈的左下方标注
-        # 找到纬度最低的点附近
+        # 在烈度圈的下方标注
         min_lat_idx = min(range(len(coords)), key=lambda i: coords[i][1])
         label_lon, label_lat = coords[min_lat_idx]
 
-        # 稍微偏移
         px, py = geo_to_pixel(label_lon, label_lat, geo_extent, img_w, img_h)
 
         # 罗马数字标注
         roman = int_to_roman(intensity)
         label = f"{roman}"
 
+        # 获取与烈度圈一致的颜色
+        intensity_color = INTENSITY_COLORS.get(intensity, (255, 0, 0, 255))
+        # 使用稍深的颜色作为文字颜色（确保可读性）
+        text_color = (
+            max(0, intensity_color[0] - 30),
+            max(0, intensity_color[1] - 30),
+            max(0, intensity_color[2] - 30),
+            255
+        )
+
         # 白色背景
         bbox = draw.textbbox((px, py), label, font=font)
-        draw.rectangle([bbox[0] - 2, bbox[1] - 1, bbox[2] + 2, bbox[3] + 1],
-                       fill=(255, 255, 255, 220))
-        draw.text((px, py), label, fill=(200, 0, 0, 255), font=font)
+        draw.rectangle([bbox[0] - 3, bbox[1] - 2, bbox[2] + 3, bbox[3] + 2],
+                       fill=(255, 255, 255, 230))
+        draw.text((px, py), label, fill=text_color, font=font)
 
 
 def draw_epicenter(draw, center_lon, center_lat, geo_extent, img_w, img_h):
@@ -1350,30 +1411,36 @@ def draw_epicenter(draw, center_lon, center_lat, geo_extent, img_w, img_h):
     print(f"  震中: ({px}, {py})")
 
 
-def draw_north_arrow(draw, x, y, size=50):
+def draw_north_arrow(draw, map_right, map_top, size=50):
     """
-    绘制指北针（白色背景，左黑右白）
+    绘制指北针（上边缘和地图框上边缘重合，右边缘与地图框右边缘重合）
 
     参数:
         draw: ImageDraw对象
-        x (int): 中心X坐标
-        y (int): 上边缘Y坐标
+        map_right (int): 地图框右边缘X坐标
+        map_top (int): 地图框上边缘Y坐标
         size (int): 指北针大小
     """
-    # 白色背景
-    bg_padding = 8
-    bg_x1 = x - size // 2 - bg_padding
-    bg_y1 = y
-    bg_x2 = x + size // 2 + bg_padding
-    bg_y2 = y + size + bg_padding + 20
+    # 指北针框的尺寸
+    box_width = size + 16
+    box_height = size + 30
 
+    # 计算指北针框的位置
+    bg_x2 = map_right
+    bg_x1 = bg_x2 - box_width
+    bg_y1 = map_top
+    bg_y2 = bg_y1 + box_height
+
+    # 白色背景，边框粗细与地图框一致
     draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2],
-                   fill=(255, 255, 255, 255), outline=(0, 0, 0, 255), width=1)
+                   fill=(255, 255, 255, 255), outline=(0, 0, 0, 255), width=MAP_BORDER_WIDTH)
+
+    # 指北针中心X坐标
+    center_x = (bg_x1 + bg_x2) // 2
 
     # 指北针箭头
-    center_x = x
-    arrow_top = y + 20
-    arrow_bottom = y + size + 10
+    arrow_top = bg_y1 + 22
+    arrow_bottom = bg_y1 + size + 15
     arrow_width = size // 4
 
     # 左半边（黑色）
@@ -1396,7 +1463,7 @@ def draw_north_arrow(draw, x, y, size=50):
     font = load_font(FONT_PATH_TIMES, size // 3)
     bbox = draw.textbbox((0, 0), "N", font=font)
     text_w = bbox[2] - bbox[0]
-    draw.text((center_x - text_w // 2, y + 5), "N", fill=(0, 0, 0, 255), font=font)
+    draw.text((center_x - text_w // 2, bg_y1 + 5), "N", fill=(0, 0, 0, 255), font=font)
 
 
 def draw_scale_bar(draw, x, y, scale_denom, map_width, geo_extent, center_lat):
@@ -1475,7 +1542,7 @@ def draw_coordinate_border(draw, geo_extent, map_left, map_top, map_width, map_h
     map_right = map_left + map_width
     map_bottom = map_top + map_height
 
-    # 绘制边框（使用统一的边框线宽常量）
+    # 绘制边框
     draw.rectangle([map_left, map_top, map_right, map_bottom], outline=(0, 0, 0, 255), width=MAP_BORDER_WIDTH)
 
     min_lon = geo_extent["min_lon"]
@@ -1546,9 +1613,9 @@ def _choose_tick_step(range_deg, target_min=4, target_max=6):
 # ============================================================
 
 def draw_info_panel(draw, x, y, width, height, description_text,
-                    scale_denom, geo_extent, center_lat, map_width, map_top):
+                    scale_denom, geo_extent, center_lat, map_width, map_top, map_right):
     """
-    绘制右侧说明文字区域（指北针在地图框右上角）
+    绘制右侧说明文字区域
 
     参数:
         draw: ImageDraw对象
@@ -1556,24 +1623,22 @@ def draw_info_panel(draw, x, y, width, height, description_text,
         y (int): 区域左上角Y坐标
         width (int): 区域宽度
         height (int): 区域高度
-        description_text (str): 说明文字（不超过450字）
+        description_text (str): 说明文字
         scale_denom (int): 比例尺分母
         geo_extent (dict): 地理范围
         center_lat (float): 中心纬度
         map_width (int): 地图宽度
         map_top (int): 地图框顶部Y坐标
+        map_right (int): 地图框右边缘X坐标
     """
     # 白色背景
     draw.rectangle([x, y, x + width, y + height], fill=(255, 255, 255, 255))
 
-    # 指北针放在地图框右上角（上边和地图框上边对齐，右侧和地图框右边对齐）
-    # 地图框右边界是 x（即 BORDER_LEFT + MAP_WIDTH），地图框顶部是 map_top
+    # 指北针放在地图框右上角
     north_arrow_size = 45
-    north_arrow_x = x - 10 - north_arrow_size // 2  # 在地图框内，靠近右边框
-    north_arrow_y = map_top + 5  # 与地图框顶部对齐，稍微下移一点
-    draw_north_arrow(draw, north_arrow_x, north_arrow_y, size=north_arrow_size)
+    draw_north_arrow(draw, map_right, map_top, size=north_arrow_size)
 
-    # 说明文字（9pt宋体，首行2字缩进）
+    # 说明文字
     font = load_font(FONT_PATH_SONGTI, INFO_TEXT_FONT_SIZE)
 
     text_x = x + 10
@@ -1590,12 +1655,12 @@ def draw_info_panel(draw, x, y, width, height, description_text,
         draw.text((text_x, text_y), line, fill=(0, 0, 0, 255), font=font)
         text_y += line_height
 
-    # 比例尺（右下角位置）
+    # 比例尺
     scale_x = x + 20
     scale_y = y + height - 70
     draw_scale_bar(draw, scale_x, scale_y, scale_denom, map_width, geo_extent, center_lat)
 
-    # 制图时间（使用常量字体大小）
+    # 制图时间
     current_date = datetime.now()
     date_text = f"{current_date.year}年{current_date.month:02d}月{current_date.day:02d}日"
 
@@ -1619,13 +1684,12 @@ def _wrap_text_with_indent(text, font, max_width, draw, indent_chars=2):
     lines = []
     paragraphs = text.split('\n')
 
-    indent = '　' * indent_chars  # 全角空格缩进
+    indent = '　' * indent_chars
 
     for p_idx, para in enumerate(paragraphs):
         if not para.strip():
             continue
 
-        # 首段首行缩进
         if p_idx == 0 or para.strip():
             current_line = indent
         else:
@@ -1648,43 +1712,50 @@ def _wrap_text_with_indent(text, font, max_width, draw, indent_chars=2):
 
 
 # ============================================================
-# 【底部图例绘制】- 修改：整体居中，具体图例项左对齐
+# 【底部图例绘制】- 修改：右侧与地图右侧对齐
 # ============================================================
 
-def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
+def draw_legend(draw, map_left, map_top, map_width, info_panel_width, legend_height, intensity_data, has_faults=True):
     """
-    绘制底部图例（三行四列布局，最多12个图例项）
-    整体在单元格内居中对齐，但每个具体图例项内部是左对齐（图标在左，文字在右）
+    绘制底部图例（两行五列布局）
+    图例框右侧与地图右侧对齐（不包含右侧说明文字区域）
 
     参数:
         draw: ImageDraw对象
-        x (int): 图例区域左上角X坐标
-        y (int): 图例区域左上角Y坐标
-        width (int): 图例区域宽度
-        height (int): 图例区域高度
+        map_left (int): 地图框左边界X坐标
+        map_top (int): 地图框上边界Y坐标
+        map_width (int): 地图宽度
+        info_panel_width (int): 右侧面板宽度
+        legend_height (int): 图例区域高度
         intensity_data (dict): 烈度圈数据
         has_faults (bool): 是否有断裂数据
     """
+    # 图例框位置：上边缘与地图框下边缘重合，右侧与地图右侧对齐
+    x = map_left
+    y = map_top + MAP_HEIGHT
+    width = map_width  # 只与地图宽度一致，不包含右侧面板
+    height = legend_height
+
     # 白色背景，边框粗细与地图框一致
     draw.rectangle([x, y, x + width, y + height],
                    fill=(255, 255, 255, 255), outline=(0, 0, 0, 255), width=MAP_BORDER_WIDTH)
 
-    # 图例标题（黑体，居中，使用常量字体大小）
+    # 图例标题
     title_font = load_font(FONT_PATH_HEITI, LEGEND_TITLE_FONT_SIZE)
     title = "图  例"
     bbox = draw.textbbox((0, 0), title, font=title_font)
     title_w = bbox[2] - bbox[0]
-    draw.text((x + width // 2 - title_w // 2, y + 8), title, fill=(0, 0, 0, 255), font=title_font)
+    draw.text((x + width // 2 - title_w // 2, y + 6), title, fill=(0, 0, 0, 255), font=title_font)
 
-    # 图例项字体（使用常量字体大小）
+    # 图例项字体
     item_font = load_font(FONT_PATH_SONGTI, LEGEND_ITEM_FONT_SIZE)
 
-    cols = 4
-    rows = 3
+    cols = 5
+    rows = 2
     col_width = width // cols
-    row_height = (height - 35) // rows
+    row_height = (height - 32) // rows
 
-    start_y = y + 35
+    start_y = y + 32
 
     # 收集图例项
     legend_items = []
@@ -1692,13 +1763,13 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
     # 震中
     legend_items.append(("epicenter", "震中"))
 
-    # 烈度圈（用线段表示，使用罗马数字）
+    # 烈度圈（用线段表示，使用罗马数字，不同颜色）
     sorted_intensities = sorted(intensity_data.keys(), reverse=True)
     for intensity in sorted_intensities:
         roman = int_to_roman(intensity)
         legend_items.append(("intensity", f"{roman}度区", intensity))
 
-    # 断裂（使用与图层一致的颜色）
+    # 断裂
     if has_faults:
         legend_items.append(("fault_holocene", "全新世断层"))
         legend_items.append(("fault_late", "晚更新世断层"))
@@ -1709,28 +1780,26 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
     legend_items.append(("city", "市界"))
     legend_items.append(("county", "县界"))
 
-    # 只显示前12个
-    legend_items = legend_items[:12]
+    # 只显示前10个
+    legend_items = legend_items[:10]
 
     # 图标宽度和间距常量
-    icon_width = 25  # 图标宽度
-    text_gap = 5     # 图标和文字之间的间距
+    icon_width = 25
+    text_gap = 5
 
-    # 首先计算所有图例项的宽度，找出最大宽度用于统一对齐
+    # 计算所有图例项的宽度
     item_widths = []
     for item in legend_items:
         item_type = item[0]
         label = item[1]
 
-        # 计算文字宽度
         text_bbox = draw.textbbox((0, 0), label, font=item_font)
-        text_width = text_bbox[2] - text_bbox[0]
+        text_width_val = text_bbox[2] - text_bbox[0]
 
-        # 计算整个图例项的总宽度
         if item_type == "epicenter":
-            total_width = 10 + text_gap + text_width  # 圆点直径10
+            total_width = 10 + text_gap + text_width_val
         else:
-            total_width = icon_width + text_gap + text_width
+            total_width = icon_width + text_gap + text_width_val
 
         item_widths.append(total_width)
 
@@ -1738,7 +1807,6 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
         row = idx // cols
         col = idx % cols
 
-        # 计算当前单元格的位置
         cell_left = x + col * col_width
         cell_center_x = cell_left + col_width // 2
         item_y = start_y + row * row_height + row_height // 2
@@ -1746,66 +1814,55 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
         item_type = item[0]
         label = item[1]
 
-        # 获取当前项的宽度
         total_width = item_widths[idx]
 
-        # 计算文字高度用于垂直居中
         text_bbox = draw.textbbox((0, 0), label, font=item_font)
         text_height = text_bbox[3] - text_bbox[1]
 
-        # 【关键修改】整体居中：计算图例项的起始X位置，使整体在单元格内居中
-        # 但图例项内部保持左对齐（图标在左，文字紧跟在右）
         item_start_x = cell_center_x - total_width // 2
 
-        # 绘制图例图标（从item_start_x开始，保持内部左对齐）
+        # 绘制图例图标
         if item_type == "epicenter":
-            # 震中：红色实心圆
             r = 5
             draw.ellipse([item_start_x, item_y - r, item_start_x + r * 2, item_y + r],
                          fill=EPICENTER_COLOR, outline=(0, 0, 0, 255))
             text_x = item_start_x + r * 2 + text_gap
 
         elif item_type == "intensity":
-            # 烈度圈：线段
+            # 烈度圈：线段（使用与图层一致的颜色）
             intensity = item[2]
-            color = INTENSITY_COLORS.get(intensity, (255, 0, 0, 200))
+            color = INTENSITY_COLORS.get(intensity, (255, 0, 0, 255))
             draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=color, width=INTENSITY_LINE_WIDTH)
             text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "fault_holocene":
-            # 全新世断层：使用与图层一致的颜色
             draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=FAULT_HOLOCENE_COLOR, width=FAULT_HOLOCENE_WIDTH)
             text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "fault_late":
-            # 晚更新世断层：使用与图层一致的颜色
             draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=FAULT_LATE_PLEISTOCENE_COLOR, width=FAULT_LATE_PLEISTOCENE_WIDTH)
             text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "fault_early":
-            # 早中更新世断层：使用与图层一致的颜色
             draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=FAULT_EARLY_PLEISTOCENE_COLOR, width=FAULT_EARLY_PLEISTOCENE_WIDTH)
             text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "province":
-            # 省界：实线
             draw.line([(item_start_x, item_y), (item_start_x + icon_width, item_y)],
                       fill=PROVINCE_BORDER_COLOR, width=PROVINCE_BORDER_WIDTH)
             text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "city":
-            # 市界：虚线
             for dx in range(0, icon_width, 8):
                 draw.line([(item_start_x + dx, item_y), (item_start_x + dx + 5, item_y)],
                           fill=CITY_BORDER_COLOR, width=CITY_BORDER_WIDTH)
             text_x = item_start_x + icon_width + text_gap
 
         elif item_type == "county":
-            # 县界：虚线
             for dx in range(0, icon_width, 6):
                 draw.line([(item_start_x + dx, item_y), (item_start_x + dx + 3, item_y)],
                           fill=COUNTY_BORDER_COLOR, width=COUNTY_BORDER_WIDTH)
@@ -1814,7 +1871,7 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
         else:
             text_x = item_start_x
 
-        # 绘制文字标签（垂直居中，水平紧跟图标）
+        # 绘制文字标签
         draw.text((text_x, item_y - text_height // 2), label, fill=(0, 0, 0, 255), font=item_font)
 
 
@@ -1824,7 +1881,7 @@ def draw_legend(draw, x, y, width, height, intensity_data, has_faults=True):
 
 def generate_analysis_text(intensity_data, areas):
     """
-    生成分析文字（极震区烈度、面积等）
+    生成分析文字
 
     参数:
         intensity_data (dict): 烈度圈数据
@@ -1838,7 +1895,6 @@ def generate_analysis_text(intensity_data, areas):
     max_intensity = max(intensity_data.keys())
     max_area = areas.get(max_intensity, 0)
 
-    # 计算VI度以上区域面积
     vi_above_area = sum(areas.get(i, 0) for i in intensity_data.keys() if i >= 6)
 
     analysis = (f"预计极震区地震烈度可达{int_to_roman(max_intensity)}度，"
@@ -1846,6 +1902,7 @@ def generate_analysis_text(intensity_data, areas):
                 f"地震烈度VI度以上区域面积达{vi_above_area:.0f}平方千米。")
 
     return analysis
+
 
 # ============================================================
 # 【主函数】
@@ -1862,14 +1919,6 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
         output_path (str): 输出PNG文件路径
     返回:
         dict: 包含分析结果的字典
-    说明:
-        1. 解析KML文件获取烈度圈数据
-        2. 加载天地图底图
-        3. 叠加省、市、县界和断裂
-        4. 绘制烈度圈（线条形式，罗马数字标注）
-        5. 绘制震中标记
-        6. 添加指北针、比例尺、图例、说明文字
-        7. 输出PNG图片
     """
     print("=" * 65)
     print("  地 震 烈 度 分 布 图 生 成 工 具")
@@ -1935,10 +1984,11 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
 
     map_img = Image.alpha_composite(map_img, bd_layer)
 
-    # 断裂图层（颜色与图例一致）
+    # 断裂图层
     if has_faults:
         ft_layer = Image.new("RGBA", map_img.size, (0, 0, 0, 0))
         draw_ft = ImageDraw.Draw(ft_layer)
+        print("  绘制断裂...")
         draw_fault_lines(draw_ft, fault_data, geo_extent, MAP_WIDTH, MAP_HEIGHT)
         map_img = Image.alpha_composite(map_img, ft_layer)
 
@@ -1975,17 +2025,17 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
     analysis_text = generate_analysis_text(intensity_data, areas)
     full_description = description_text + analysis_text
 
-    # 绘制右侧说明文字区域（传入地图框顶部位置）
+    # 计算地图框右边缘位置
+    map_right = BORDER_LEFT + MAP_WIDTH
+
+    # 绘制右侧说明文字区域
     info_panel_x = BORDER_LEFT + MAP_WIDTH
     info_panel_y = BORDER_TOP
     draw_info_panel(final_draw, info_panel_x, info_panel_y, INFO_PANEL_WIDTH, MAP_HEIGHT,
-                    full_description, scale_denom, geo_extent, center_lat, MAP_WIDTH, BORDER_TOP)
+                    full_description, scale_denom, geo_extent, center_lat, MAP_WIDTH, BORDER_TOP, map_right)
 
-    # 绘制底部图例
-    legend_x = BORDER_LEFT
-    legend_y = BORDER_TOP + MAP_HEIGHT
-    legend_width = MAP_WIDTH + INFO_PANEL_WIDTH
-    draw_legend(final_draw, legend_x, legend_y, legend_width, LEGEND_HEIGHT,
+    # 绘制底部图例（图例框右侧与地图右侧对齐）
+    draw_legend(final_draw, BORDER_LEFT, BORDER_TOP, MAP_WIDTH, INFO_PANEL_WIDTH, LEGEND_HEIGHT,
                 intensity_data, has_faults)
 
     # [8/8] 保存输出
@@ -2025,15 +2075,11 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
 def test_generate_earthquake_kml_map():
     """
     测试地震烈度图生成功能
-
-    说明:
-        测试数据使用甘肃甘南州迭部县5.5级地震
-        测试KML文件路径、说明文字、震级、输出路径
     """
     # 测试KML文件路径
     test_kml_path = r"../../data/geology/test_intensity.kml"
 
-    # 测试说明文字（用户输入）
+    # 测试说明文字
     test_description = (
         "据中国地震台网正式测定：2026年01月26日14时56分甘肃甘南州迭部县"
         "(103.25°，34.06°)发生5.5级地震，震源深度10千米。"
@@ -2077,7 +2123,6 @@ def _create_test_kml(kml_path):
     参数:
         kml_path (str): KML文件保存路径
     """
-    # 甘肃甘南州迭部县附近的模拟烈度圈
     center_lon, center_lat = 103.25, 34.06
 
     kml_content = '''<?xml version="1.0" encoding="UTF-8"?>
@@ -2088,7 +2133,6 @@ def _create_test_kml(kml_path):
 <LineString><coordinates>
 '''
 
-    # 生成5度圈（最外圈，半径约50km）
     coords_5 = _generate_circle_coords(center_lon, center_lat, 0.5)
     kml_content += ',0 '.join([f"{lon},{lat}" for lon, lat in coords_5]) + ',0'
 
@@ -2100,7 +2144,6 @@ def _create_test_kml(kml_path):
 <LineString><coordinates>
 '''
 
-    # 生成6度圈
     coords_6 = _generate_circle_coords(center_lon, center_lat, 0.3)
     kml_content += ',0 '.join([f"{lon},{lat}" for lon, lat in coords_6]) + ',0'
 
@@ -2112,7 +2155,6 @@ def _create_test_kml(kml_path):
 <LineString><coordinates>
 '''
 
-    # 生成7度圈（最内圈）
     coords_7 = _generate_circle_coords(center_lon, center_lat, 0.15)
     kml_content += ',0 '.join([f"{lon},{lat}" for lon, lat in coords_7]) + ',0'
 
@@ -2122,7 +2164,6 @@ def _create_test_kml(kml_path):
 </Document>
 </kml>'''
 
-    # 确保目录存在
     os.makedirs(os.path.dirname(kml_path), exist_ok=True)
 
     with open(kml_path, 'w', encoding='utf-8') as f:
@@ -2147,9 +2188,9 @@ def _generate_circle_coords(center_lon, center_lat, radius_deg, num_points=36):
     for i in range(num_points):
         angle = 2 * math.pi * i / num_points
         lon = center_lon + radius_deg * math.cos(angle)
-        lat = center_lat + radius_deg * 0.8 * math.sin(angle)  # 椭圆形
+        lat = center_lat + radius_deg * 0.8 * math.sin(angle)
         coords.append((lon, lat))
-    coords.append(coords[0])  # 闭合
+    coords.append(coords[0])
     return coords
 
 
