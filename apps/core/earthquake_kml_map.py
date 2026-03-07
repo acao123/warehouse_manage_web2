@@ -52,7 +52,7 @@
 	4）烈度使用罗马数字(I（1）、V（5）、X（10）...)
 	5）字体字号(所有字体，英文用times New Roman，中文用宋体，图例两个字用黑体)
 	6）右上角说明说明文字为用户输出+分析得出(文字不会超过450字)，注意说明文字字号可以使用常量设置，左右缩进 文字不能超过输出的画布，首字缩进2个字符
-		用户输入：据中国地震台网正式测定:2026年01月26日14时56分甘隶甘南州选部县(103.25”,34.06’)发生5.5级地震,震源深度10千米。综合考虑震中附近地质构造背景、地震波衰减特性，估计了本次地震的地震动预测图。预计极震区地震烈度可达X度，极震区面积估算为X平方千米,地震烈度VI度以上区域面积达X平方千米。
+		用户输入：据中国地震台网正式测定:2026年01月26日14时56分甘隸甘南州选部县(103.25”,34.06’)发生5.5级地震,震源深度10千米。综合考虑震中附近地质构造背景、地震波衰减特性，估计了本次地震的地震动预测图。预计极震区地震烈度可达X度，极震区面积估算为X平方千米,地震烈度VI度以上区域面积达X平方千米。
 
 		需要分析的是极震区地震烈度可达X度为最大烈度，极震区面积估算为X平方千米为最大烈度面积，
 		地震烈度VI度以上区域面积达X平方千米为烈度VI度以上区域的面积
@@ -227,24 +227,32 @@ COUNTY_BORDER_WIDTH = 1
 COUNTY_BORDER_DASH = (8, 4)
 
 # ============================================================
-# 【断裂线样式】- 统一图层和图例颜色
+# 【断裂线样式】- 对齐earthquake_map：加粗 + 黑色衬底
 # ============================================================
 
 # 全新世断层：红色
-FAULT_HOLOCENE_COLOR = (255, 0, 0, 255)
-FAULT_HOLOCENE_WIDTH = 3
+FAULT_HOLOCENE_COLOR = (255, 50, 50, 255)
+FAULT_HOLOCENE_WIDTH = 5
+FAULT_HOLOCENE_SHADOW_COLOR = (0, 0, 0, 160)
+FAULT_HOLOCENE_SHADOW_WIDTH = 7
 
 # 晚更新世断层：紫红色
 FAULT_LATE_PLEISTOCENE_COLOR = (255, 0, 255, 255)
-FAULT_LATE_PLEISTOCENE_WIDTH = 3
+FAULT_LATE_PLEISTOCENE_WIDTH = 5
+FAULT_LATE_PLEISTOCENE_SHADOW_COLOR = (0, 0, 0, 160)
+FAULT_LATE_PLEISTOCENE_SHADOW_WIDTH = 7
 
 # 早中更新世断层：青绿色
-FAULT_EARLY_PLEISTOCENE_COLOR = (0, 200, 150, 255)
-FAULT_EARLY_PLEISTOCENE_WIDTH = 3
+FAULT_EARLY_PLEISTOCENE_COLOR = (0, 255, 150, 255)
+FAULT_EARLY_PLEISTOCENE_WIDTH = 5
+FAULT_EARLY_PLEISTOCENE_SHADOW_COLOR = (0, 0, 0, 160)
+FAULT_EARLY_PLEISTOCENE_SHADOW_WIDTH = 7
 
 # 默认断层颜色（未分类断层）
-FAULT_DEFAULT_COLOR = (180, 120, 60, 255)
-FAULT_DEFAULT_WIDTH = 3
+FAULT_DEFAULT_COLOR = (255, 200, 50, 220)
+FAULT_DEFAULT_WIDTH = 4
+FAULT_DEFAULT_SHADOW_COLOR = (0, 0, 0, 100)
+FAULT_DEFAULT_SHADOW_WIDTH = 6
 
 # ============================================================
 # 【烈度圈颜色配置】- 不同烈度使用不同颜色
@@ -1103,8 +1111,10 @@ def _get_parent_folder_type(pm, folder_types, nsmap, ns):
 
 
 def _parse_kml_styles(root, nsmap, ns):
-    """解析KML样式"""
+    """解析KML样式（包含Style和StyleMap）"""
     sc = {}
+
+    # 先解析Style中的LineStyle颜色
     for tag in [f'kml:Style', f'{{{ns}}}Style', 'Style']:
         try:
             styles = root.findall('.//' + tag, nsmap) if 'kml:' in tag else root.findall('.//' + tag)
@@ -1119,16 +1129,40 @@ def _parse_kml_styles(root, nsmap, ns):
                     ls = s.find('.//' + lt, nsmap) if 'kml:' in lt else s.find('.//' + lt)
                 except Exception:
                     ls = None
-                if ls is not None:
-                    for ct in [f'kml:color', f'{{{ns}}}color', 'color']:
-                        try:
-                            ce = ls.find(ct, nsmap) if 'kml:' in ct else ls.find(ct)
-                        except Exception:
-                            ce = None
-                        if ce is not None and ce.text:
-                            sc['#' + sid] = ce.text.strip()
-                            break
-                    break
+                if ls is None:
+                    continue
+                for ct in [f'kml:color', f'{{{ns}}}color', 'color']:
+                    try:
+                        ce = ls.find(ct, nsmap) if 'kml:' in ct else ls.find(ct)
+                    except Exception:
+                        ce = None
+                    if ce is not None and ce.text:
+                        sc['#' + sid] = ce.text.strip()
+                        break
+                break
+
+    # 再解析StyleMap，映射normal样式到对应颜色
+    for tag in [f'kml:StyleMap', f'{{{ns}}}StyleMap', 'StyleMap']:
+        try:
+            smaps = root.findall('.//' + tag, nsmap) if 'kml:' in tag else root.findall('.//' + tag)
+        except Exception:
+            smaps = []
+        for sm in smaps:
+            sid = sm.get('id', '')
+            if not sid:
+                continue
+            for pt in [f'kml:Pair', f'{{{ns}}}Pair', 'Pair']:
+                try:
+                    pairs = sm.findall(pt, nsmap) if 'kml:' in pt else sm.findall(pt)
+                except Exception:
+                    pairs = []
+                for pair in pairs:
+                    if _get_element_text(pair, 'key', nsmap, ns) == 'normal':
+                        su = _get_element_text(pair, 'styleUrl', nsmap, ns)
+                        if su in sc:
+                            sc['#' + sid] = sc[su]
+                        break
+
     return sc
 
 
@@ -1159,20 +1193,29 @@ def _classify_fault_enhanced(name, style_url, description, style_colors, parent_
     if any(k in name or k in description for k in ["早中更新世", "早更新世", "中更新世"]):
         return "early_pleistocene"
 
-    # 从样式颜色识别
-    if style_url and style_url in style_colors:
-        color = style_colors[style_url].lower()
-        # KML颜色格式: aabbggrr (alpha, blue, green, red)
-        if len(color) == 8:
-            # 红色系 -> 全新世
-            if color.endswith('ff') or color.endswith('0000ff'):
+    # 从样式颜色识别（兼容styleUrl有无#前缀）
+    style_key = style_url or ""
+    style_color = style_colors.get(style_key)
+    if style_color is None and style_key and not style_key.startswith("#"):
+        style_color = style_colors.get("#" + style_key)
+
+    cs = (style_color or "").lower().replace("#", "")
+    if len(cs) >= 6:
+        try:
+            # KML颜色常见格式：aabbggrr
+            if len(cs) == 8:
+                bb, gg, rr = int(cs[2:4], 16), int(cs[4:6], 16), int(cs[6:8], 16)
+            else:
+                bb, gg, rr = int(cs[0:2], 16), int(cs[2:4], 16), int(cs[4:6], 16)
+
+            if rr > 180 and gg < 100 and bb < 100:
                 return "holocene"
-            # 紫红色系 -> 晚更新世
-            if 'ff00ff' in color or 'ff0080' in color:
+            if rr > 150 and gg < 100 and bb > 150:
                 return "late_pleistocene"
-            # 青绿色系 -> 早中更新世
-            if '00c896' in color or '00ff80' in color:
+            if gg > 150 and rr < 100 and bb < 120:
                 return "early_pleistocene"
+        except ValueError:
+            pass
 
     return "default"
 
@@ -1203,10 +1246,6 @@ def _extract_all_linestring_coords(pm, nsmap, ns):
                 all_lines.append(pts)
     return all_lines
 
-
-# ============================================================
-# 【绘制函数】
-# ============================================================
 
 def draw_solid_lines(draw, lines, geo_extent, img_w, img_h, color, width):
     """
@@ -1274,9 +1313,32 @@ def _draw_dashed_polyline(draw, pts, color, width, dash):
             acc += step
 
 
+def draw_solid_lines_with_shadow(draw, lines, geo_extent, img_w, img_h,
+                                 line_color, line_width, shadow_color, shadow_width):
+    """
+    绘制带衬底的实线（先画黑色衬底，再画彩色主线）
+
+    参数:
+        draw: ImageDraw对象
+        lines (list): 线段列表
+        geo_extent (dict): 地理范围
+        img_w (int): 图片宽度
+        img_h (int): 图片高度
+        line_color (tuple): 主线颜色
+        line_width (int): 主线线宽
+        shadow_color (tuple): 衬底颜色
+        shadow_width (int): 衬底线宽
+    """
+    for line in lines:
+        pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in line]
+        if len(pts) >= 2:
+            draw.line(pts, fill=shadow_color, width=shadow_width)
+            draw.line(pts, fill=line_color, width=line_width)
+
+
 def draw_fault_lines(draw, fault_data, geo_extent, img_w, img_h):
     """
-    绘制断裂线（颜色与图例一致）
+    绘制断裂线（对齐earthquake_map：黑色衬底 + 彩色主线）
 
     参数:
         draw: ImageDraw对象
@@ -1285,19 +1347,56 @@ def draw_fault_lines(draw, fault_data, geo_extent, img_w, img_h):
         img_w (int): 图片宽度
         img_h (int): 图片高度
     """
-    # 使用与图例一致的颜色常量
     style_map = {
-        "holocene": (FAULT_HOLOCENE_COLOR, FAULT_HOLOCENE_WIDTH),
-        "late_pleistocene": (FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH),
-        "early_pleistocene": (FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH),
-        "default": (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH),
+        "holocene": (
+            FAULT_HOLOCENE_COLOR,
+            FAULT_HOLOCENE_WIDTH,
+            FAULT_HOLOCENE_SHADOW_COLOR,
+            FAULT_HOLOCENE_SHADOW_WIDTH,
+        ),
+        "late_pleistocene": (
+            FAULT_LATE_PLEISTOCENE_COLOR,
+            FAULT_LATE_PLEISTOCENE_WIDTH,
+            FAULT_LATE_PLEISTOCENE_SHADOW_COLOR,
+            FAULT_LATE_PLEISTOCENE_SHADOW_WIDTH,
+        ),
+        "early_pleistocene": (
+            FAULT_EARLY_PLEISTOCENE_COLOR,
+            FAULT_EARLY_PLEISTOCENE_WIDTH,
+            FAULT_EARLY_PLEISTOCENE_SHADOW_COLOR,
+            FAULT_EARLY_PLEISTOCENE_SHADOW_WIDTH,
+        ),
+        "default": (
+            FAULT_DEFAULT_COLOR,
+            FAULT_DEFAULT_WIDTH,
+            FAULT_DEFAULT_SHADOW_COLOR,
+            FAULT_DEFAULT_SHADOW_WIDTH,
+        ),
     }
 
     for ftype, lines in fault_data.items():
         if not lines:
             continue
-        color, width = style_map.get(ftype, (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH))
-        draw_solid_lines(draw, lines, geo_extent, img_w, img_h, color, width)
+        color, width, shadow_color, shadow_width = style_map.get(
+            ftype,
+            (
+                FAULT_DEFAULT_COLOR,
+                FAULT_DEFAULT_WIDTH,
+                FAULT_DEFAULT_SHADOW_COLOR,
+                FAULT_DEFAULT_SHADOW_WIDTH,
+            ),
+        )
+        draw_solid_lines_with_shadow(
+            draw,
+            lines,
+            geo_extent,
+            img_w,
+            img_h,
+            color,
+            width,
+            shadow_color,
+            shadow_width,
+        )
         print(f"    绘制{ftype}断裂: {len(lines)}条, 颜色={color}")
 
 
@@ -2225,3 +2324,4 @@ if __name__ == "__main__":
             magnitude=INPUT_MAGNITUDE,
             output_path=OUTPUT_PATH
         )
+
