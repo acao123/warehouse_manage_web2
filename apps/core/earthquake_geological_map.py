@@ -400,13 +400,93 @@ def _parse_qml_colors(tif_path):
         return {}
 
 
+def _generate_auto_colors(unique_values):
+    """当无法从任何来源获取颜色映射时，为每个唯一值自动生成可区分的颜色。
+
+    参数:
+        unique_values (list): 唯一像素值列表
+    返回:
+        dict: {像素值(int): (R, G, B, 255)} 的颜色映射字典
+    """
+    import colorsys
+    color_map = {}
+    n = len(unique_values)
+    for i, v in enumerate(sorted(unique_values)):
+        if v == 0:
+            # 0值通常为背景/无数据，使用白色
+            color_map[v] = (255, 255, 255, 255)
+            continue
+        hue = (i * 0.618033988749895) % 1.0  # 黄金角分布，确保相邻颜色差异大
+        saturation = 0.5 + (i % 3) * 0.15
+        lightness = 0.4 + (i % 5) * 0.08
+        r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+        color_map[v] = (int(r * 255), int(g * 255), int(b * 255), 255)
+    return color_map
+
+
+def _parse_qml_colors_by_label(tif_path):
+    """从QML样式文件解析每个label对应的颜色，返回 {label_str: (r, g, b, 255)}。
+
+    参数:
+        tif_path (str): TIF文件路径
+    返回:
+        dict: {标签名(str): (R, G, B, 255)}
+    """
+    base = os.path.splitext(tif_path)[0]
+    qml_candidates = [
+        base + ".qml",
+        tif_path + ".qml",
+        os.path.join(os.path.dirname(tif_path), "group.qml"),
+    ]
+    qml_path = None
+    for p in qml_candidates:
+        if os.path.exists(p):
+            qml_path = p
+            break
+    if qml_path is None:
+        return {}
+    try:
+        from lxml import etree as _ET
+        with open(qml_path, "rb") as f:
+            root = _ET.fromstring(f.read())
+        label_color_map = {}
+        # 遍历所有 paletteEntry 和 item 节点，按 label 属性匹配颜色
+        for entry in root.iter():
+            if entry.tag in ("paletteEntry", "item"):
+                label = entry.get("label")
+                color_str = entry.get("color")
+                if not label or not color_str:
+                    continue
+                label = label.strip()
+                color_str = color_str.strip()
+                if color_str.startswith("#"):
+                    hex_c = color_str[1:]
+                    if len(hex_c) == 6:
+                        r = int(hex_c[0:2], 16)
+                        g = int(hex_c[2:4], 16)
+                        b = int(hex_c[4:6], 16)
+                        label_color_map[label] = (r, g, b, 255)
+                    elif len(hex_c) == 8:
+                        # #AARRGGBB（QGIS格式，前两位为Alpha）
+                        r = int(hex_c[2:4], 16)
+                        g = int(hex_c[4:6], 16)
+                        b = int(hex_c[6:8], 16)
+                        label_color_map[label] = (r, g, b, 255)
+        print("  QML label颜色映射解析完成，共 %d 个条目" % len(label_color_map))
+        return label_color_map
+    except (IOError, OSError, ValueError, TypeError) as e:
+        print("  QML label解析失败: %s" % e)
+        return {}
+
+
 def read_tif_attribute_table(tif_path):
-    """读取TIF属性表，提取岩性(yanxing)字段信息，返回[(value, color_rgba, yanxing_name),...]。
+    """读取TIF属性表，提取岩性(yanxing)和分组(grouping)字段信息，返回[(value, color_rgba, yanxing_name),...]。
 
     颜色获取优先级：
     1. 从QML样式文件中按 Value 获取颜色（_parse_qml_colors）
-    2. 从属性表的 Red/Green/Blue 字段获取颜色
-    3. 默认灰色 (128, 128, 128, 255)
+    2. 从QML样式文件中按 Grouping(label) 获取颜色（_parse_qml_colors_by_label）
+    3. 从属性表的 Red/Green/Blue 字段获取颜色
+    4. 自动生成颜色（与地图底图中同一个 Value 的颜色一致，_generate_auto_colors）
     """
     result = []
     base = os.path.splitext(tif_path)[0]
@@ -432,18 +512,36 @@ def read_tif_attribute_table(tif_path):
         if k in fl:
             yanxing_field = fl[k]
             break
+    # 读取 Grouping 字段（图层名，用于颜色匹配）
+    grouping_field = fl.get("grouping") or fl.get("group")
     if yanxing_field is None:
         print("  未找到yanxing字段")
         return result
     # 优先从QML样式文件获取颜色映射（按Value索引）
     qml_color_map = _parse_qml_colors(tif_path)
     if qml_color_map:
-        print("  使用QML样式文件颜色，共 %d 个条目" % len(qml_color_map))
+        print("  使用QML样式文件颜色（按Value），共 %d 个条目" % len(qml_color_map))
     else:
-        print("  未找到QML样式文件，回退到属性表颜色字段")
+        print("  未找到QML按Value颜色，尝试按label获取")
+    # 从QML按label/Grouping获取颜色（第二优先级）
+    qml_label_color_map = _parse_qml_colors_by_label(tif_path)
     red_field = fl.get("red") or fl.get("r")
     green_field = fl.get("green") or fl.get("g")
     blue_field = fl.get("blue") or fl.get("b")
+    # 预先收集所有唯一Value，以便自动生成颜色时与地图底图保持一致
+    all_values = []
+    for rec in records:
+        try:
+            v = int(float(rec.get(value_field, 0) or 0))
+        except (ValueError, TypeError):
+            v = 0
+        all_values.append(v)
+    # 若所有颜色获取方式均失败，则自动生成颜色（与_load_tif_rasterio逻辑一致）
+    auto_color_map = {}
+    if not qml_color_map and not qml_label_color_map:
+        if not (red_field and green_field and blue_field):
+            auto_color_map = _generate_auto_colors(list(set(all_values)))
+            print("  使用自动生成颜色，共 %d 个分类值" % len(auto_color_map))
     seen = set()
     for rec in records:
         try:
@@ -454,10 +552,18 @@ def read_tif_attribute_table(tif_path):
         if not yanxing or yanxing in seen:
             continue
         seen.add(yanxing)
-        # 颜色获取：优先QML，其次属性表RGB字段，最后默认灰色
+        # 读取Grouping字段值（图层名）
+        grouping = ""
+        if grouping_field:
+            grouping = rec.get(grouping_field, "").strip()
+        # 颜色获取：优先QML按Value，其次QML按label/Grouping，再次属性表RGB，最后自动生成
         color = (128, 128, 128, 255)
         if qml_color_map and value in qml_color_map:
             color = qml_color_map[value]
+        elif qml_label_color_map and grouping and grouping in qml_label_color_map:
+            color = qml_label_color_map[grouping]
+        elif qml_label_color_map and yanxing in qml_label_color_map:
+            color = qml_label_color_map[yanxing]
         else:
             try:
                 if red_field and green_field and blue_field:
@@ -465,8 +571,11 @@ def read_tif_attribute_table(tif_path):
                     g = int(float(rec.get(green_field, 128) or 128))
                     b = int(float(rec.get(blue_field, 128) or 128))
                     color = (r, g, b, 255)
+                elif auto_color_map and value in auto_color_map:
+                    color = auto_color_map[value]
             except (ValueError, TypeError):
-                pass
+                if auto_color_map and value in auto_color_map:
+                    color = auto_color_map[value]
         result.append((value, color, yanxing))
     print("  读取到 %d 个岩性图例项" % len(result))
     return result
@@ -532,42 +641,40 @@ def _load_tif_rasterio(tif_path, geo_extent, img_width, img_height):
         else:
             data = src.read(out_shape=out_shape, resampling=Resampling.lanczos)
         if src.count == 1:
-            band = data[0]
-            # 优先从 .vat.dbf 属性表获取颜色映射（支持值大于256）
+            # 分类栅格必须使用最近邻重采样，避免插值产生无效分类值
+            if window is not None:
+                data_nearest = src.read(window=window, out_shape=out_shape, resampling=Resampling.nearest)
+            else:
+                data_nearest = src.read(out_shape=out_shape, resampling=Resampling.nearest)
+            band = data_nearest[0]
+            # 获取颜色映射：优先 .vat.dbf，其次 QML，再次内嵌colormap，最后自动生成
             color_map = _read_color_from_vat_dbf(tif_path)
             if not color_map:
-                # 属性表无颜色字段时尝试QML文件
                 color_map = _parse_qml_colors(tif_path)
-            if color_map:
-                # 使用字典映射逐像素赋色，避免 % 256 引起的颜色错误
-                rgba_arr = np.zeros((band.shape[0], band.shape[1], 4), dtype="uint8")
-                rgba_arr[:, :, 3] = 255  # 默认完全不透明
-                for v in np.unique(band):
-                    v_int = int(v)
-                    c = color_map.get(v_int, (128, 128, 128, 255))
-                    mask = (band == v)
-                    rgba_arr[mask, 0] = c[0]
-                    rgba_arr[mask, 1] = c[1]
-                    rgba_arr[mask, 2] = c[2]
-                    rgba_arr[mask, 3] = c[3]
-            else:
+            if not color_map:
                 try:
                     cmap = src.colormap(1)
-                    # 根据实际值范围分配LUT，不使用固定256的取模操作
-                    max_val = int(band.max()) + 1
-                    lut_size = max(256, max_val)
-                    lut = np.zeros((lut_size, 4), dtype="uint8")
-                    lut[:, 3] = 255
-                    for v, rgba_c in cmap.items():
-                        idx = int(v)
-                        if 0 <= idx < lut_size:
-                            lut[idx] = list(rgba_c)[:4]
-                    flat = np.clip(band.flatten().astype(np.int32), 0, lut_size - 1)
-                    rgba_arr = lut[flat].reshape(band.shape[0], band.shape[1], 4)
+                    if cmap:
+                        for v, rgba_c in cmap.items():
+                            color_map[int(v)] = tuple(list(rgba_c)[:3]) + (255,)
                 except (KeyError, ValueError, AttributeError):
-                    gray = band.astype("uint8")
-                    alpha = np.full_like(gray, 255)
-                    rgba_arr = np.stack([gray, gray, gray, alpha], axis=-1)
+                    pass
+            if not color_map:
+                # 所有颜色获取方式都失败，自动生成颜色
+                unique_vals = [int(v) for v in np.unique(band)]
+                color_map = _generate_auto_colors(unique_vals)
+                print("  使用自动生成颜色，共 %d 个分类值" % len(color_map))
+            # 使用字典映射逐像素赋色，避免 % 256 引起的颜色错误
+            rgba_arr = np.zeros((band.shape[0], band.shape[1], 4), dtype="uint8")
+            rgba_arr[:, :, 3] = 255  # 默认完全不透明
+            for v in np.unique(band):
+                v_int = int(v)
+                c = color_map.get(v_int, (128, 128, 128, 255))
+                mask = (band == v)
+                rgba_arr[mask, 0] = c[0]
+                rgba_arr[mask, 1] = c[1]
+                rgba_arr[mask, 2] = c[2]
+                rgba_arr[mask, 3] = c[3] if len(c) > 3 else 255
         elif src.count == 3:
             r, g, b = data[0], data[1], data[2]
             alpha = np.full((img_height, img_width), 255, dtype="uint8")
@@ -1059,7 +1166,7 @@ def draw_scale_bar(draw, map_right, map_bottom, scale_denom,
     lon_range = geo_extent["max_lon"] - geo_extent["min_lon"]
     km_per_pixel = lon_range * 111.32 * math.cos(math.radians(center_lat)) / map_width
     nice = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-    target_km = map_width * 0.12 * km_per_pixel
+    target_km = map_width * 0.18 * km_per_pixel
     bar_km = nice[0]
     for nv in nice:
         if nv <= target_km * 1.5:
@@ -1075,10 +1182,10 @@ def draw_scale_bar(draw, map_right, map_bottom, scale_denom,
     end_w = bb_end[2] - bb_end[0]
     zero_w = bb_zero[2] - bb_zero[0]
     text_h = bb_end[3] - bb_end[1]
-    bar_h = max(5, int(1.2 * MM_PX))
+    bar_h = max(8, int(2.0 * MM_PX))
     pad = 5
-    # 比例文字，如 1：500,000（中文冒号，千分位分隔符）
-    ratio_text = "1\uff1a%s" % "{:,}".format(scale_denom)
+    # 比例文字，如 1:500,000（英文冒号，千分位分隔符）
+    ratio_text = "1:%s" % "{:,}".format(scale_denom)
     bb_ratio = draw.textbbox((0, 0), ratio_text, font=font)
     ratio_w = bb_ratio[2] - bb_ratio[0]
     ratio_h = bb_ratio[3] - bb_ratio[1]
