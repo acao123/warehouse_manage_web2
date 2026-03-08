@@ -1,5 +1,36 @@
 # -*- coding: utf-8 -*-
 """
+你好，你是一名优秀的程序员和地质专家。
+基于QGIS 3.40.15使用python根据用户传入地震震中位置经度(度)和纬度(度)以及震级（M）以及加载地质构造底图tif文件，省、市、县界shp文件，以及地市级以上居民地res2_4m shp文件，烈度圈.kml，然后根据要求输出png图
+输出一个png图(图的总宽度为200mm)
+	需求说明：
+	1.当用户输入的震级M＜6时，是绘制震中附近15km的地质构造图；
+	当震级6≤M＜7时，是绘制震中附近50km；当震级M≥7时，是绘制震中附近150km。
+	也就是说：震级M＜6时，出的图长和宽都是30km,比例尺设置为1：150000；
+	震级6≤M＜7时，出的图长和宽都是100km，比例尺设置为1：500000；震级M≥7时，出的图长和宽都是300km，比例尺设置为1：1500000。
+	2.地图的边框为黑色实线，0.35mm
+	3.从省界shp文件属性表表中获取省份名称，省份名称展示在省界内，省的名称写在该省的省界内，字体是8pt，颜色改为:R=77 G=77 B=77，字体加白边；
+	4.指北针的位置和样式参考”earthquake_kml_map.py“
+    5.图例位置：放在地图的右侧，图例左边框与地图右边框重合，图例下边框与地图下边框平行，
+	内容从属性表yanxing字段中获取，图例布局按照”制图布局参考图3.png“图例格式放置
+	6.比例尺的位置和样式参考”earthquake_kml_map.py“
+	7.地图框上侧和左侧标注经纬度，形式为X°X′N，X°X′E；经度最多6个，纬度最多5个，经纬度的字体是8pt。
+	8.从”地级市点位数据.shp“文件属性表中获取市的名称，和点位信息，代表市的位置符号更改，具体样式为：黑色空圈内为一个实心黑圆，加一个圆形的白色背景；整体大小为市名称大小的三分之一；市的名称字体是9pt，颜色是黑色，加白边，该图层位于地质构造图tif文件的上方显示
+	9.烈度的加载参考earthquake_kml_map.py，需要展示在地图上
+	10.代表震中位置的红色五角星外面加白边，内部为纯红色，大小为8pt字体的三分之二。
+	11.调用 “地质构造图tif文件”的时候，不要改动内部的色块
+	说明： 地质构造图tif文件位置：../../data/geology/图3/group.tif
+		  省界shp文件位置：../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp
+	      市界shp文件位置：../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp
+	      县界shp文件位置：../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp
+	      地级市点位数据.shp文件位置：../../data/geology/2023地级市点位数据/地级市点位数据.shp
+	12.注释是中文注释，要求方法和参数需要有中文注释
+	13.指省界颜色改为:R=160 G=160 B=160，0.4mm，市界颜色改为:R=160 G=160 B=160，0.24mm，虚线间隔为0.3，县界颜色改为:R=160 G=160 B=160，0.14mm虚线间隔为0.3
+	14.代码需要无bug可运行，并写出测试方法
+	输出图布局参考：制图布局参考图3.png，
+	15.基于QGIS3.40.15 python环境，所以生产时一定需要参考对应版本API,生成的代码不能有bug
+	注意：”制图布局参考图3.png“值提供布局和样式参考。
+	输出完整代码，代码可能比较长，分四个部分输出，我会放到一个python文件中
 地震地质构造图生成脚本（基于Python + Pillow + rasterio + shapefile）
 """
 import os
@@ -1388,10 +1419,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="地震地质构造图生成工具")
     parser.add_argument("--test", action="store_true", help="运行所有单元测试")
     parser.add_argument("--full-test", action="store_true", help="运行完整生成测试")
-    parser.add_argument("--lon", type=float, default=103.25, help="震中经度")
-    parser.add_argument("--lat", type=float, default=34.06, help="震中纬度")
-    parser.add_argument("--mag", type=float, default=5.5, help="震级")
-    parser.add_argument("--kml", type=str, default=None, help="烈度圈KML文件路径")
+    parser.add_argument("--lon", type=float, default=114.39, help="震中经度")
+    parser.add_argument("--lat", type=float, default=39.32, help="震中纬度")
+    parser.add_argument("--mag", type=float, default=6.5, help="震级")
+    parser.add_argument("--kml", type=str, default=r"../../data/geology/n0432881302350072.kml",
+                        help="烈度圈KML文件路径")
     parser.add_argument("--output", type=str,
                         default=r"../../data/geology/output_geological_map.png",
                         help="输出PNG文件路径")
