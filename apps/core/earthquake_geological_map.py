@@ -584,7 +584,7 @@ def read_city_points(shp_path, geo_extent):
             return []
     fields = [f[0] for f in sf.fields[1:]]
     name_field_idx = None
-    for cand in ["NAME", "Name", "name", "市", "CITY", "city", "CITYNAME", "地级市"]:
+    for cand in ["NAME", "Name", "name", "城市", "CITY", "city", "CITYNAME", "地级市"]:
         if cand in fields:
             name_field_idx = fields.index(cand)
             break
