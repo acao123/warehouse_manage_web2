@@ -221,7 +221,8 @@ def int_to_roman(num):
 
 def format_degree_label(value, is_lon=True):
     """
-    将十进制度数格式化为 X°X′N / X°X′E
+    将十进制度数格式化为度分格式
+    经度格式：X°X′E/W，纬度格式：X°X′（不带N/S后缀）
 
     参数:
         value (float): 十进制度数
@@ -235,8 +236,12 @@ def format_degree_label(value, is_lon=True):
     if minutes == 60:
         degrees += 1
         minutes = 0
-    suffix = ("E" if value >= 0 else "W") if is_lon else ("N" if value >= 0 else "S")
-    return f"{degrees}°{minutes:02d}′{suffix}"
+    if is_lon:
+        suffix = "E" if value >= 0 else "W"
+        return f"{degrees}°{minutes:02d}′{suffix}"
+    else:
+        # 纬度不加 N/S 后缀，减少左侧留白
+        return f"{degrees}°{minutes:02d}′"
 
 
 def _find_field(layer, candidates):
@@ -567,7 +572,7 @@ def setup_city_point_style(layer):
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
 
     # 标注
-    field = _find_field(layer, ['name', 'NAME', '名称', '市名', 'city', 'CITY', '地名'])
+    field = _find_field(layer, ['城市', 'name', 'NAME', '名称', '市名', 'city', 'CITY', '地名'])
     if field:
         pal = QgsPalLayerSettings()
         pal.fieldName = field
@@ -718,8 +723,8 @@ def create_map_layout(project, layers, map_extent, map_params,
     legend_panel_w = 70.0
     map_w = TOTAL_WIDTH_MM - legend_panel_w   # 130mm
     map_h = map_w                              # 正方形
-    margin_top = 8.0
-    margin_left = 12.0
+    margin_top = 4.5
+    margin_left = 7.0
     margin_bottom = 3.0
     total_h = margin_top + map_h + margin_bottom
 
@@ -794,7 +799,7 @@ def _add_coord_labels(layout, extent, ml, mt, mw, mh):
         lbl.adjustSizeToText()
         w = lbl.sizeWithUnits().width()
         lbl.attemptMove(QgsLayoutPoint(
-            x - w / 2.0, mt - 6.0, QgsUnitTypes.LayoutMillimeters))
+            x - w / 2.0, mt - 3.5, QgsUnitTypes.LayoutMillimeters))
         lbl.setBackgroundEnabled(False)
         lbl.setFrameEnabled(False)
         layout.addLayoutItem(lbl)
@@ -811,9 +816,11 @@ def _add_coord_labels(layout, extent, ml, mt, mw, mh):
         lbl.setTextFormat(_make_text_format(
             "Times New Roman", COORD_LABEL_FONT_SIZE, QColor(0, 0, 0)))
         lbl.adjustSizeToText()
+        w = lbl.sizeWithUnits().width()
         h = lbl.sizeWithUnits().height()
+        # 紧贴地图左边框，标签右边缘对齐地图左边框
         lbl.attemptMove(QgsLayoutPoint(
-            0.5, y - h / 2.0, QgsUnitTypes.LayoutMillimeters))
+            ml - w - 0.5, y - h / 2.0, QgsUnitTypes.LayoutMillimeters))
         lbl.setBackgroundEnabled(False)
         lbl.setFrameEnabled(False)
         layout.addLayoutItem(lbl)
@@ -830,7 +837,7 @@ def _coord_step(range_deg, max_ticks):
 
 def _add_north_arrow(layout, map_right, map_top):
     """
-    添加指北针（右上角与地图框对齐）
+    添加指北针（右上角与地图框对齐，样式：经典黑白半箭头+N字）
 
     参数:
         layout: 布局
@@ -840,15 +847,17 @@ def _add_north_arrow(layout, map_right, map_top):
     aw, ah = 12.0, 16.0
     pic = QgsLayoutItemPicture(layout)
 
-    # 搜索QGIS内置SVG
+    # 按优先级搜索QGIS内置SVG（优先经典黑白半箭头样式）
     svg = None
     search_dirs = [
         os.path.join(QgsApplication.pkgDataPath(), 'svg', 'arrows'),
         os.path.join(QgsApplication.prefixPath(), '..', 'apps', 'qgis-ltr', 'svg', 'arrows'),
         os.path.join(QgsApplication.prefixPath(), 'svg', 'arrows'),
     ]
+    # 优先级顺序：NorthArrow_11（经典黑白半箭头）→ NorthArrow_04 → NorthArrow_01
+    preferred_names = ['NorthArrow_11.svg', 'NorthArrow_04.svg', 'NorthArrow_01.svg']
     for d in search_dirs:
-        for name in ['NorthArrow_01.svg', 'NorthArrow_02.svg']:
+        for name in preferred_names:
             p = os.path.normpath(os.path.join(d, name))
             if os.path.exists(p):
                 svg = p
@@ -856,16 +865,27 @@ def _add_north_arrow(layout, map_right, map_top):
         if svg:
             break
 
-    # 深度搜索
+    # 深度搜索，优先查找 NorthArrow_11、NorthArrow_04
     if not svg:
         base = os.path.normpath(os.path.join(QgsApplication.prefixPath(), '..'))
+        na11_found = None
+        na04_found = None
+        fallback_found = None
         for root, dirs, files in os.walk(base):
             for f in files:
-                if 'NorthArrow' in f and f.endswith('.svg'):
-                    svg = os.path.join(root, f)
-                    break
-            if svg:
+                if not f.endswith('.svg'):
+                    continue
+                if 'NorthArrow_11' in f and na11_found is None:
+                    na11_found = os.path.join(root, f)
+                elif 'NorthArrow_04' in f and na04_found is None:
+                    na04_found = os.path.join(root, f)
+                elif 'NorthArrow_01' in f and fallback_found is None:
+                    fallback_found = os.path.join(root, f)
+                elif 'NorthArrow' in f and fallback_found is None:
+                    fallback_found = os.path.join(root, f)
+            if na11_found:
                 break
+        svg = na11_found or na04_found or fallback_found
 
     if svg:
         pic.setPicturePath(svg)
@@ -885,19 +905,144 @@ def _add_north_arrow(layout, map_right, map_top):
     layout.addLayoutItem(pic)
 
 
+def _read_geology_yanxing(tif_path):
+    """
+    读取地质构造图tif文件的属性表，获取岩性(Yanxing)字段和对应RGB颜色
+
+    参数:
+        tif_path (str): tif文件路径
+    返回:
+        list: [(r, g, b, yanxing_text), ...]，去重后按顺序排列
+    """
+    result = []
+
+    # 候选属性表路径（.vat.dbf 或 .dbf）
+    tif_dir = os.path.dirname(tif_path)
+    tif_base = os.path.splitext(tif_path)[0]
+    tif_name = os.path.basename(tif_base)
+
+    possible_paths = [
+        tif_path + ".vat.dbf",
+        tif_base + ".vat.dbf",
+        tif_base + ".dbf",
+        os.path.join(tif_dir, tif_name + ".vat.dbf"),
+        os.path.join(tif_dir, tif_name + ".dbf"),
+    ]
+
+    dbf_path = None
+    for p in possible_paths:
+        if os.path.exists(p):
+            dbf_path = p
+            break
+
+    # 若上述路径不存在，扫描目录中的 .vat.dbf / .dbf 文件
+    if dbf_path is None:
+        try:
+            for f in os.listdir(tif_dir):
+                fl = f.lower()
+                if fl.endswith('.vat.dbf'):
+                    dbf_path = os.path.join(tif_dir, f)
+                    break
+                if fl.endswith('.dbf') and tif_name.lower() in fl:
+                    dbf_path = os.path.join(tif_dir, f)
+        except Exception:
+            pass
+
+    if dbf_path is None:
+        print(f"  *** 未找到地质构造图属性表文件（目录：{tif_dir}）***")
+        return result
+
+    print(f"  读取岩性属性表: {dbf_path}")
+    try:
+        attr_layer = QgsVectorLayer(dbf_path, "geology_attr", "ogr")
+        if not attr_layer.isValid():
+            print(f"  *** 属性表加载失败: {dbf_path} ***")
+            return result
+
+        fields = [f.name() for f in attr_layer.fields()]
+        print(f"  属性表字段: {fields}")
+
+        # 查找各字段
+        yanxing_field = None
+        r_field = g_field = b_field = None
+
+        for f in fields:
+            fl = f.lower()
+            if fl in ('yanxing', '岩性', 'rock_type', 'lithology'):
+                yanxing_field = f
+            elif fl in ('red', 'r'):
+                r_field = f
+            elif fl in ('green', 'g'):
+                g_field = f
+            elif fl in ('blue', 'b'):
+                b_field = f
+
+        # 模糊匹配 yanxing
+        if yanxing_field is None:
+            for f in fields:
+                if 'yanxing' in f.lower() or '岩性' in f:
+                    yanxing_field = f
+                    break
+
+        if yanxing_field is None:
+            print(f"  *** 未找到Yanxing字段，可用字段: {fields} ***")
+            return result
+
+        # 读取数据，去重
+        seen = set()
+        for feat in attr_layer.getFeatures():
+            yanxing = feat[yanxing_field]
+            if yanxing is None:
+                continue
+            yanxing_str = str(yanxing).strip()
+            if not yanxing_str or yanxing_str in seen:
+                continue
+            seen.add(yanxing_str)
+            try:
+                r = max(0, min(255, int(feat[r_field]))) if r_field else 128
+                g = max(0, min(255, int(feat[g_field]))) if g_field else 128
+                b = max(0, min(255, int(feat[b_field]))) if b_field else 128
+            except (TypeError, ValueError):
+                r, g, b = 128, 128, 128
+            result.append((r, g, b, yanxing_str))
+
+        print(f"  读取到 {len(result)} 个岩性类型")
+
+    except Exception as e:
+        print(f"  *** 读取属性表失败: {e} ***")
+
+    return result
+
+
 def _add_legend(layout, map_item, lx, ly, lw, lh,
                 geology_layer, layers):
     """
     添加图例面板
 
+    上半部分：自动图例（震中、烈度圈、省界、市界、县界、地级市，不含地质构造图）
+    下半部分：岩性图例（从tif属性表Yanxing字段读取，手动创建色块+文字）
+
     参数:
         layout: 布局
         map_item: 地图项
         lx, ly, lw, lh: 图例位置和尺寸 (mm)
-        geology_layer: 地质构造图层
+        geology_layer: 地质构造图层（用于读取属性表路径）
         layers: 所有图层字典
     """
-    # 标题 "图 例"
+    # --- 整体背景框（先加，置于底层）---
+    bg = QgsLayoutItemLabel(layout)
+    bg.setText("")
+    bg.attemptResize(QgsLayoutSize(lw, lh, QgsUnitTypes.LayoutMillimeters))
+    bg.attemptMove(QgsLayoutPoint(lx, ly, QgsUnitTypes.LayoutMillimeters))
+    bg.setBackgroundEnabled(True)
+    bg.setBackgroundColor(QColor(255, 255, 255))
+    bg.setFrameEnabled(True)
+    bg.setFrameStrokeColor(QColor(0, 0, 0))
+    bg.setFrameStrokeWidth(
+        QgsLayoutMeasurement(MAP_BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+    layout.addLayoutItem(bg)
+
+    # --- 标题 "图 例"（居中）---
     title = QgsLayoutItemLabel(layout)
     title.setText("图   例")
     title.setTextFormat(_make_text_format("黑体", 10, QColor(0, 0, 0)))
@@ -908,43 +1053,113 @@ def _add_legend(layout, map_item, lx, ly, lw, lh,
     title.setFrameEnabled(False)
     layout.addLayoutItem(title)
 
-    # 自动图例
+    # --- 自动图例（震中、烈度圈、省界、市界、县界、地级市，不含地质构造图）---
     legend = QgsLayoutItemLegend(layout)
     legend.setLinkedMap(map_item)
     legend.setTitle("")
     legend.setAutoUpdateModel(False)
 
-    # ★ 使用 QgsLegendStyle 设置字体（这里 setStyleFont 虽然也 deprecated
-    #   但在 3.40 中仍可用且不会崩溃）
     legend.setStyleFont(QgsLegendStyle.Title, QFont("黑体", 9))
     legend.setStyleFont(QgsLegendStyle.Subgroup, QFont("宋体", 7))
     legend.setStyleFont(QgsLegendStyle.SymbolLabel, QFont("宋体", 7))
 
     root = legend.model().rootGroup()
     root.clear()
+    # 仅添加非地质构造图层，避免显示 Band/ID 等自动图例
     for key in ['震中', '烈度圈', '省界', '市界', '县界', '地级市']:
         lyr = layers.get(key)
         if lyr is not None:
             root.addLayer(lyr)
-    if geology_layer is not None:
-        root.addLayer(geology_layer)
 
-    legend.attemptResize(QgsLayoutSize(lw, lh - 8.0, QgsUnitTypes.LayoutMillimeters))
-    legend.attemptMove(QgsLayoutPoint(lx, ly + 7.0, QgsUnitTypes.LayoutMillimeters))
-    legend.setBackgroundEnabled(True)
-    legend.setBackgroundColor(QColor(255, 255, 255))
-    legend.setFrameEnabled(True)
-    legend.setFrameStrokeColor(QColor(0, 0, 0))
-    legend.setFrameStrokeWidth(
-        QgsLayoutMeasurement(MAP_BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+    # 固定高度约50mm用于上半部分6项图例
+    auto_legend_h = 50.0
+    legend.attemptResize(QgsLayoutSize(lw - 2.0, auto_legend_h,
+                                       QgsUnitTypes.LayoutMillimeters))
+    legend.attemptMove(QgsLayoutPoint(lx + 1.0, ly + 7.0,
+                                      QgsUnitTypes.LayoutMillimeters))
+    legend.setBackgroundEnabled(False)
+    legend.setFrameEnabled(False)
     legend.setColumnCount(1)
     legend.setResizeToContents(True)
     layout.addLayoutItem(legend)
 
+    # --- 分隔线（自动图例与岩性图例之间）---
+    sep_y = ly + 7.0 + auto_legend_h + 1.0
+    sep = QgsLayoutItemLabel(layout)
+    sep.setText("")
+    sep.attemptResize(QgsLayoutSize(lw - 4.0, 0.3, QgsUnitTypes.LayoutMillimeters))
+    sep.attemptMove(QgsLayoutPoint(lx + 2.0, sep_y, QgsUnitTypes.LayoutMillimeters))
+    sep.setBackgroundEnabled(True)
+    sep.setBackgroundColor(QColor(160, 160, 160))
+    sep.setFrameEnabled(False)
+    layout.addLayoutItem(sep)
+
+    # --- 岩性图例（手动创建色块+文字）---
+    yanxing_data = []
+    if geology_layer is not None:
+        tif_source = geology_layer.source()
+        yanxing_data = _read_geology_yanxing(tif_source)
+
+    if yanxing_data:
+        yanxing_start_y = sep_y + 1.5  # 分隔线下方留1.5mm
+
+        # 岩性区域标题
+        yx_title = QgsLayoutItemLabel(layout)
+        yx_title.setText("岩  性")
+        yx_title.setTextFormat(_make_text_format("宋体", 8, QColor(0, 0, 0)))
+        yx_title.setHAlign(Qt.AlignCenter)
+        yx_title.attemptResize(QgsLayoutSize(lw, 5.0, QgsUnitTypes.LayoutMillimeters))
+        yx_title.attemptMove(QgsLayoutPoint(lx, yanxing_start_y,
+                                            QgsUnitTypes.LayoutMillimeters))
+        yx_title.setBackgroundEnabled(False)
+        yx_title.setFrameEnabled(False)
+        layout.addLayoutItem(yx_title)
+
+        # 每个岩性项目：色块 + 文字
+        item_h = 4.5       # 每项高度(mm)
+        block_w = 7.0      # 色块宽度(mm)
+        block_h = 3.5      # 色块高度(mm)
+        text_x = lx + block_w + 2.5   # 文字起始X
+        text_w = lw - block_w - 3.5   # 文字宽度
+
+        for i, (r, g, b, yanxing_text) in enumerate(yanxing_data):
+            item_y = yanxing_start_y + 5.5 + i * item_h
+            if item_y + item_h > ly + lh - 1.0:
+                # 超出图例面板，停止
+                break
+
+            # 色块（用 QgsLayoutItemLabel 背景色实现矩形色块）
+            color_block = QgsLayoutItemLabel(layout)
+            color_block.setText("")
+            color_block.setBackgroundEnabled(True)
+            color_block.setBackgroundColor(QColor(r, g, b))
+            color_block.setFrameEnabled(True)
+            color_block.setFrameStrokeColor(QColor(0, 0, 0))
+            color_block.setFrameStrokeWidth(
+                QgsLayoutMeasurement(0.2, QgsUnitTypes.LayoutMillimeters))
+            color_block.attemptResize(QgsLayoutSize(block_w, block_h,
+                                                     QgsUnitTypes.LayoutMillimeters))
+            color_block.attemptMove(QgsLayoutPoint(
+                lx + 1.5, item_y + (item_h - block_h) / 2.0,
+                QgsUnitTypes.LayoutMillimeters))
+            layout.addLayoutItem(color_block)
+
+            # 岩性文字
+            text_lbl = QgsLayoutItemLabel(layout)
+            text_lbl.setText(yanxing_text)
+            text_lbl.setTextFormat(_make_text_format("宋体", 7, QColor(0, 0, 0)))
+            text_lbl.attemptResize(QgsLayoutSize(text_w, item_h,
+                                                  QgsUnitTypes.LayoutMillimeters))
+            text_lbl.attemptMove(QgsLayoutPoint(
+                text_x, item_y, QgsUnitTypes.LayoutMillimeters))
+            text_lbl.setBackgroundEnabled(False)
+            text_lbl.setFrameEnabled(False)
+            layout.addLayoutItem(text_lbl)
+
 
 def _add_scalebar(layout, map_item, ml, mt, mw, mh, scale_denom):
     """
-    添加比例尺（地图右下角对齐）
+    添加比例尺（地图框内部右下角对齐）
 
     参数:
         layout: 布局
@@ -984,23 +1199,26 @@ def _add_scalebar(layout, map_item, ml, mt, mw, mh, scale_denom):
     sb.setLineColor(QColor(0, 0, 0))
     sb.setLineWidth(MAP_BORDER_WIDTH_MM)
 
+    # 先加入布局，再调用 applyDefaultSize 确保在布局上下文中计算尺寸
+    layout.addLayoutItem(sb)
     sb.applyDefaultSize()
 
-    # 定位到右下角
+    # 定位到地图框内部右下角
     sz = sb.sizeWithUnits()
-    mr = ml + mw
-    mb = mt + mh
+    mr = ml + mw   # 地图右边框X
+    mb = mt + mh   # 地图下边框Y
+    # 比例尺右边框与地图右边框重合，下边框与地图下边框重合
     sb.attemptMove(QgsLayoutPoint(
         mr - sz.width(), mb - sz.height(), QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(sb)
 
-    # 比例尺数字
+    # 比例尺数字标签（放在比例尺上方，也在地图框内部）
     rl = QgsLayoutItemLabel(layout)
     rl.setText(f"1:{scale_denom:,}")
     rl.setTextFormat(_make_text_format(
         "Times New Roman", SCALE_BAR_FONT_SIZE, QColor(0, 0, 0)))
     rl.adjustSizeToText()
     rh = rl.sizeWithUnits().height()
+    # 数字标签放在比例尺上方，右边与比例尺右边对齐
     rl.attemptMove(QgsLayoutPoint(
         mr - sz.width(), mb - sz.height() - rh - 0.5,
         QgsUnitTypes.LayoutMillimeters))
@@ -1187,7 +1405,9 @@ def test_generate_earthquake_geological_map():
     print("  ✓ 罗马数字")
 
     assert "E" in format_degree_label(test_lon, True)
-    assert "N" in format_degree_label(test_lat, False)
+    # 纬度格式不再含 N 后缀，只包含度分符号
+    assert "°" in format_degree_label(test_lat, False)
+    assert "N" not in format_degree_label(test_lat, False)
     print(f"  ✓ 格式化: {format_degree_label(test_lon,True)}, "
           f"{format_degree_label(test_lat,False)}")
 
