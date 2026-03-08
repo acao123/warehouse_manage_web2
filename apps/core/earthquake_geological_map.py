@@ -84,8 +84,8 @@ MM_PX = OUTPUT_DPI / 25.4
 TOTAL_WIDTH_PX = int(200 * MM_PX)
 MAP_BORDER_WIDTH = max(2, int(round(0.35 * MM_PX)))
 LEGEND_WIDTH = int(34 * MM_PX)
-BORDER_LEFT = int(14 * MM_PX)
-BORDER_TOP = int(11 * MM_PX)
+BORDER_LEFT = int(9 * MM_PX)
+BORDER_TOP = int(7 * MM_PX)
 BORDER_BOTTOM = int(5 * MM_PX)
 MAP_WIDTH = TOTAL_WIDTH_PX - BORDER_LEFT - LEGEND_WIDTH
 MAP_HEIGHT = MAP_WIDTH
@@ -168,12 +168,24 @@ def geo_to_pixel(lon, lat, geo_extent, img_width, img_height):
 
 
 def format_degree(value, is_lon=True):
-    """将十进制度数格式化为 度°分'方向 格式（如 103°24'E 或 34°12'N）"""
+    """将十进制度数格式化为度分格式。
+    经度格式：X°X′E 或 X°X′W（保留方向后缀）；
+    纬度格式：X°X′（不加 N/S 后缀）。
+
+    参数:
+        value (float): 十进制度数
+        is_lon (bool): True=经度，False=纬度
+    返回:
+        str: 格式化字符串
+    """
     abs_val = abs(value)
     degrees = int(abs_val)
     minutes = int((abs_val - degrees) * 60)
-    suffix = ("E" if value >= 0 else "W") if is_lon else ("N" if value >= 0 else "S")
-    return "%d\u00b0%02d\u2032%s" % (degrees, minutes, suffix)
+    if is_lon:
+        suffix = "E" if value >= 0 else "W"
+        return "%d\u00b0%02d\u2032%s" % (degrees, minutes, suffix)
+    else:
+        return "%d\u00b0%02d\u2032" % (degrees, minutes)
 
 
 def int_to_roman(num):
@@ -284,8 +296,118 @@ def read_dbf_file(dbf_path):
         return [], []
 
 
+def _read_color_from_vat_dbf(tif_path):
+    """从 .vat.dbf 属性表读取每个Value对应的RGB颜色，返回字典 {value: (r, g, b, 255)}。
+
+    参数:
+        tif_path (str): TIF文件路径
+    返回:
+        dict: {像素值(int): (R, G, B, 255)} 的颜色映射字典
+    """
+    base = os.path.splitext(tif_path)[0]
+    candidate_dbf = [tif_path + ".vat.dbf", base + ".vat.dbf",
+                     base + ".VAT.dbf", base + ".dbf"]
+    dbf_path = None
+    for p in candidate_dbf:
+        if os.path.exists(p):
+            dbf_path = p
+            break
+    if dbf_path is None:
+        return {}
+    fields, records = read_dbf_file(dbf_path)
+    if not records:
+        return {}
+    fl = {f.lower(): f for f in fields}
+    value_field = fl.get("value") or fl.get("val") or (fields[0] if fields else None)
+    red_field = fl.get("red") or fl.get("r")
+    green_field = fl.get("green") or fl.get("g")
+    blue_field = fl.get("blue") or fl.get("b")
+    if not (value_field and red_field and green_field and blue_field):
+        return {}
+    color_map = {}
+    for rec in records:
+        try:
+            value = int(float(rec.get(value_field, 0) or 0))
+        except (ValueError, TypeError):
+            continue
+        try:
+            r = int(float(rec.get(red_field, 0) or 0))
+            g = int(float(rec.get(green_field, 0) or 0))
+            b = int(float(rec.get(blue_field, 0) or 0))
+            color_map[value] = (r, g, b, 255)
+        except (ValueError, TypeError):
+            pass
+    return color_map
+
+
+def _parse_qml_colors(tif_path):
+    """从QGIS QML样式文件解析每个Value对应的颜色，返回字典 {value: (r, g, b, 255)}。
+    支持 paletteEntry 和 item 两种节点格式，颜色字符串支持 #RRGGBB 和 #AARRGGBB。
+
+    参数:
+        tif_path (str): TIF文件路径（自动查找同目录下同名.qml文件）
+    返回:
+        dict: {像素值(int): (R, G, B, 255)} 的颜色映射字典
+    """
+    base = os.path.splitext(tif_path)[0]
+    qml_candidates = [
+        base + ".qml",
+        tif_path + ".qml",
+        os.path.join(os.path.dirname(tif_path), "group.qml"),
+    ]
+    qml_path = None
+    for p in qml_candidates:
+        if os.path.exists(p):
+            qml_path = p
+            break
+    if qml_path is None:
+        return {}
+    try:
+        from lxml import etree as _ET
+        with open(qml_path, "rb") as f:
+            root = _ET.fromstring(f.read())
+        color_map = {}
+        # 遍历所有 paletteEntry 和 item 节点
+        for entry in root.iter():
+            if entry.tag in ("paletteEntry", "item"):
+                val_str = entry.get("value")
+                color_str = entry.get("color")
+                if val_str is None or not color_str:
+                    continue
+                try:
+                    val = int(float(val_str))
+                except (ValueError, TypeError):
+                    continue
+                color_str = color_str.strip()
+                if color_str.startswith("#"):
+                    hex_c = color_str[1:]
+                    if len(hex_c) == 6:
+                        # #RRGGBB
+                        r = int(hex_c[0:2], 16)
+                        g = int(hex_c[2:4], 16)
+                        b = int(hex_c[4:6], 16)
+                        color_map[val] = (r, g, b, 255)
+                    elif len(hex_c) == 8:
+                        # #AARRGGBB（QGIS格式，前两位为Alpha）
+                        r = int(hex_c[2:4], 16)
+                        g = int(hex_c[4:6], 16)
+                        b = int(hex_c[6:8], 16)
+                        color_map[val] = (r, g, b, 255)
+        print("  QML颜色映射解析完成，共 %d 个条目" % len(color_map))
+        return color_map
+    except (IOError, OSError, ValueError, TypeError) as e:
+        print("  QML解析失败: %s" % e)
+        return {}
+
+
 def read_tif_attribute_table(tif_path):
-    """读取TIF属性表，提取岩性(yanxing)字段信息，返回[(value, color_rgba, yanxing_name),...]"""
+    """读取TIF属性表，提取岩性(yanxing)字段信息，返回[(value, color_rgba, yanxing_name),...]。
+
+    颜色获取优先级：
+    1. 从QML样式文件中按 Value 获取颜色（_parse_qml_colors）
+    2. 从属性表的 Red/Green/Blue 字段获取颜色
+    3. 默认灰色 (128, 128, 128, 255)
+    """
     result = []
     base = os.path.splitext(tif_path)[0]
     candidate_dbf = [tif_path + ".vat.dbf", base + ".vat.dbf",
@@ -313,6 +435,12 @@ def read_tif_attribute_table(tif_path):
     if yanxing_field is None:
         print("  未找到yanxing字段")
         return result
+    # 优先从QML样式文件获取颜色映射（按Value索引）
+    qml_color_map = _parse_qml_colors(tif_path)
+    if qml_color_map:
+        print("  使用QML样式文件颜色，共 %d 个条目" % len(qml_color_map))
+    else:
+        print("  未找到QML样式文件，回退到属性表颜色字段")
     red_field = fl.get("red") or fl.get("r")
     green_field = fl.get("green") or fl.get("g")
     blue_field = fl.get("blue") or fl.get("b")
@@ -326,15 +454,19 @@ def read_tif_attribute_table(tif_path):
         if not yanxing or yanxing in seen:
             continue
         seen.add(yanxing)
+        # 颜色获取：优先QML，其次属性表RGB字段，最后默认灰色
         color = (128, 128, 128, 255)
-        try:
-            if red_field and green_field and blue_field:
-                r = int(float(rec.get(red_field, 128) or 128))
-                g = int(float(rec.get(green_field, 128) or 128))
-                b = int(float(rec.get(blue_field, 128) or 128))
-                color = (r, g, b, 255)
-        except (ValueError, TypeError):
-            pass
+        if qml_color_map and value in qml_color_map:
+            color = qml_color_map[value]
+        else:
+            try:
+                if red_field and green_field and blue_field:
+                    r = int(float(rec.get(red_field, 128) or 128))
+                    g = int(float(rec.get(green_field, 128) or 128))
+                    b = int(float(rec.get(blue_field, 128) or 128))
+                    color = (r, g, b, 255)
+            except (ValueError, TypeError):
+                pass
         result.append((value, color, yanxing))
     print("  读取到 %d 个岩性图例项" % len(result))
     return result
@@ -401,18 +533,41 @@ def _load_tif_rasterio(tif_path, geo_extent, img_width, img_height):
             data = src.read(out_shape=out_shape, resampling=Resampling.lanczos)
         if src.count == 1:
             band = data[0]
-            try:
-                cmap = src.colormap(1)
-                lut = np.zeros((256, 4), dtype="uint8")
-                lut[:, 3] = 255
-                for v, rgba_c in cmap.items():
-                    lut[int(v) % 256] = list(rgba_c)[:4]
-                flat = band.flatten().astype(int) % 256
-                rgba_arr = lut[flat].reshape(band.shape[0], band.shape[1], 4)
-            except (KeyError, ValueError, AttributeError):
-                gray = band.astype("uint8")
-                alpha = np.full_like(gray, 255)
-                rgba_arr = np.stack([gray, gray, gray, alpha], axis=-1)
+            # 优先从 .vat.dbf 属性表获取颜色映射（支持值大于256）
+            color_map = _read_color_from_vat_dbf(tif_path)
+            if not color_map:
+                # 属性表无颜色字段时尝试QML文件
+                color_map = _parse_qml_colors(tif_path)
+            if color_map:
+                # 使用字典映射逐像素赋色，避免 % 256 引起的颜色错误
+                rgba_arr = np.zeros((band.shape[0], band.shape[1], 4), dtype="uint8")
+                rgba_arr[:, :, 3] = 255  # 默认完全不透明
+                for v in np.unique(band):
+                    v_int = int(v)
+                    c = color_map.get(v_int, (128, 128, 128, 255))
+                    mask = (band == v)
+                    rgba_arr[mask, 0] = c[0]
+                    rgba_arr[mask, 1] = c[1]
+                    rgba_arr[mask, 2] = c[2]
+                    rgba_arr[mask, 3] = c[3]
+            else:
+                try:
+                    cmap = src.colormap(1)
+                    # 根据实际值范围分配LUT，不使用固定256的取模操作
+                    max_val = int(band.max()) + 1
+                    lut_size = max(256, max_val)
+                    lut = np.zeros((lut_size, 4), dtype="uint8")
+                    lut[:, 3] = 255
+                    for v, rgba_c in cmap.items():
+                        idx = int(v)
+                        if 0 <= idx < lut_size:
+                            lut[idx] = list(rgba_c)[:4]
+                    flat = np.clip(band.flatten().astype(np.int32), 0, lut_size - 1)
+                    rgba_arr = lut[flat].reshape(band.shape[0], band.shape[1], 4)
+                except (KeyError, ValueError, AttributeError):
+                    gray = band.astype("uint8")
+                    alpha = np.full_like(gray, 255)
+                    rgba_arr = np.stack([gray, gray, gray, alpha], axis=-1)
         elif src.count == 3:
             r, g, b = data[0], data[1], data[2]
             alpha = np.full((img_height, img_width), 255, dtype="uint8")
@@ -898,7 +1053,8 @@ def draw_scale_bar(draw, map_right, map_bottom, scale_denom,
                    map_width, geo_extent, center_lat):
     """
     绘制线段比例尺（右下角，右边框和下边框对齐）
-    样式：白色背景，黑色0.35mm边框，黑白交替线段，字体8pt
+    样式：白色背景，黑色0.35mm边框，上方显示比例文字（如 1：500,000），
+          下方为黑白交替线段和公里数标注，字体8pt
     """
     lon_range = geo_extent["max_lon"] - geo_extent["min_lon"]
     km_per_pixel = lon_range * 111.32 * math.cos(math.radians(center_lat)) / map_width
@@ -921,16 +1077,25 @@ def draw_scale_bar(draw, map_right, map_bottom, scale_denom,
     text_h = bb_end[3] - bb_end[1]
     bar_h = max(5, int(1.2 * MM_PX))
     pad = 5
-    box_total_w = zero_w // 2 + bar_px + end_w + 10 + pad * 2
-    box_total_h = bar_h + text_h + pad * 2 + 4
+    # 比例文字，如 1：500,000（中文冒号，千分位分隔符）
+    ratio_text = "1\uff1a%s" % "{:,}".format(scale_denom)
+    bb_ratio = draw.textbbox((0, 0), ratio_text, font=font)
+    ratio_w = bb_ratio[2] - bb_ratio[0]
+    ratio_h = bb_ratio[3] - bb_ratio[1]
+    box_total_w = max(zero_w // 2 + bar_px + end_w + 10 + pad * 2, ratio_w + pad * 2)
+    box_total_h = ratio_h + 2 + bar_h + text_h + pad * 2 + 4
     bx2 = map_right
     by2 = map_bottom
     bx1 = bx2 - box_total_w
     by1 = by2 - box_total_h
     draw.rectangle([bx1, by1, bx2, by2],
                    fill=(255, 255, 255, 240), outline=(0, 0, 0, 255), width=MAP_BORDER_WIDTH)
+    # 绘制比例文字（居中显示在比例尺上方）
+    ratio_x = bx1 + (box_total_w - ratio_w) // 2
+    draw.text((ratio_x, by1 + pad), ratio_text, fill=(0, 0, 0, 255), font=font)
+    # 比例尺线段起始Y坐标（在比例文字下方）
+    bar_y = by1 + pad + ratio_h + 2
     bar_x = bx1 + pad + zero_w // 2
-    bar_y = by1 + pad
     seg_w = bar_px // 4
     for i in range(4):
         c = (0, 0, 0, 255) if i % 2 == 0 else (255, 255, 255, 255)
@@ -1321,7 +1486,8 @@ def test_format_degree():
     result = format_degree(103.25, is_lon=True)
     assert "103" in result and "E" in result, "经度格式错误: %s" % result
     result = format_degree(34.06, is_lon=False)
-    assert "34" in result and "N" in result, "纬度格式错误: %s" % result
+    # 纬度不再附加 N/S 后缀，只显示 X°X′
+    assert "34" in result and "N" not in result and "S" not in result, "纬度格式错误: %s" % result
     result = format_degree(-120.5, is_lon=True)
     assert "120" in result and "W" in result, "西经格式错误: %s" % result
     print("  【通过】format_degree测试全部通过")
