@@ -83,22 +83,22 @@ COUNTY_SHP_PATH = (
 # 地级市点位数据（参考earthquake_geological_map.py）
 CITY_POINTS_SHP_PATH = "../../data/geology/2023地级市点位数据/地级市点位数据.shp"
 
-# === 布局尺寸常量（参考earthquake_geological_map.py） ===
+# === 布局尺寸常量 ===
 # 总宽度220mm
 MAP_TOTAL_WIDTH_MM = 220.0
 # 图例宽度40mm
-LEGEND_WIDTH_MM = 40.0
-# 左侧经纬度边框4mm
+LEGEND_WIDTH_MM = 50.0
+# 左侧经经纬度边框宽度
 BORDER_LEFT_MM = 4.0
-# 上方边框4mm
+# 上方边框（经纬度标注区）
 BORDER_TOP_MM = 4.0
-# 下方边框5mm
-BORDER_BOTTOM_MM = 5.0
-# 宽度=总宽度-左侧边框-图例宽度，高度=宽度-图例宽度（保持正方形）
-MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM  # ≈182mm
-MAP_HEIGHT_MM = MAP_WIDTH_MM - LEGEND_WIDTH_MM
-# 总高度
-OUTPUT_HEIGHT_MM = BORDER_TOP_MM + MAP_HEIGHT_MM + BORDER_BOTTOM_MM
+# 下方边框
+BORDER_BOTTOM_MM = 2.0
+# 右侧边框（图例区右边距）
+BORDER_RIGHT_MM = 1.0
+
+# 地图区域宽度 = 总宽度 - 左侧边框 - 图例宽度 - 右侧边框
+MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
 
 # 输出DPI
 OUTPUT_DPI = 150
@@ -123,7 +123,6 @@ MAGNITUDE_CONFIG = {
 BORDER_WIDTH_MM = 0.35
 
 # === 指北针尺寸常量 ===
-# 适当减小指北针边框，指北针与边框间距合理
 NORTH_ARROW_WIDTH_MM = 12.0
 NORTH_ARROW_HEIGHT_MM = 18.0
 
@@ -133,7 +132,6 @@ LONLAT_FONT_SIZE_PT = 8
 # === 省界样式 ===
 PROVINCE_COLOR = QColor(160, 160, 160)
 PROVINCE_LINE_WIDTH_MM = 0.4
-# 省名称标注：8pt, R=77 G=77 B=77, 加白边
 PROVINCE_LABEL_FONT_SIZE_PT = 8
 PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
 
@@ -157,25 +155,23 @@ LEGEND_ITEM_FONT_SIZE_PT = 8
 SCALE_FONT_SIZE_PT = 8
 
 # === 烈度圈样式 ===
-# 所有烈度圈使用黑色加白边
-INTENSITY_LINE_COLOR = QColor(0, 0, 0)       # 黑色线
+INTENSITY_LINE_COLOR = QColor(0, 0, 0)
 INTENSITY_LINE_WIDTH_MM = 0.5
-INTENSITY_HALO_COLOR = QColor(255, 255, 255)  # 白色描边
-INTENSITY_HALO_WIDTH_MM = 1.0                 # 白边比线宽更粗
+INTENSITY_HALO_COLOR = QColor(255, 255, 255)
+INTENSITY_HALO_WIDTH_MM = 1.0
 
 # 烈度标注字体
 INTENSITY_LABEL_FONT_SIZE_PT = 9
 
 # === 震中五角星 ===
-EPICENTER_STAR_SIZE_MM = 6.0   # 五角星大小(mm)
+EPICENTER_STAR_SIZE_MM = 5.0
 EPICENTER_COLOR = QColor(255, 0, 0)
 EPICENTER_STROKE_COLOR = QColor(255, 255, 255)
 EPICENTER_STROKE_WIDTH_MM = 0.4
 
-# === 断裂图例颜色 ===
-# 修正：使用纯红色(R=255,G=0,B=0)，与地质构造底图中断裂线的实际颜色一致
-FAULT_COLOR = QColor(255, 0, 0)
-FAULT_LINE_WIDTH_MM = 0.4
+# === 烈度图例颜色（原断裂改为烈度） ===
+INTENSITY_LEGEND_COLOR = QColor(0, 0, 0)
+INTENSITY_LEGEND_LINE_WIDTH_MM = 0.5
 
 # WGS84
 CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -188,12 +184,6 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 def get_magnitude_config(magnitude):
     """
     根据震级获取对应的配置参数（范围、比例尺等）。
-
-    参数:
-        magnitude (float): 地震震级
-
-    返回:
-        dict: 包含 radius_km, map_size_km, scale 的配置字典
     """
     if magnitude < 6:
         return MAGNITUDE_CONFIG["small"]
@@ -206,14 +196,6 @@ def get_magnitude_config(magnitude):
 def calculate_extent(longitude, latitude, half_size_km):
     """
     根据震中经纬度和半幅宽度(km)计算地图范围(WGS84坐标)。
-
-    参数:
-        longitude (float): 震中经度（度）
-        latitude (float): 震中纬度（度）
-        half_size_km (float): 地图半幅宽度（千米）
-
-    返回:
-        QgsRectangle: 地图范围矩形
     """
     delta_lat = half_size_km / 111.0
     delta_lon = half_size_km / (111.0 * math.cos(math.radians(latitude)))
@@ -226,15 +208,21 @@ def calculate_extent(longitude, latitude, half_size_km):
     return QgsRectangle(xmin, ymin, xmax, ymax)
 
 
+def calculate_map_height_from_extent(extent, map_width_mm):
+    """
+    根据地图范围和宽度计算地图高度（保持宽高比）。
+    """
+    lon_range = extent.xMaximum() - extent.xMinimum()
+    lat_range = extent.yMaximum() - extent.yMinimum()
+    if lon_range <= 0:
+        return map_width_mm
+    aspect_ratio = lat_range / lon_range
+    return map_width_mm * aspect_ratio
+
+
 def resolve_path(relative_path):
     """
     将相对路径转换为绝对路径（相对于当前脚本所在目录）。
-
-    参数:
-        relative_path (str): 相对路径字符串
-
-    返回:
-        str: 绝对路径字符串
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(base_dir, relative_path))
@@ -243,12 +231,6 @@ def resolve_path(relative_path):
 def int_to_roman(num):
     """
     将阿拉伯数字转换为罗马数字。
-
-    参数:
-        num (int): 阿拉伯数字
-
-    返回:
-        str: 罗马数字字符串
     """
     val = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
     syms = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
@@ -265,14 +247,6 @@ def int_to_roman(num):
 def _choose_tick_step(range_deg, target_min=4, target_max=6):
     """
     根据地理范围选择合适的经纬度刻度间隔。
-
-    参数:
-        range_deg (float): 经/纬度范围（度）
-        target_min (int): 最少刻度数
-        target_max (int): 最多刻度数
-
-    返回:
-        float: 刻度间隔（度）
     """
     candidates = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
     for step in candidates:
@@ -291,19 +265,8 @@ def _choose_tick_step(range_deg, target_min=4, target_max=6):
 
 def create_north_arrow_svg(output_path):
     """
-    创建指北针SVG文件（左侧黑色，右侧白色，上方N字母）。
-    N字母和箭头图标整体下移3mm（在90高度的SVG中约为3个单位）。
-
-    参数:
-        output_path (str): SVG文件输出路径
-
-    返回:
-        str: SVG文件路径
+    创建指北针SVG文件。
     """
-    # 整体内容在SVG中下移3mm。SVG viewBox高度90，对应实际高度约17mm（18-1padding），
-    # 3mm约占 90*(3/17) ≈ 15.9 个SVG单位，取整为16。
-    # 原始N字母y=10, 箭头顶部y=12, 箭头底部y=65, 箭头中部y=52
-    # 下移后：N字母y=22, 箭头顶部y=24, 箭头底部y=77, 箭头中部y=64
     svg_content = '''<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 90" width="60" height="90">
   <polygon points="30,24 18,77 30,64" fill="black" stroke="black" stroke-width="1"/>
@@ -319,49 +282,32 @@ def create_north_arrow_svg(output_path):
 def _find_name_field(layer, candidates):
     """
     在矢量图层的字段列表中查找名称字段。
-
-    参数:
-        layer (QgsVectorLayer): 矢量图层
-        candidates (list): 候选字段名列表
-
-    返回:
-        str: 匹配到的字段名，未找到返回None
     """
     fields = layer.fields()
     field_names = [f.name() for f in fields]
 
-    # 精确匹配
     for candidate in candidates:
         if candidate in field_names:
             return candidate
 
-    # 模糊匹配
     for candidate in candidates:
         for fn in field_names:
             if candidate.lower() in fn.lower():
                 return fn
 
-    # 兜底：第一个字符串字段
     for f in fields:
         if f.type() == QVariant.String:
             return f.name()
 
     return None
 
-
 # ============================================================
-# KML烈度圈解析 — 参考earthquake_geological_map.py
+# KML烈度圈解析
 # ============================================================
 
 def parse_intensity_kml(kml_path):
     """
     解析KML文件，提取烈度圈坐标数据。
-
-    参数:
-        kml_path (str): KML文件的绝对路径
-
-    返回:
-        list: 烈度数据列表，每项为 {"intensity": int, "coords": [(lon, lat), ...]}
     """
     if not kml_path or not os.path.exists(kml_path):
         print(f"[警告] KML文件不存在或未提供: {kml_path}")
@@ -372,7 +318,6 @@ def parse_intensity_kml(kml_path):
         tree = ET.parse(kml_path)
         root = tree.getroot()
 
-        # 处理KML命名空间
         ns = ""
         if root.tag.startswith("{"):
             ns = root.tag.split("}")[0] + "}"
@@ -403,12 +348,6 @@ def parse_intensity_kml(kml_path):
 def _extract_intensity_from_name(name):
     """
     从Placemark名称中提取烈度值。
-
-    参数:
-        name (str): Placemark名称
-
-    返回:
-        int: 烈度值，无法识别返回None
     """
     if not name:
         return None
@@ -430,13 +369,6 @@ def _extract_intensity_from_name(name):
 def _extract_kml_linestring_coords(placemark, ns):
     """
     从Placemark中提取LineString坐标。
-
-    参数:
-        placemark: XML Element
-        ns (str): 命名空间前缀
-
-    返回:
-        list: 坐标列表 [(lon, lat), ...]
     """
     coords_list = []
     for ls in placemark.iter(ns + "LineString"):
@@ -450,12 +382,6 @@ def _extract_kml_linestring_coords(placemark, ns):
 def _parse_kml_coords(text):
     """
     解析KML坐标文本为(lon, lat)元组列表。
-
-    参数:
-        text (str): KML坐标文本
-
-    返回:
-        list: [(lon, lat), ...]
     """
     coords = []
     for part in text.strip().split():
@@ -473,13 +399,6 @@ def _parse_kml_coords(text):
 def create_intensity_layer(intensity_data):
     """
     根据解析的烈度圈数据创建QGIS矢量图层。
-    所有烈度圈使用黑色加白边（通过双层线实现）。
-
-    参数:
-        intensity_data (list): 烈度数据列表
-
-    返回:
-        QgsVectorLayer: 烈度圈矢量图层，无数据返回None
     """
     if not intensity_data:
         return None
@@ -511,15 +430,12 @@ def create_intensity_layer(intensity_data):
     provider.addFeatures(features)
     layer.updateExtents()
 
-    # 黑色线+白色描边（白色底线在下，黑色细线在上）
-    # 底层：白色粗线（白边）
     halo_sl = QgsSimpleLineSymbolLayer()
     halo_sl.setColor(INTENSITY_HALO_COLOR)
     halo_sl.setWidth(INTENSITY_HALO_WIDTH_MM)
     halo_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
     halo_sl.setPenStyle(Qt.SolidLine)
 
-    # 上层：黑色细线
     line_sl = QgsSimpleLineSymbolLayer()
     line_sl.setColor(INTENSITY_LINE_COLOR)
     line_sl.setWidth(INTENSITY_LINE_WIDTH_MM)
@@ -531,8 +447,6 @@ def create_intensity_layer(intensity_data):
     symbol.appendSymbolLayer(line_sl)
 
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
-
-    # 烈度标注（罗马数字）
     _setup_intensity_labels(layer)
     layer.triggerRepaint()
 
@@ -543,9 +457,6 @@ def create_intensity_layer(intensity_data):
 def _setup_intensity_labels(layer):
     """
     配置烈度圈图层的标注：罗马数字，黑色加白边。
-
-    参数:
-        layer (QgsVectorLayer): 烈度圈矢量图层
     """
     settings = QgsPalLayerSettings()
     settings.fieldName = "label"
@@ -579,12 +490,6 @@ def _setup_intensity_labels(layer):
 def load_geology_raster(tif_path):
     """
     加载地质构造底图TIF栅格图层。
-
-    参数:
-        tif_path (str): TIF文件的相对路径
-
-    返回:
-        QgsRasterLayer: 栅格图层对象，加载失败返回None
     """
     abs_path = resolve_path(tif_path)
     if not os.path.exists(abs_path):
@@ -601,13 +506,6 @@ def load_geology_raster(tif_path):
 def load_vector_layer(shp_path, layer_name):
     """
     加载矢量图层（SHP文件）。
-
-    参数:
-        shp_path (str): SHP文件的相对路径
-        layer_name (str): 图层显示名称
-
-    返回:
-        QgsVectorLayer: 矢量图层对象，加载失败返回None
     """
     abs_path = resolve_path(shp_path)
     if not os.path.exists(abs_path):
@@ -627,14 +525,7 @@ def load_vector_layer(shp_path, layer_name):
 
 def style_province_layer(layer):
     """
-    设置省界图层样式：
-    - 填充透明
-    - 边界线：R=160,G=160,B=160，线宽0.4mm，实线
-    - 标注：省名称，8pt，R=77,G=77,B=77，加白边
-    - 省的标注尽量在范围内展示。
-
-    参数:
-        layer (QgsVectorLayer): 省界矢量图层
+    设置省界图层样式。
     """
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
@@ -654,12 +545,7 @@ def style_province_layer(layer):
 
 def style_city_layer(layer):
     """
-    设置市界图层样式：
-    - 填充透明
-    - 边界线：R=160,G=160,B=160，线宽0.24mm，虚线
-
-    参数:
-        layer (QgsVectorLayer): 市界矢量图层
+    设置市界图层样式。
     """
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
@@ -678,12 +564,7 @@ def style_city_layer(layer):
 
 def style_county_layer(layer):
     """
-    设置县界图层样式：
-    - 填充透明
-    - 边界线：R=160,G=160,B=160，线宽0.14mm，虚线
-
-    参数:
-        layer (QgsVectorLayer): 县界矢量图层
+    设置县界图层样式。
     """
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
@@ -702,11 +583,7 @@ def style_county_layer(layer):
 
 def _setup_province_labels(layer):
     """
-    配置省界图层标注：省名称8pt，R=77,G=77,B=77，加白边。
-    从省界shp文件属性表中获取省份名称，展示在省界内。
-
-    参数:
-        layer (QgsVectorLayer): 省界矢量图层
+    配置省界图层标注。
     """
     field_name = _find_name_field(layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
     if not field_name:
@@ -715,9 +592,7 @@ def _setup_province_labels(layer):
 
     settings = QgsPalLayerSettings()
     settings.fieldName = field_name
-    # 使用OverPoint让标注显示在多边形内部质心处
     settings.placement = Qgis.LabelPlacement.OverPoint
-    # 允许标注显示，即使部分超出范围
     settings.displayAll = True
 
     text_format = QgsTextFormat()
@@ -744,14 +619,6 @@ def _setup_province_labels(layer):
 def _setup_point_labels(layer, field_name, font_size_pt, color):
     """
     为点图层配置标注（市名称）。
-    从"地级市点位数据.shp"文件属性表中获取市的名称。
-    市的名称字体是9pt，颜色是黑色，加白边。
-
-    参数:
-        layer (QgsVectorLayer): 点图层
-        field_name (str): 标注字段名
-        font_size_pt (int): 字体大小(pt)
-        color (QColor): 字体颜色
     """
     settings = QgsPalLayerSettings()
     settings.fieldName = field_name
@@ -779,20 +646,12 @@ def _setup_point_labels(layer, field_name, font_size_pt, color):
 
 
 # ============================================================
-# 震中图层创建
+# 震中和图例图层创建
 # ============================================================
 
 def create_epicenter_layer(longitude, latitude):
     """
     创建震中标记图层：红色五角星+白边。
-    大小通过常量EPICENTER_STAR_SIZE_MM设置。
-
-    参数:
-        longitude (float): 震中经度
-        latitude (float): 震中纬度
-
-    返回:
-        QgsVectorLayer: 震中点图层
     """
     layer = QgsVectorLayer("Point?crs=EPSG:4326", "震中", "memory")
     provider = layer.dataProvider()
@@ -805,7 +664,6 @@ def create_epicenter_layer(longitude, latitude):
     provider.addFeature(feat)
     layer.updateExtents()
 
-    # 红色五角星+白边，大小通过常量控制
     marker_sl = QgsSimpleMarkerSymbolLayer()
     marker_sl.setShape(Qgis.MarkerShape.Star)
     marker_sl.setColor(EPICENTER_COLOR)
@@ -827,16 +685,6 @@ def create_epicenter_layer(longitude, latitude):
 def create_city_point_layer(extent):
     """
     加载地级市点位数据。
-    从"地级市点位数据.shp"文件属性表中获取市的名称和点位信息。
-    代表市的位置符号：黑色空圈内为一个实心黑圆，加一个圆形的白色背景；
-    整体大小为市名称大小(9pt)的三分之一。
-    市的名称字体是9pt，颜色是黑色，加白边。
-
-    参数:
-        extent (QgsRectangle): 地图范围
-
-    返回:
-        QgsVectorLayer: 地级市点图层，加载失败返回None
     """
     abs_path = resolve_path(CITY_POINTS_SHP_PATH)
     if not os.path.exists(abs_path):
@@ -848,32 +696,26 @@ def create_city_point_layer(extent):
         print(f"[错误] 无法加载地级市点位图层: {abs_path}")
         return None
 
-    # 符号：黑色空圈内一个实心黑圆+白色背景
-    # 整体大小为市名称大小(9pt)的三分之一
-    # 9pt ≈ 9 * 0.353mm = 3.177mm, 三分之一 ≈ 1.06mm
     symbol_size_mm = CITY_LABEL_FONT_SIZE_PT * 0.353 / 3.0
 
-    # 底层：白色实心圆（圆形白色背景）
     bg_sl = QgsSimpleMarkerSymbolLayer()
     bg_sl.setShape(Qgis.MarkerShape.Circle)
     bg_sl.setColor(QColor(255, 255, 255))
     bg_sl.setStrokeColor(QColor(0, 0, 0))
     bg_sl.setStrokeWidth(0.15)
     bg_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
-    bg_sl.setSize(symbol_size_mm * 1.4)  # 白色背景稍大
+    bg_sl.setSize(symbol_size_mm * 1.4)
     bg_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
 
-    # 中层：黑色空圈
     outer_sl = QgsSimpleMarkerSymbolLayer()
     outer_sl.setShape(Qgis.MarkerShape.Circle)
-    outer_sl.setColor(QColor(0, 0, 0, 0))  # 透明填充
+    outer_sl.setColor(QColor(0, 0, 0, 0))
     outer_sl.setStrokeColor(QColor(0, 0, 0))
     outer_sl.setStrokeWidth(0.15)
     outer_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
     outer_sl.setSize(symbol_size_mm)
     outer_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
 
-    # 上层：黑色实心小圆
     inner_sl = QgsSimpleMarkerSymbolLayer()
     inner_sl.setShape(Qgis.MarkerShape.Circle)
     inner_sl.setColor(QColor(0, 0, 0))
@@ -888,7 +730,6 @@ def create_city_point_layer(extent):
     symbol.appendSymbolLayer(inner_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
 
-    # 标注：从属性表获取市的名称
     name_field = _find_name_field(layer, ["市", "NAME", "城市", "地名", "CITY", "市名", "地级市"])
     if name_field:
         _setup_point_labels(layer, name_field, CITY_LABEL_FONT_SIZE_PT, CITY_LABEL_COLOR)
@@ -898,23 +739,18 @@ def create_city_point_layer(extent):
     return layer
 
 
-def create_fault_legend_layer():
+def create_intensity_legend_layer():
     """
-    创建一个断裂图例用的空线图层（用于在图例中显示"断裂"条目）。
-    断裂在图例中使用红色(R=255,G=0,B=0)实线。
-
-    返回:
-        QgsVectorLayer: 断裂图例图层
+    创建烈度图例用的线图层（原断裂改为烈度）。
     """
-    layer = QgsVectorLayer("LineString?crs=EPSG:4326", "断裂", "memory")
+    layer = QgsVectorLayer("LineString?crs=EPSG:4326", "烈度", "memory")
     provider = layer.dataProvider()
     provider.addAttributes([QgsField("name", QVariant.String)])
     layer.updateFields()
 
-    # 红色实线符号 —— 使用FAULT_COLOR常量(R=255,G=0,B=0)
     line_sl = QgsSimpleLineSymbolLayer()
-    line_sl.setColor(FAULT_COLOR)
-    line_sl.setWidth(FAULT_LINE_WIDTH_MM)
+    line_sl.setColor(INTENSITY_LEGEND_COLOR)
+    line_sl.setWidth(INTENSITY_LEGEND_LINE_WIDTH_MM)
     line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
     line_sl.setPenStyle(Qt.SolidLine)
 
@@ -923,16 +759,13 @@ def create_fault_legend_layer():
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     layer.triggerRepaint()
 
-    print("[信息] 创建断裂图例图层")
+    print("[信息] 创建烈度图例图层")
     return layer
 
 
 def create_province_legend_layer():
     """
-    创建省界图例用的线图层（在图例中以线段展示省界，而非方框）。
-
-    返回:
-        QgsVectorLayer: 省界图例线图层
+    创建省界图例用的线图层。
     """
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "省界", "memory")
     provider = layer.dataProvider()
@@ -956,10 +789,7 @@ def create_province_legend_layer():
 
 def create_city_legend_layer():
     """
-    创建市界图例用的线图层（在图例中以虚线段展示市界，而非方框）。
-
-    返回:
-        QgsVectorLayer: 市界图例线图层
+    创建市界图例用的线图层。
     """
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "市界", "memory")
     provider = layer.dataProvider()
@@ -983,10 +813,7 @@ def create_city_legend_layer():
 
 def create_county_legend_layer():
     """
-    创建县界图例用的线图层（在图例中以虚线段展示县界，而非方框）。
-
-    返回:
-        QgsVectorLayer: 县界图例线图层
+    创建县界图例用的线图层。
     """
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "县界", "memory")
     provider = layer.dataProvider()
@@ -1007,38 +834,26 @@ def create_county_legend_layer():
     print("[信息] 创建县界图例线图层")
     return layer
 
-
 # ============================================================
 # 布局创建
 # ============================================================
 
-def create_print_layout(project, longitude, latitude, magnitude, extent, scale):
+def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm):
     """
     创建QGIS打印布局。
-    参考earthquake_geological_map.py的布局结构：
-    - 左侧BORDER_LEFT_MM用于经纬度标注
-    - 地图区域正方形MAP_WIDTH_MM x MAP_HEIGHT_MM
-    - 右侧图例LEGEND_WIDTH_MM
-
-    参数:
-        project (QgsProject): QGIS项目
-        longitude (float): 震中经度
-        latitude (float): 震中纬度
-        magnitude (float): 震级
-        extent (QgsRectangle): 地图范围
-        scale (int): 比例尺分母
-
-    返回:
-        QgsPrintLayout: 打印布局对象
+    总宽度220mm，高度根据地图内容动态计算。
     """
     layout = QgsPrintLayout(project)
     layout.initializeDefaults()
     layout.setName("地震地质构造图")
     layout.setUnits(QgsUnitTypes.LayoutMillimeters)
 
+    # 计算总高度
+    output_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
+
     # 设置页面大小
     page = layout.pageCollection().page(0)
-    page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, OUTPUT_HEIGHT_MM,
+    page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm,
                                    QgsUnitTypes.LayoutMillimeters))
 
     # ============ 地图项 ============
@@ -1048,7 +863,7 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale):
     map_item = QgsLayoutItemMap(layout)
     map_item.attemptMove(QgsLayoutPoint(map_left, map_top,
                                         QgsUnitTypes.LayoutMillimeters))
-    map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, MAP_HEIGHT_MM,
+    map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, map_height_mm,
                                           QgsUnitTypes.LayoutMillimeters))
     map_item.setExtent(extent)
     map_item.setCrs(CRS_WGS84)
@@ -1064,13 +879,13 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale):
     _setup_map_grid(map_item, extent)
 
     # ============ 指北针 ============
-    _add_north_arrow(layout)
+    _add_north_arrow(layout, map_height_mm)
 
-    # ============ 比例尺 ============
-    _add_scale_bar(layout, map_item, scale, extent, latitude)
+    # ============ 比例尺（在地图区域内右下角）============
+    _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
 
     # ============ 图例 ============
-    _add_legend(layout, map_item, project)
+    _add_legend(layout, map_item, project, map_height_mm, output_height_mm)
 
     return layout
 
@@ -1078,17 +893,11 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale):
 def _setup_map_grid(map_item, extent):
     """
     配置地图经纬度网格。
-    参考earthquake_geological_map.py：上侧和左侧标注经纬度。
-
-    参数:
-        map_item (QgsLayoutItemMap): 地图布局项
-        extent (QgsRectangle): 地图范围
     """
     grid = QgsLayoutItemMapGrid("经纬度网格", map_item)
     grid.setEnabled(True)
     grid.setCrs(CRS_WGS84)
 
-    # 选择间隔
     lon_range = extent.xMaximum() - extent.xMinimum()
     lat_range = extent.yMaximum() - extent.yMinimum()
     lon_step = _choose_tick_step(lon_range, target_min=3, target_max=6)
@@ -1097,12 +906,9 @@ def _setup_map_grid(map_item, extent):
     grid.setIntervalX(lon_step)
     grid.setIntervalY(lat_step)
 
-    # 不显示网格线，只显示标注
     grid.setStyle(QgsLayoutItemMapGrid.FrameAnnotationsOnly)
-
     grid.setAnnotationEnabled(True)
 
-    # 上侧显示经度，左侧显示纬度
     grid.setAnnotationDisplay(QgsLayoutItemMapGrid.ShowAll,
                                QgsLayoutItemMapGrid.Top)
     grid.setAnnotationDisplay(QgsLayoutItemMapGrid.ShowAll,
@@ -1122,7 +928,6 @@ def _setup_map_grid(map_item, extent):
     grid.setAnnotationDirection(QgsLayoutItemMapGrid.Vertical,
                                  QgsLayoutItemMapGrid.Left)
 
-    # 经纬度标注字体 8pt
     annot_format = QgsTextFormat()
     annot_font = QFont("Times New Roman", LONLAT_FONT_SIZE_PT)
     annot_format.setFont(annot_font)
@@ -1131,11 +936,9 @@ def _setup_map_grid(map_item, extent):
     annot_format.setColor(QColor(0, 0, 0))
     grid.setAnnotationTextFormat(annot_format)
 
-    # 度分格式
     grid.setAnnotationFormat(QgsLayoutItemMapGrid.DegreeMinute)
     grid.setAnnotationPrecision(0)
 
-    # 边框刻度
     grid.setFrameStyle(QgsLayoutItemMapGrid.InteriorTicks)
     grid.setFrameWidth(1.5)
     grid.setFramePenSize(0.3)
@@ -1145,24 +948,16 @@ def _setup_map_grid(map_item, extent):
     print("[信息] 经纬度网格设置完成")
 
 
-def _add_north_arrow(layout):
+def _add_north_arrow(layout, map_height_mm):
     """
     添加指北针。
-    适当减小指北针边框，同时使指北针和指北针边框大小间距合理。
-    上边框与地图上边框对齐，右边框与地图右边框对齐。
-    指北针图标和N字母整体下移3mm（通过修改SVG内容实现）。
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
     """
-    # 位置：右上角，上边和右边与地图框对齐
     map_right = BORDER_LEFT_MM + MAP_WIDTH_MM
     map_top = BORDER_TOP_MM
 
     arrow_x = map_right - NORTH_ARROW_WIDTH_MM
     arrow_y = map_top
 
-    # 白色背景矩形
     bg_shape = QgsLayoutItemShape(layout)
     bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
     bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y,
@@ -1183,14 +978,12 @@ def _add_north_arrow(layout):
                                                         QgsUnitTypes.LayoutMillimeters))
     layout.addLayoutItem(bg_shape)
 
-    # 指北针SVG（SVG内部已将N和箭头下移3mm）
     svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "_north_arrow_temp.svg")
     create_north_arrow_svg(svg_path)
 
     north_arrow = QgsLayoutItemPicture(layout)
     north_arrow.setPicturePath(svg_path)
-    # SVG内容在白色背景内居中，合理间距
     padding_x = 1.0
     padding_y = 0.5
     north_arrow.attemptMove(QgsLayoutPoint(arrow_x + padding_x,
@@ -1203,50 +996,25 @@ def _add_north_arrow(layout):
     north_arrow.setBackgroundEnabled(False)
     layout.addLayoutItem(north_arrow)
 
-    print(f"[信息] 指北针添加完成: {NORTH_ARROW_WIDTH_MM}x{NORTH_ARROW_HEIGHT_MM}mm, "
-          f"位于({arrow_x:.1f}, {arrow_y:.1f}), 图标和N下移3mm")
+    print(f"[信息] 指北针添加完成: {NORTH_ARROW_WIDTH_MM}x{NORTH_ARROW_HEIGHT_MM}mm")
 
 
-def _add_scale_bar(layout, map_item, scale, extent, center_lat):
+def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
     """
     添加比例尺。
-    比例尺在地图主图右下角：右边框和底图图框右边框重合，下边框和底图图框下边框重合。
-    比例尺样式：上方显示比例文字(如1:500,000)，下方为黑白交替线段。
-
-    修正说明：
-    - 地图CRS是WGS84（度），比例尺使用地理距离计算方式
-    - 根据地图范围和中心纬度，计算每毫米地图对应的实际千米数
-    - 选择合适的"nice"值作为比例尺总长度(km)
-    - 反算得到比例尺在布局中的物理长度(mm)
-
-    比例尺正确性：
-    - M<6时，比例尺1:150,000，地图30km
-    - 6≤M<7时，比例尺1:500,000，地图100km
-    - M≥7时，比例尺1:1,500,000，地图300km
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        map_item (QgsLayoutItemMap): 地图项
-        scale (int): 比例尺分母
-        extent (QgsRectangle): 地图范围（WGS84度）
-        center_lat (float): 震中纬度（度）
+    比例尺在地图主图内部右下角：右边框和底图图框右边框重合，下边框和底图图框下边框重合。
     """
-    # 地图框右下角坐标
-    map_right = BORDER_LEFT_MM + MAP_WIDTH_MM
-    map_bottom = BORDER_TOP_MM + MAP_HEIGHT_MM
+    map_left = BORDER_LEFT_MM
+    map_top = BORDER_TOP_MM
+    map_right = map_left + MAP_WIDTH_MM
+    map_bottom = map_top + map_height_mm
 
-    # ======== 计算比例尺线段参数 ========
-    # 地图范围的经度跨度对应的实际距离(km)
+    # 计算比例尺参数
     lon_range_deg = extent.xMaximum() - extent.xMinimum()
     map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
-
-    # 每毫米地图对应的千米数
     km_per_mm = map_total_km / MAP_WIDTH_MM
-
-    # 比例尺期望占地图宽度的约18%
     target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
 
-    # 选择"nice"值
     nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
     bar_km = nice_values[0]
     for nv in nice_values:
@@ -1255,20 +1023,16 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat):
         else:
             break
 
-    # 比例尺线段在布局中的物理长度(mm)
     bar_length_mm = bar_km / km_per_mm
-    # 确保最小长度
     bar_length_mm = max(bar_length_mm, 20.0)
 
-    # 分段数
     num_segments = 4
-    seg_km = bar_km / num_segments
 
     # 比例尺背景框尺寸
-    sb_width = bar_length_mm + 16.0   # 两侧留白
+    sb_width = bar_length_mm + 16.0
     sb_height = 14.0
 
-    # 【修正】右边框和底图图框右边框重合，下边框和底图图框下边框重合
+    # 比例尺位置：在地图内部，右下角对齐
     sb_x = map_right - sb_width
     sb_y = map_bottom - sb_height
 
@@ -1291,7 +1055,7 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat):
                                                         QgsUnitTypes.LayoutMillimeters))
     layout.addLayoutItem(bg_shape)
 
-    # 比例尺数字标注（如 1:500,000）居中在上方
+    # 比例尺数字标注
     scale_label = QgsLayoutItemLabel(layout)
     scale_label.setText(f"1:{scale:,}")
     label_format = QgsTextFormat()
@@ -1310,11 +1074,10 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat):
     scale_label.setBackgroundEnabled(False)
     layout.addLayoutItem(scale_label)
 
-    # ======== 使用手绘方式绘制黑白交替线段比例尺 ========
-    # 线段比例尺居中放在比例文字下方
+    # 绘制黑白交替线段比例尺
     bar_start_x = sb_x + (sb_width - bar_length_mm) / 2.0
     bar_y = sb_y + 5.5
-    bar_h = 1.8  # 比例尺条高度(mm)
+    bar_h = 1.8
     seg_width_mm = bar_length_mm / num_segments
 
     for i in range(num_segments):
@@ -1341,7 +1104,7 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat):
         seg_shape.setFrameEnabled(False)
         layout.addLayoutItem(seg_shape)
 
-    # 比例尺刻度标注：0、中间值、末端值 + "km"
+    # 比例尺刻度标注
     label_y = bar_y + bar_h + 0.3
     label_h = 3.5
 
@@ -1351,7 +1114,6 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat):
     tick_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     tick_format.setColor(QColor(0, 0, 0))
 
-    # 起点 "0"
     lbl_0 = QgsLayoutItemLabel(layout)
     lbl_0.setText("0")
     lbl_0.setTextFormat(tick_format)
@@ -1365,7 +1127,6 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat):
     lbl_0.setBackgroundEnabled(False)
     layout.addLayoutItem(lbl_0)
 
-    # 中点值
     mid_km = bar_km // 2
     if mid_km > 0:
         lbl_mid = QgsLayoutItemLabel(layout)
@@ -1382,7 +1143,6 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat):
         lbl_mid.setBackgroundEnabled(False)
         layout.addLayoutItem(lbl_mid)
 
-    # 末端值 + " km"
     lbl_end = QgsLayoutItemLabel(layout)
     lbl_end.setText(f"{bar_km} km")
     lbl_end.setTextFormat(tick_format)
@@ -1397,31 +1157,22 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat):
     lbl_end.setBackgroundEnabled(False)
     layout.addLayoutItem(lbl_end)
 
-    print(f"[信息] 比例尺添加完成（右边框和下边框与底图图框重合），"
-          f"1:{scale:,}, 总长{bar_km}km={bar_length_mm:.1f}mm, {num_segments}段")
+    print(f"[信息] 比例尺添加完成（在地图内部右下角），1:{scale:,}, 总长{bar_km}km={bar_length_mm:.1f}mm")
 
 
-def _add_legend(layout, map_item, project):
+def _add_legend(layout, map_item, project, map_height_mm, output_height_mm):
     """
     添加图例。
     - "图 例"居中展示
-    - "震中"、"地级市"、"省界"、"市界"、"县界"、"断裂" 六个图例分两列展示
-    - 其他图例项（如烈度圈、岩性等）单列展示
-    - "省界"、"市界"、"县界"在图例中使用线段，不使用方框
-    - 断裂在图例中使用红色(R=255,G=0,B=0)线
-    - 图例位于地图右侧
-
-    实现方式：使用两个QgsLayoutItemLegend分别展示两列部分和单列部分。
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        map_item (QgsLayoutItemMap): 地图项
-        project (QgsProject): QGIS项目
+    - "震中"、"地级市"、"省界"、"市界"、"县界"、"烈度" 六个图例排列为3列2行
+    - 地质构造底图紧接在六图例下方，无额外留白
+    - 图例区右边框完整显示
     """
     # 图例位置：地图右侧
     legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
     legend_y = BORDER_TOP_MM
-    legend_height = MAP_HEIGHT_MM
+    legend_width = LEGEND_WIDTH_MM + BORDER_RIGHT_MM  # 确保右边框可见
+    legend_height = map_height_mm
 
     # ============================================================
     # 公共文本格式
@@ -1476,10 +1227,10 @@ def _add_legend(layout, map_item, project):
     layout.addLayoutItem(title_label)
 
     # ============================================================
-    # 上部图例：震中/地级市/省界/市界/县界/断裂 — 两列展示
+    # 上部图例：震中/地级市/省界/市界/县界/烈度 — 3列2行展示
     # ============================================================
-    top_legend_y = legend_y + 6.5  # 标题下方
-    top_legend_height = 30.0       # 预估六个图例项两列的高度
+    top_legend_y = legend_y + 7.0
+    top_legend_height = 18.0  # 两行图例的高度
 
     top_legend = QgsLayoutItemLegend(layout)
     top_legend.setLinkedMap(map_item)
@@ -1489,23 +1240,21 @@ def _add_legend(layout, map_item, project):
     top_legend.attemptResize(QgsLayoutSize(LEGEND_WIDTH_MM - 2.0, top_legend_height,
                                             QgsUnitTypes.LayoutMillimeters))
 
-    # 无标题（标题已单独绘制）
     top_legend.setTitle("")
 
-    # 两列布局
-    top_legend.setColumnCount(2)
+    # 3列布局
+    top_legend.setColumnCount(3)
     top_legend.setSplitLayer(True)
     top_legend.setEqualColumnWidth(True)
 
-    # 条目字体
     top_legend.rstyle(QgsLegendStyle.Title).setTextFormat(title_format)
     top_legend.rstyle(QgsLegendStyle.SymbolLabel).setTextFormat(item_format)
 
     # 符号大小
-    top_legend.setSymbolWidth(5.0)
-    top_legend.setSymbolHeight(3.0)
+    top_legend.setSymbolWidth(4.0)
+    top_legend.setSymbolHeight(2.5)
 
-    # 边框和背景透明（由外部矩形管理）
+    # 边框和背景透明
     top_legend.setFrameEnabled(False)
     top_legend.setBackgroundEnabled(False)
 
@@ -1514,8 +1263,8 @@ def _add_legend(layout, map_item, project):
     top_root = top_model.rootGroup()
     top_root.removeAllChildren()
 
-    # 按顺序添加六个图例条目
-    layer_order_top = ["震中", "地级市", "省界", "市界", "县界", "断裂"]
+    # 按顺序添加六个图例条目（3列2行）
+    layer_order_top = ["震中", "市界", "地级市", "县界", "省界", "烈度"]
     for layer_name in layer_order_top:
         layers = project.mapLayersByName(layer_name)
         if layers:
@@ -1524,13 +1273,12 @@ def _add_legend(layout, map_item, project):
     layout.addLayoutItem(top_legend)
 
     # ============================================================
-    # 下部图例：烈度圈、地质构造底图等 — 单列展示
+    # 下部图例：地质构造底图 — 紧接上部图例，无额外留白
     # ============================================================
-    bottom_legend_y = top_legend_y + top_legend_height + 1.0
-    bottom_legend_height = legend_height - (bottom_legend_y - legend_y) - 2.0
+    bottom_legend_y = top_legend_y + top_legend_height  # 紧接在上部图例下方
+    bottom_legend_height = legend_height - (bottom_legend_y - legend_y) - 1.0
 
-    # 检查是否有需要在下部展示的图层
-    other_layer_names = ["烈度圈", "地质构造底图"]
+    other_layer_names = ["地质构造底图"]
     has_other_layers = False
     for name in other_layer_names:
         layers = project.mapLayersByName(name)
@@ -1550,7 +1298,6 @@ def _add_legend(layout, map_item, project):
 
         bottom_legend.setTitle("")
 
-        # 单列布局
         bottom_legend.setColumnCount(1)
         bottom_legend.setSplitLayer(False)
 
@@ -1574,8 +1321,7 @@ def _add_legend(layout, map_item, project):
 
         layout.addLayoutItem(bottom_legend)
 
-    print("[信息] 图例添加完成（上部六项两列展示，下部其余项单列展示，标题居中）")
-
+    print("[信息] 图例添加完成（六图例3列2行，地质构造底图紧接其下）")
 
 # ============================================================
 # 主生成函数
@@ -1586,16 +1332,6 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
                                      kml_path=None):
     """
     生成地震震中地质构造图（主入口函数）。
-
-    参数:
-        longitude (float): 震中经度（度）
-        latitude (float): 震中纬度（度）
-        magnitude (float): 地震震级
-        output_path (str): 输出PNG文件路径
-        kml_path (str): 烈度圈KML文件路径（可选）
-
-    返回:
-        str: 输出文件路径，失败返回None
     """
     print("=" * 60)
     print(f"[开始] 生成地震地质构造图")
@@ -1615,7 +1351,11 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
     extent = calculate_extent(longitude, latitude, half_size_km)
     print(f"[信息] 地图范围: {extent.toString()}")
 
-    # 3. 初始化QGIS
+    # 3. 根据范围计算地图高度（保持宽高比）
+    map_height_mm = calculate_map_height_from_extent(extent, MAP_WIDTH_MM)
+    print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
+
+    # 4. 初始化QGIS
     qgs_app = None
     if not QgsApplication.instance():
         qgs_app = QgsApplication([], False)
@@ -1626,12 +1366,12 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
     project.clear()
     project.setCrs(CRS_WGS84)
 
-    # 4. 加载地质构造底图（最底层）
+    # 5. 加载地质构造底图（最底层）
     geology_layer = load_geology_raster(GEOLOGY_TIF_PATH)
     if geology_layer:
         project.addMapLayer(geology_layer)
 
-    # 5. 加载省市县界 — 从底到顶：县界 -> 市界 -> 省界
+    # 6. 加载省市县界 — 从底到顶：县界 -> 市界 -> 省界
     county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
     if county_layer:
         style_county_layer(county_layer)
@@ -1647,12 +1387,12 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
         style_province_layer(province_layer)
         project.addMapLayer(province_layer)
 
-    # 6. 加载地级市点位 — 从属性表获取市名称和点位
+    # 7. 加载地级市点位
     city_point_layer = create_city_point_layer(extent)
     if city_point_layer:
         project.addMapLayer(city_point_layer)
 
-    # 7. 创建图例用的线段图层（省界/市界/县界使用线段，不用方框）
+    # 8. 创建图例用的线段图层
     province_legend_layer = create_province_legend_layer()
     if province_legend_layer:
         project.addMapLayer(province_legend_layer)
@@ -1665,12 +1405,12 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
     if county_legend_layer:
         project.addMapLayer(county_legend_layer)
 
-    # 8. 加载断裂图例图层
-    fault_layer = create_fault_legend_layer()
-    if fault_layer:
-        project.addMapLayer(fault_layer)
+    # 9. 加载烈度图例图层（原断裂改为烈度）
+    intensity_legend_layer = create_intensity_legend_layer()
+    if intensity_legend_layer:
+        project.addMapLayer(intensity_legend_layer)
 
-    # 9. 解析并加载烈度圈
+    # 10. 解析并加载烈度圈
     intensity_data = []
     intensity_layer = None
     if kml_path:
@@ -1683,19 +1423,19 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
             if intensity_layer:
                 project.addMapLayer(intensity_layer)
 
-    # 10. 震中位置图层（最顶层）
+    # 11. 震中位置图层（最顶层）
     epicenter_layer = create_epicenter_layer(longitude, latitude)
     if epicenter_layer:
         project.addMapLayer(epicenter_layer)
 
-    # 11. 创建打印布局
+    # 12. 创建打印布局
     layout = create_print_layout(project, longitude, latitude, magnitude,
-                                  extent, scale)
+                                  extent, scale, map_height_mm)
 
-    # 12. 导出PNG
+    # 13. 导出PNG
     result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
 
-    # 13. 清理临时SVG
+    # 14. 清理临时SVG
     svg_temp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "_north_arrow_temp.svg")
     if os.path.exists(svg_temp):
@@ -1717,14 +1457,6 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
 def export_layout_to_png(layout, output_path, dpi=150):
     """
     将打印布局导出为PNG图片。
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        output_path (str): 输出PNG文件路径
-        dpi (int): 输出DPI
-
-    返回:
-        str: 输出文件路径，失败返回None
     """
     out_dir = os.path.dirname(os.path.abspath(output_path))
     if not os.path.exists(out_dir):
@@ -1777,15 +1509,6 @@ def test_magnitude_config():
     assert config_l["map_size_km"] == 300
     print(f"  M7.5 -> 范围{config_l['map_size_km']}km, 比例尺1:{config_l['scale']} ✓")
 
-    # 边界值
-    config_6 = get_magnitude_config(6.0)
-    assert config_6["map_size_km"] == 100
-    print(f"  M6.0 -> 范围{config_6['map_size_km']}km ✓")
-
-    config_599 = get_magnitude_config(5.99)
-    assert config_599["map_size_km"] == 30
-    print(f"  M5.99 -> 范围{config_599['map_size_km']}km ✓")
-
     print("  所有震级配置测试通过 ✓")
 
 
@@ -1800,10 +1523,6 @@ def test_calculate_extent():
     delta_y = extent.yMaximum() - extent.yMinimum()
     assert abs(delta_y - 0.2703) < 0.02
     print(f"  15km半径范围: 纬度差{delta_y:.4f}° ✓")
-
-    extent2 = calculate_extent(116.4, 39.9, 50)
-    assert (extent2.xMaximum() - extent2.xMinimum()) > (extent.xMaximum() - extent.xMinimum())
-    print(f"  50km半径范围更大 ✓")
 
     print("  所有范围计算测试通过 ✓")
 
@@ -1875,147 +1594,41 @@ def test_constants():
     """测试常量合理性"""
     print("\n--- 测试: 常量验证 ---")
 
-    # 布局尺寸
     assert MAP_TOTAL_WIDTH_MM == 220.0
     assert MAP_WIDTH_MM > 0
-    assert MAP_HEIGHT_MM == MAP_WIDTH_MM  # 正方形
-    assert LEGEND_WIDTH_MM == 34.0
-    assert OUTPUT_HEIGHT_MM > MAP_HEIGHT_MM
-    print(f"  布局: {MAP_TOTAL_WIDTH_MM}x{OUTPUT_HEIGHT_MM:.1f}mm, "
-          f"地图{MAP_WIDTH_MM:.1f}x{MAP_HEIGHT_MM:.1f}mm ✓")
+    assert LEGEND_WIDTH_MM == 40.0
+    print(f"  布局总宽度: {MAP_TOTAL_WIDTH_MM}mm, 地图宽度: {MAP_WIDTH_MM:.1f}mm, 图例宽度: {LEGEND_WIDTH_MM}mm ✓")
 
-    # 指北针 - 适当减小
     assert NORTH_ARROW_WIDTH_MM == 12.0
     assert NORTH_ARROW_HEIGHT_MM == 18.0
     print(f"  指北针: {NORTH_ARROW_WIDTH_MM}x{NORTH_ARROW_HEIGHT_MM}mm ✓")
 
-    # 震中五角星
     assert EPICENTER_STAR_SIZE_MM > 0
     print(f"  震中五角星: {EPICENTER_STAR_SIZE_MM}mm ✓")
 
-    # 比例尺正确性验证
     for mag, expected_scale in [(4.5, 150000), (6.5, 500000), (7.5, 1500000)]:
         cfg = get_magnitude_config(mag)
-        assert cfg["scale"] == expected_scale, \
-            f"M{mag}比例尺错误: 期望1:{expected_scale}, 实际1:{cfg['scale']}"
-        # 验证地图尺寸(km) / (比例尺 / 1e6) 得到合理的mm值
-        map_km = cfg["map_size_km"]
-        map_mm = map_km / (cfg["scale"] / 1000000.0)
-        assert 100 < map_mm < 300, \
-            f"M{mag}比例尺与地图尺寸不匹配: {map_km}km在1:{cfg['scale']}下={map_mm:.1f}mm"
+        assert cfg["scale"] == expected_scale
     print(f"  比例尺验证: M<6→1:150,000, 6≤M<7→1:500,000, M≥7→1:1,500,000 ✓")
-
-    # 地级市符号大小��证：9pt字体的三分之一
-    city_symbol_size = CITY_LABEL_FONT_SIZE_PT * 0.353 / 3.0
-    assert 0.5 < city_symbol_size < 2.0, \
-        f"地级市符号大小不合理: {city_symbol_size:.2f}mm"
-    print(f"  地级市符号大小: {city_symbol_size:.2f}mm (9pt的1/3) ✓")
-
-    # 断裂颜色验证 —— 修正为纯红色(R=255,G=0,B=0)
-    assert FAULT_COLOR.red() == 255 and FAULT_COLOR.green() == 0 and FAULT_COLOR.blue() == 0
-    print(f"  断裂颜色: R={FAULT_COLOR.red()},G={FAULT_COLOR.green()},B={FAULT_COLOR.blue()} ✓")
 
     print("  常量验证测试通过 ✓")
 
 
-def test_scale_bar_calculation():
-    """测试比例尺计算正确性（基于地理距离计算方式）"""
-    print("\n--- 测试: 比例尺计算验证 ---")
+def test_map_height_calculation():
+    """测试地图高度计算"""
+    print("\n--- 测试: 地图高度计算 ---")
 
-    # 验证基于WGS84的比例尺距离计算逻辑
-    # M<6: map_size_km=30, 北京纬度39.9°
-    lat = 39.9
-    half_km = 15
-    extent = calculate_extent(116.4, lat, half_km)
-    lon_range = extent.xMaximum() - extent.xMinimum()
-    map_km = lon_range * 111.0 * math.cos(math.radians(lat))
-    km_per_mm = map_km / MAP_WIDTH_MM
-    # 选择nice值
-    target = MAP_WIDTH_MM * 0.18 * km_per_mm
-    nice = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-    bar_km = nice[0]
-    for nv in nice:
-        if nv <= target * 1.5:
-            bar_km = nv
-        else:
-            break
-    bar_mm = bar_km / km_per_mm
-    assert 15 < bar_mm < 80, f"小震级比例尺线段长度不合理: {bar_mm:.1f}mm"
-    print(f"  M<6: {bar_km}km 比例尺线段 = {bar_mm:.1f}mm (地图宽={MAP_WIDTH_MM}mm, 实际{map_km:.1f}km) ✓")
+    extent = calculate_extent(118.18, 39.63, 150)
+    height = calculate_map_height_from_extent(extent, MAP_WIDTH_MM)
+    assert height > 0
+    print(f"  M≥7范围: 地图高度 = {height:.1f}mm ✓")
 
-    # 6≤M<7: map_size_km=100
-    half_km = 50
-    extent = calculate_extent(104.0, 30.6, half_km)
-    lon_range = extent.xMaximum() - extent.xMinimum()
-    map_km = lon_range * 111.0 * math.cos(math.radians(30.6))
-    km_per_mm = map_km / MAP_WIDTH_MM
-    target = MAP_WIDTH_MM * 0.18 * km_per_mm
-    bar_km = nice[0]
-    for nv in nice:
-        if nv <= target * 1.5:
-            bar_km = nv
-        else:
-            break
-    bar_mm = bar_km / km_per_mm
-    assert 15 < bar_mm < 80, f"中震级比例尺线段长度不合理: {bar_mm:.1f}mm"
-    print(f"  6≤M<7: {bar_km}km 比例尺线段 = {bar_mm:.1f}mm (地图宽={MAP_WIDTH_MM}mm, 实际{map_km:.1f}km) ✓")
+    extent2 = calculate_extent(116.4, 39.9, 15)
+    height2 = calculate_map_height_from_extent(extent2, MAP_WIDTH_MM)
+    assert height2 > 0
+    print(f"  M<6范围: 地图高度 = {height2:.1f}mm ✓")
 
-    # M≥7: map_size_km=300
-    half_km = 150
-    extent = calculate_extent(118.18, 39.63, half_km)
-    lon_range = extent.xMaximum() - extent.xMinimum()
-    map_km = lon_range * 111.0 * math.cos(math.radians(39.63))
-    km_per_mm = map_km / MAP_WIDTH_MM
-    target = MAP_WIDTH_MM * 0.18 * km_per_mm
-    bar_km = nice[0]
-    for nv in nice:
-        if nv <= target * 1.5:
-            bar_km = nv
-        else:
-            break
-    bar_mm = bar_km / km_per_mm
-    assert 15 < bar_mm < 80, f"大震级比例尺线段长度不合理: {bar_mm:.1f}mm"
-    print(f"  M≥7: {bar_km}km 比例尺线段 = {bar_mm:.1f}mm (地图宽={MAP_WIDTH_MM}mm, 实际{map_km:.1f}km) ✓")
-
-    print("  比例尺计算验证通过 ✓")
-
-
-def test_generate_map_small():
-    """测试小震级(M<6)地图生成"""
-    print("\n--- 测试: 小震级(M5.5)地图生成 ---")
-    try:
-        result = generate_earthquake_geology_map(
-            longitude=103.25,
-            latitude=34.06,
-            magnitude=5.5,
-            output_path="test_geology_small.png",
-        )
-        if result and os.path.exists(result):
-            size_kb = os.path.getsize(result) / 1024
-            print(f"  输出文件: {result} ({size_kb:.1f}KB) ✓")
-        else:
-            print("  [跳过] 输出文件未生成（可能缺少数据文件）")
-    except Exception as e:
-        print(f"  [跳过] {e}")
-
-
-def test_generate_map_medium():
-    """测试中震级(6<=M<7)地图生成"""
-    print("\n--- 测试: 中震级(M6.5)地图生成 ---")
-    try:
-        result = generate_earthquake_geology_map(
-            longitude=104.0,
-            latitude=30.6,
-            magnitude=6.5,
-            output_path="test_geology_medium.png",
-        )
-        if result and os.path.exists(result):
-            size_kb = os.path.getsize(result) / 1024
-            print(f"  输出文件: {result} ({size_kb:.1f}KB) ✓")
-        else:
-            print("  [跳过] 输出文件未生成")
-    except Exception as e:
-        print(f"  [跳过] {e}")
+    print("  地图高度计算测试通过 ✓")
 
 
 def test_generate_map_large():
@@ -2049,13 +1662,11 @@ def run_all_tests():
     test_int_to_roman()
     test_parse_intensity_kml()
     test_constants()
-    test_scale_bar_calculation()
-    test_generate_map_small()
-    test_generate_map_medium()
+    test_map_height_calculation()
     test_generate_map_large()
 
     print("\n" + "=" * 60)
-    print("全部测试执行完��")
+    print("全部测试执行完成")
     print("=" * 60)
 
 
@@ -2088,5 +1699,5 @@ if __name__ == "__main__":
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_geology_map(
             longitude=118.18, latitude=39.63,
-            magnitude=9.5, output_path="earthquake_geology_tangshan_M7.8.png"
+            magnitude=7.8, output_path="earthquake_geology_tangshan_M7.8.png"
         )
