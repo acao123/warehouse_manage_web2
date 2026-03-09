@@ -1303,11 +1303,18 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
     print(f"[信息] 比例尺添加完成，1:{scale:,}")
 
 
+# 在常量定义部分，修改/添加岩性图例字体大小常量
+# === 图例字体 ===
+LEGEND_TITLE_FONT_SIZE_PT = 10
+LEGEND_ITEM_FONT_SIZE_PT = 8
+LEGEND_YANXING_FONT_SIZE_PT = 7  # 岩性图例字体大小，可调整
+
+
 def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanxing_list=None):
     """
     添加图例。
     - 上部：震中/地级市/省界/市界/县界/烈度（2行3列，平行排列）
-    - 下部：岩性图例（色块 + yanxing名称，超长文字折行）
+    - 下部：岩性图例（色块 + yanxing名称，首行文字与色块对齐，超长文字折行）
     """
     legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
     legend_y = BORDER_TOP_MM
@@ -1327,6 +1334,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     item_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     item_format.setColor(QColor(0, 0, 0))
 
+    # 岩性图例文本格式（使用可配置的字体大小）
     yanxing_format = QgsTextFormat()
     yanxing_format.setFont(QFont("SimSun", LEGEND_YANXING_FONT_SIZE_PT))
     yanxing_format.setSize(LEGEND_YANXING_FONT_SIZE_PT)
@@ -1370,23 +1378,19 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     # ============================================================
     top_legend_start_y = legend_y + 7.0
 
-    # 布局参数
     col_count = 3
     row_count = 2
     left_pad = 2.0
     right_pad = 2.0
-    col_gap = 1.0  # 列间距
-    row_height = 5.0  # 每行高度
-    icon_width = 4.0  # 图标宽度
-    icon_height = 2.5  # 图标高度
-    icon_text_gap = 1.0  # 图标与文字间距
+    col_gap = 1.0
+    row_height = 5.0
+    icon_width = 4.0
+    icon_height = 2.5
+    icon_text_gap = 1.0
 
-    # 计算每列宽度
     available_width = legend_width - left_pad - right_pad - (col_count - 1) * col_gap
     col_width = available_width / col_count
 
-    # 图例项定义：(图层名, 显示名称, 绘制类型)
-    # 绘制类型: 'star'=五角星, 'circle'=圆点, 'solid_line'=实线, 'dash_line'=虚线
     legend_items = [
         ("震中", "震中", "star"),
         ("地级市", "地级市", "circle"),
@@ -1400,30 +1404,23 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         row = idx // col_count
         col = idx % col_count
 
-        # 计算位置
         item_x = legend_x + left_pad + col * (col_width + col_gap)
         item_y = top_legend_start_y + row * row_height
         icon_center_y = item_y + row_height / 2.0
 
-        # 绘制图标
         if draw_type == "star":
-            # 红色五角星
             _draw_star_icon(layout, item_x, icon_center_y, icon_width, icon_height)
         elif draw_type == "circle":
-            # 地级市圆点符号
             _draw_city_icon(layout, item_x, icon_center_y, icon_width, icon_height)
         elif draw_type == "solid_line":
-            # 实线
             color = PROVINCE_COLOR if layer_name == "省界" else INTENSITY_LEGEND_COLOR
             line_width = PROVINCE_LINE_WIDTH_MM if layer_name == "省界" else INTENSITY_LEGEND_LINE_WIDTH_MM
             _draw_line_icon(layout, item_x, icon_center_y, icon_width, color, line_width, solid=True)
         elif draw_type == "dash_line":
-            # 虚线
             color = CITY_COLOR if layer_name == "市界" else COUNTY_COLOR
             line_width = CITY_LINE_WIDTH_MM if layer_name == "市界" else COUNTY_LINE_WIDTH_MM
             _draw_line_icon(layout, item_x, icon_center_y, icon_width, color, line_width, solid=False)
 
-        # 绘制文字
         text_x = item_x + icon_width + icon_text_gap
         text_width = col_width - icon_width - icon_text_gap
 
@@ -1441,68 +1438,46 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     top_legend_height = row_count * row_height
 
     # ============================================================
-    # 岩性图例
+    # 岩性图例（首行文字与色块顶部对齐，支持折行）
     # ============================================================
-    yanxing_legend_y = top_legend_start_y + top_legend_height + 3.0
-
-    # 分隔线
-    sep_line = QgsLayoutItemShape(layout)
-    sep_line.setShapeType(QgsLayoutItemShape.Rectangle)
-    sep_line.attemptMove(QgsLayoutPoint(legend_x + 2.0, yanxing_legend_y - 1.5, QgsUnitTypes.LayoutMillimeters))
-    sep_line.attemptResize(QgsLayoutSize(legend_width - 4.0, 0.3, QgsUnitTypes.LayoutMillimeters))
-    sep_symbol = QgsFillSymbol.createSimple({'color': '180,180,180,255', 'outline_style': 'no'})
-    sep_line.setSymbol(sep_symbol)
-    sep_line.setFrameEnabled(False)
-    layout.addLayoutItem(sep_line)
-
-    # 岩性标题
-    yanxing_title = QgsLayoutItemLabel(layout)
-    yanxing_title.setText("岩  性")
-    yanxing_title.setTextFormat(title_format)
-    yanxing_title.attemptMove(QgsLayoutPoint(legend_x, yanxing_legend_y, QgsUnitTypes.LayoutMillimeters))
-    yanxing_title.attemptResize(QgsLayoutSize(legend_width, 4.0, QgsUnitTypes.LayoutMillimeters))
-    yanxing_title.setHAlign(Qt.AlignHCenter)
-    yanxing_title.setVAlign(Qt.AlignVCenter)
-    yanxing_title.setFrameEnabled(False)
-    yanxing_title.setBackgroundEnabled(False)
-    layout.addLayoutItem(yanxing_title)
-
-    # 绘制岩性图例条目（支持折行）
     if yanxing_list:
-        item_start_y = yanxing_legend_y + 5.0
+        item_start_y = top_legend_start_y + top_legend_height + 2.0
+
         yanxing_icon_width = 5.0
         yanxing_icon_height = 2.5
         yanxing_gap = 1.0
         yanxing_left_pad = 2.0
         yanxing_right_pad = 2.0
 
-        # 文字区域宽度
         text_area_width = legend_width - yanxing_left_pad - yanxing_icon_width - yanxing_gap - yanxing_right_pad
 
-        # 估算每行可容纳的字符数（中文字符约2.5mm宽度，7pt字体）
-        char_width_mm = LEGEND_YANXING_FONT_SIZE_PT * 0.353 * 0.9  # 近似值
+        # 根据字体大小计算每行可容纳的字符数
+        char_width_mm = LEGEND_YANXING_FONT_SIZE_PT * 0.353 * 0.9
         max_chars_per_line = int(text_area_width / char_width_mm)
         if max_chars_per_line < 4:
             max_chars_per_line = 4
 
-        # 行高
-        line_height_mm = LEGEND_YANXING_FONT_SIZE_PT * 0.353 + 0.8  # 字体高度 + 行间距
+        # 行高根据字体大小计算
+        line_height_mm = LEGEND_YANXING_FONT_SIZE_PT * 0.353 + 0.3
 
         current_y = item_start_y
-        available_height = legend_height - (item_start_y - legend_y) - 2.0
+        displayed_count = 0
 
         for idx, (value, color_rgba, yanxing_name) in enumerate(yanxing_list):
-            # 计算该条目需要的行数
             text_lines = _wrap_text(yanxing_name, max_chars_per_line)
             num_lines = len(text_lines)
-            item_height = max(yanxing_icon_height, num_lines * line_height_mm) + 1.0
 
-            # 检查是否超出可用高度
+            # 计算文字区域总高度
+            text_total_height = num_lines * line_height_mm
+
+            # 条目高度取色块高度和文字高度的较大值，加上间距
+            item_height = max(yanxing_icon_height, text_total_height) + 1.0
+
             if current_y + item_height > legend_y + legend_height - 2.0:
                 break
 
-            # 色块位置（垂直居中于文字区域）
-            icon_y = current_y + (item_height - yanxing_icon_height) / 2.0
+            # 色块位置：顶部与首行文字对齐
+            icon_y = current_y
 
             color_box = QgsLayoutItemShape(layout)
             color_box.setShapeType(QgsLayoutItemShape.Rectangle)
@@ -1521,32 +1496,32 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
             color_box.setFrameEnabled(False)
             layout.addLayoutItem(color_box)
 
-            # 文字（多行）
+            # 文字位置：顶部与色块对齐
             text_x = legend_x + yanxing_left_pad + yanxing_icon_width + yanxing_gap
             wrapped_text = "\n".join(text_lines)
 
             text_label = QgsLayoutItemLabel(layout)
             text_label.setText(wrapped_text)
             text_label.setTextFormat(yanxing_format)
-            text_label.attemptMove(QgsLayoutPoint(text_x, current_y, QgsUnitTypes.LayoutMillimeters))
-            text_label.attemptResize(QgsLayoutSize(text_area_width, item_height,
+            # 文字顶部与色块顶部对齐
+            text_label.attemptMove(QgsLayoutPoint(text_x, icon_y, QgsUnitTypes.LayoutMillimeters))
+            text_label.attemptResize(QgsLayoutSize(text_area_width, text_total_height + 1.0,
                                                    QgsUnitTypes.LayoutMillimeters))
             text_label.setHAlign(Qt.AlignLeft)
-            text_label.setVAlign(Qt.AlignVCenter)
+            text_label.setVAlign(Qt.AlignTop)  # 顶部对齐
             text_label.setFrameEnabled(False)
             text_label.setBackgroundEnabled(False)
-            # 设置允许多行
             text_label.setMode(QgsLayoutItemLabel.ModeFont)
             layout.addLayoutItem(text_label)
 
             current_y += item_height
+            displayed_count += 1
 
-        displayed_count = idx + 1 if 'idx' in dir() else 0
-        print(f"[信息] 岩性图例添加完成，共 {displayed_count} 项")
+        print(f"[信息] 岩性图例添加完成，共 {displayed_count} 项，字体大小 {LEGEND_YANXING_FONT_SIZE_PT}pt")
     else:
         print("[信息] 无岩性数据，跳过岩性图例")
 
-    print("[信息] 图例添加完成（上部2行3列，岩性支持折行）")
+    print("[信息] 图例添加完成")
 
 
 def _wrap_text(text, max_chars):
