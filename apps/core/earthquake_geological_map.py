@@ -85,7 +85,7 @@ TOTAL_WIDTH_PX = int(200 * MM_PX)
 MAP_BORDER_WIDTH = max(2, int(round(0.35 * MM_PX)))
 LEGEND_WIDTH = int(34 * MM_PX)
 BORDER_LEFT = int(9 * MM_PX)
-BORDER_TOP = int(7 * MM_PX)
+BORDER_TOP = int(4 * MM_PX)
 BORDER_BOTTOM = int(5 * MM_PX)
 MAP_WIDTH = TOTAL_WIDTH_PX - BORDER_LEFT - LEGEND_WIDTH
 MAP_HEIGHT = MAP_WIDTH
@@ -1692,9 +1692,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="地震地质构造图生成工具")
     parser.add_argument("--test", action="store_true", help="运行所有单元测试")
     parser.add_argument("--full-test", action="store_true", help="运行完整生成测试")
-    parser.add_argument("--lon", type=float, default=114.39, help="震中经度")
-    parser.add_argument("--lat", type=float, default=39.32, help="震中纬度")
-    parser.add_argument("--mag", type=float, default=6.5, help="震级")
+    parser.add_argument("--lon", type=float, default=118.18, help="震中经度")
+    parser.add_argument("--lat", type=float, default=39.63, help="震中纬度")
+    parser.add_argument("--mag", type=float, default=7.8, help="震级")
     parser.add_argument("--kml", type=str, default=r"../../data/geology/n0432881302350072.kml",
                         help="烈度圈KML文件路径")
     parser.add_argument("--output", type=str,
