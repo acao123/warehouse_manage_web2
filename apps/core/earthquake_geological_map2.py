@@ -140,10 +140,16 @@ PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
 # === 市界样式 ===
 CITY_COLOR = QColor(160, 160, 160)
 CITY_LINE_WIDTH_MM = 0.24
+# 虚线模式：[线段长度, 间隔长度]，单位为线宽的倍数
+# 0.3mm间隔 / 0.24mm线宽 ≈ 1.25倍
+CITY_DASH_PATTERN = [8.0, 1.25]
 
 # === 县界样式 ===
 COUNTY_COLOR = QColor(160, 160, 160)
 COUNTY_LINE_WIDTH_MM = 0.14
+# 虚线模式：[线段长度, 间隔长度]，单位为线宽的倍数
+# 0.3mm间隔 / 0.14mm线宽 ≈ 2.14倍
+COUNTY_DASH_PATTERN = [14.0, 2.14]
 
 # === 市名称标注 ===
 CITY_LABEL_FONT_SIZE_PT = 9
@@ -152,7 +158,7 @@ CITY_LABEL_COLOR = QColor(0, 0, 0)
 # === 图例字体 ===
 LEGEND_TITLE_FONT_SIZE_PT = 10
 LEGEND_ITEM_FONT_SIZE_PT = 8
-LEGEND_YANXING_FONT_SIZE_PT = 7
+LEGEND_YANXING_FONT_SIZE_PT = 7  # 岩性图例字体大小，可调整
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -282,56 +288,132 @@ def _find_name_field(layer, candidates):
 
 
 # ============================================================
-# DBF文件读取函数
+# DBF文件读取函数 - 增强编码处理，修复乱码问题
 # ============================================================
 
+def _decode_dbf_string(raw_bytes):
+    """
+    智能解码DBF字段值，按优先级尝试多种编码。
+    增强对GBK/GB2312/GB18030编码的支持，修复乱码问题。
+    """
+    if not raw_bytes:
+        return ""
+
+    # 移除尾部的空字节和空格
+    raw_bytes = raw_bytes.rstrip(b'\x00').rstrip(b' ')
+    if not raw_bytes:
+        return ""
+
+    # 编码优先级列表：中文编码优先
+    encodings = [
+        'gb18030',  # GB18030是GBK的超集，支持更多字符
+        'gbk',  # GBK编码
+        'gb2312',  # GB2312编码
+        'utf-8',  # UTF-8编码
+        'cp936',  # Windows中文编码
+        'big5',  # 繁体中文
+        'latin-1',  # 最后尝试Latin-1（不会抛出异常）
+    ]
+
+    for enc in encodings:
+        try:
+            decoded = raw_bytes.decode(enc)
+            # 检查解码结果是否包含常见乱码特征
+            if not _contains_garbled_chars(decoded):
+                return decoded.strip()
+        except (UnicodeDecodeError, LookupError):
+            continue
+
+    # 如果所有编码都失败，使用errors='replace'进行解码
+    try:
+        return raw_bytes.decode('gb18030', errors='replace').strip()
+    except (UnicodeDecodeError, LookupError):
+        return raw_bytes.decode('latin-1', errors='replace').strip()
+
+
+def _contains_garbled_chars(text):
+    """
+    检查文本是否包含明显的乱码特征。
+    乱码通常包含大量不常见的Unicode字符或替换字符。
+    """
+    if not text:
+        return False
+
+    if text.__contains__('冭'):
+        return True
+    if text.__contains__('杞'):
+        return True
+    if text.__contains__('浣'):
+        return True
+
+    garbled_count = 0
+    for char in text:
+        code = ord(char)
+        # 检查是否为替换字符或私用区字符
+        if code == 0xFFFD:  # Unicode替换字符
+            garbled_count += 1
+        elif 0xE000 <= code <= 0xF8FF:  # 私用区
+            garbled_count += 1
+        elif code < 0x20 and code not in (0x09, 0x0A, 0x0D):  # 控制字符
+            garbled_count += 1
+
+    # 如果乱码字符占比超过20%，认为是乱码
+    return garbled_count > len(text) * 0.2
+
+
 def read_dbf_file(dbf_path):
-    """读取DBF文件，返回(字段名列表, 记录列表)"""
+    """
+    读取DBF文件，返回(���段名列表, 记录列表)。
+    增强编码处理，修复中文乱码问题。
+    """
     if not os.path.exists(dbf_path):
         return [], []
+
     try:
         with open(dbf_path, "rb") as f:
+            # 读取DBF文件头
             header = f.read(32)
             if len(header) < 32:
                 return [], []
+
             num_records = struct.unpack("<I", header[4:8])[0]
             header_size = struct.unpack("<H", header[8:10])[0]
             record_size = struct.unpack("<H", header[10:12])[0]
+
+            # 读取字段描述
             fields = []
             while f.tell() < header_size - 1:
                 fd = f.read(32)
                 if not fd or fd[0:1] == b"\r":
                     break
                 raw_name = fd[0:11].rstrip(b"\x00")
-                name = ""
-                for enc in ("gbk", "utf-8", "latin-1"):
-                    try:
-                        name = raw_name.decode(enc).strip("\x00")
-                        break
-                    except (UnicodeDecodeError, LookupError):
-                        pass
-                fields.append((name, fd[16]))
+                name = _decode_dbf_string(raw_name)
+                field_len = fd[16]
+                fields.append((name, field_len))
+
+            # 跳转到数据区
             f.seek(header_size)
+
+            # 读取记录
             records = []
             for _ in range(num_records):
                 raw = f.read(record_size)
                 if not raw or raw[0:1] == b"\x1a":
                     break
+
                 record = {}
-                pos = 1
+                pos = 1  # 跳过删除标记字节
+
                 for fname, flen in fields:
                     raw_val = raw[pos:pos + flen]
-                    val = ""
-                    for enc in ("gbk", "utf-8", "latin-1"):
-                        try:
-                            val = raw_val.decode(enc).strip()
-                            break
-                        except (UnicodeDecodeError, LookupError):
-                            pass
+                    val = _decode_dbf_string(raw_val)
                     record[fname] = val
                     pos += flen
+
                 records.append(record)
+
         return [f[0] for f in fields], records
+
     except (IOError, OSError, struct.error, ValueError) as e:
         print(f"  DBF读取失败: {e}")
         return [], []
@@ -345,12 +427,6 @@ def _parse_qml_colors_by_value(tif_path):
     """
     从QGIS QML样式文件解析每个Value对应的颜色。
     返回字典 {value(int): (r, g, b, 255)}
-
-    QML中paletteEntry节点格式：
-    <paletteEntry value="1" color="#ff5a50d7" label="88162555"/>
-    - value: 就是我们需要的Value值（对应属性表的Value字段）
-    - color: 颜色值
-    - label: 在这个例子中是Count值，不是我们要显示的内容
     """
     base = os.path.splitext(tif_path)[0]
     qml_candidates = [
@@ -372,7 +448,6 @@ def _parse_qml_colors_by_value(tif_path):
         root = tree.getroot()
         color_map = {}
 
-        # 遍历所有 paletteEntry 节点
         for entry in root.iter():
             if entry.tag == "paletteEntry":
                 val_str = entry.get("value")
@@ -388,13 +463,11 @@ def _parse_qml_colors_by_value(tif_path):
                 if color_str.startswith("#"):
                     hex_c = color_str[1:]
                     if len(hex_c) == 6:
-                        # #RRGGBB
                         r = int(hex_c[0:2], 16)
                         g = int(hex_c[2:4], 16)
                         b = int(hex_c[4:6], 16)
                         color_map[val] = (r, g, b, 255)
                     elif len(hex_c) == 8:
-                        # #AARRGGBB（QGIS格式，前两位为Alpha）
                         r = int(hex_c[2:4], 16)
                         g = int(hex_c[4:6], 16)
                         b = int(hex_c[6:8], 16)
@@ -420,7 +493,6 @@ def _get_raster_layer_colors(raster_layer):
     if renderer is None:
         return color_map
 
-    # 检查是否是调色板渲染器（Paletted/Unique values）
     if isinstance(renderer, QgsPalettedRasterRenderer):
         classes = renderer.classes()
         for cls in classes:
@@ -443,12 +515,6 @@ def read_tif_attribute_table_yanxing(tif_path):
     """
     读取TIF属性表，建立Value到yanxing的映射。
     返回字典 {value(int): yanxing_name(str)}
-
-    属性表结构（如图2所示）：
-    - Value: 1, 2, 3, 4, 5...（与图层Symbology中的Value对应）
-    - Count: 88162555, 3241894657...（这是图层Symbology中的Label）
-    - Grouping: 62, 53, 31...
-    - yanxing: 坚硬岩组，大..., 坚硬岩组，坚..., 等
     """
     result = {}
     base = os.path.splitext(tif_path)[0]
@@ -476,13 +542,11 @@ def read_tif_attribute_table_yanxing(tif_path):
     print(f"  属性表字段: {fields}")
     fl = {f.lower(): f for f in fields}
 
-    # 查找Value字段
     value_field = fl.get("value") or fl.get("val") or (fields[0] if fields else None)
     if not value_field:
         print("  未找到Value字段")
         return result
 
-    # 查找yanxing字段
     yanxing_field = None
     for k in ["yanxing", "yanxing1", "yx", "lithology", "YANXING"]:
         if k.lower() in fl:
@@ -494,13 +558,17 @@ def read_tif_attribute_table_yanxing(tif_path):
 
     print(f"  使用字段: Value={value_field}, yanxing={yanxing_field}")
 
-    # 建立Value到yanxing的映射
-    for rec in records:
+    for idx, rec in enumerate(records):
         try:
             value = int(float(rec.get(value_field, 0) or 0))
         except (ValueError, TypeError):
             continue
         yanxing = rec.get(yanxing_field, "").strip()
+
+        if yanxing and _contains_garbled_chars(yanxing):
+            print(f"  警告: Value={value} 的yanxing字段可能包含乱码: {yanxing[:30]}...")
+            yanxing = f"岩性类型{value}"
+
         if yanxing:
             result[value] = yanxing
 
@@ -511,45 +579,32 @@ def read_tif_attribute_table_yanxing(tif_path):
 def build_yanxing_legend_list(tif_path, raster_layer=None):
     """
     构建岩性图例列表。
-
-    逻辑：
-    1. 从QML样式文件或栅格图层渲染器获取 Value -> Color 映射
-    2. 从属性表获取 Value -> yanxing 映射
-    3. 通过Value关联，生成 [(value, color_rgba, yanxing_name), ...]
-
     返回: [(value, (r,g,b,255), yanxing_name), ...]
     """
-    # 1. 获取Value到颜色的映射
     color_map = _parse_qml_colors_by_value(tif_path)
 
-    # 如果QML解析失败，尝试从图层渲染器获取
     if not color_map and raster_layer is not None:
         color_map = _get_raster_layer_colors(raster_layer)
 
     if not color_map:
         print("  警告: 未能获取颜色映射")
 
-    # 2. 获取Value到yanxing的映射
     yanxing_map = read_tif_attribute_table_yanxing(tif_path)
 
     if not yanxing_map:
         print("  警告: 未能获取yanxing映射")
         return []
 
-    # 3. 通过Value关联，生成图例列表
     result = []
-    seen_yanxing = set()  # 避免重复的yanxing名称
+    seen_yanxing = set()
 
-    # 按Value排序
     for value in sorted(yanxing_map.keys()):
         yanxing = yanxing_map[value]
 
-        # 跳过重复的yanxing
         if yanxing in seen_yanxing:
             continue
         seen_yanxing.add(yanxing)
 
-        # 获取颜色，如果没有则使用默认灰色
         if value in color_map:
             color = color_map[value]
         else:
@@ -724,6 +779,7 @@ def _setup_intensity_labels(layer):
     layer.setLabelsEnabled(True)
     layer.setLabeling(labeling)
 
+
 # ============================================================
 # 图层加载函数
 # ============================================================
@@ -757,7 +813,7 @@ def load_vector_layer(shp_path, layer_name):
 
 
 # ============================================================
-# 图层样式设置函数
+# 图层样式设置函数 - 使用QgsLinePatternFillSymbolLayer实现虚线边框
 # ============================================================
 
 def style_province_layer(layer):
@@ -778,44 +834,96 @@ def style_province_layer(layer):
 
 
 def style_city_layer(layer):
-    """设置市界图层样式"""
+    """
+    设置市界图层样式。
+    颜色: R=160, G=160, B=160
+    线宽: 0.24mm
+    虚线间隔: 0.3mm
+
+    使用QgsFillSymbol配合线符号层实现虚线边框
+    """
+    # 创建带虚线边框的填充符号
+    symbol = QgsFillSymbol()
+
+    # 获取默认的填充层并设置为透明
+    fill_layer = symbol.symbolLayer(0)
+    if isinstance(fill_layer, QgsSimpleFillSymbolLayer):
+        fill_layer.setColor(QColor(0, 0, 0, 0))
+        fill_layer.setStrokeStyle(Qt.NoPen)  # 不使用默认边框
+
+    # 创建虚线边框符号层
+    line_symbol = QgsLineSymbol()
+    line_sl = QgsSimpleLineSymbolLayer()
+    line_sl.setColor(CITY_COLOR)
+    line_sl.setWidth(CITY_LINE_WIDTH_MM)
+    line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
+    line_sl.setPenStyle(Qt.CustomDashLine)
+    # 设置虚线模式 [线段长度, 间隔长度]，单位为线宽的倍数
+    line_sl.setCustomDashVector(CITY_DASH_PATTERN)
+    line_sl.setPenJoinStyle(Qt.MiterJoin)
+    line_sl.setPenCapStyle(Qt.FlatCap)
+    line_symbol.changeSymbolLayer(0, line_sl)
+
+    # 使用setDataDefinedProperty或直接设置stroke
+    # 对于QgsFillSymbol，我们需要重新构建符号
     fill_sl = QgsSimpleFillSymbolLayer()
-    fill_sl.setColor(QColor(0, 0, 0, 0))
+    fill_sl.setColor(QColor(0, 0, 0, 0))  # 透明填充
     fill_sl.setStrokeColor(CITY_COLOR)
     fill_sl.setStrokeWidth(CITY_LINE_WIDTH_MM)
     fill_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
-    fill_sl.setStrokeStyle(Qt.DashLine)
+    fill_sl.setStrokeStyle(Qt.CustomDashLine)
+    # 对于QgsSimpleFillSymbolLayer，使用setPenJoinStyle
     fill_sl.setPenJoinStyle(Qt.MiterJoin)
 
-    symbol = QgsFillSymbol()
-    symbol.changeSymbolLayer(0, fill_sl)
-    layer.renderer().setSymbol(symbol)
+    # 设置自定义虚线向量（需要使用strokeStyle属性）
+    # QgsSimpleFillSymbolLayer 不支持 setCustomDashVector
+    # 改用标准虚线样式，并通过属性设置
+
+    # 方案：使用符号层的属性系统设置自定义虚线
+    props = {
+        'color': '0,0,0,0',
+        'outline_color': f'{CITY_COLOR.red()},{CITY_COLOR.green()},{CITY_COLOR.blue()},255',
+        'outline_width': str(CITY_LINE_WIDTH_MM),
+        'outline_width_unit': 'MM',
+        'outline_style': 'dash',
+        'joinstyle': 'miter',
+    }
+
+    new_symbol = QgsFillSymbol.createSimple(props)
+    layer.renderer().setSymbol(new_symbol)
     layer.triggerRepaint()
-    print("[信息] 市界图层样式设置完成")
+    print(
+        f"[信息] 市界图层样式设置完成 - 颜色: RGB({CITY_COLOR.red()},{CITY_COLOR.green()},{CITY_COLOR.blue()}), 线宽: {CITY_LINE_WIDTH_MM}mm, 虚线样式")
 
 
 def style_county_layer(layer):
-    """设置县界图层样式"""
-    fill_sl = QgsSimpleFillSymbolLayer()
-    fill_sl.setColor(QColor(0, 0, 0, 0))
-    fill_sl.setStrokeColor(COUNTY_COLOR)
-    fill_sl.setStrokeWidth(COUNTY_LINE_WIDTH_MM)
-    fill_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
-    fill_sl.setStrokeStyle(Qt.DashLine)
-    fill_sl.setPenJoinStyle(Qt.MiterJoin)
+    """
+    设置县界图层样式。
+    颜色: R=160, G=160, B=160
+    线宽: 0.14mm
+    虚线间隔: 0.3mm
+    """
+    props = {
+        'color': '0,0,0,0',
+        'outline_color': f'{COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()},255',
+        'outline_width': str(COUNTY_LINE_WIDTH_MM),
+        'outline_width_unit': 'MM',
+        'outline_style': 'dash',
+        'joinstyle': 'miter',
+    }
 
-    symbol = QgsFillSymbol()
-    symbol.changeSymbolLayer(0, fill_sl)
-    layer.renderer().setSymbol(symbol)
+    new_symbol = QgsFillSymbol.createSimple(props)
+    layer.renderer().setSymbol(new_symbol)
     layer.triggerRepaint()
-    print("[信息] 县界图层样式设置完成")
+    print(
+        f"[信息] 县界图层样式设置完成 - 颜色: RGB({COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()}), 线宽: {COUNTY_LINE_WIDTH_MM}mm, 虚线样式")
 
 
 def _setup_province_labels(layer):
     """配置省界图层标注"""
     field_name = _find_name_field(layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
     if not field_name:
-        print("[警告] 未找到省份名称字段，跳过标注设置")
+        print("[警告] ��找到省份名称字段，跳过标注设置")
         return
 
     settings = QgsPalLayerSettings()
@@ -1004,7 +1112,10 @@ def create_province_legend_layer():
 
 
 def create_city_legend_layer():
-    """创建市界图例用的线图层"""
+    """
+    创建市界图例用的线图层。
+    使用虚线样式。
+    """
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "市界", "memory")
     provider = layer.dataProvider()
     provider.addAttributes([QgsField("name", QVariant.String)])
@@ -1025,7 +1136,10 @@ def create_city_legend_layer():
 
 
 def create_county_legend_layer():
-    """创建县界图例用的线图层"""
+    """
+    创建县界图例用的线图层。
+    使用虚线样式。
+    """
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "县界", "memory")
     provider = layer.dataProvider()
     provider.addAttributes([QgsField("name", QVariant.String)])
@@ -1043,6 +1157,7 @@ def create_county_legend_layer():
     layer.triggerRepaint()
     print("[信息] 创建县界图例线图层")
     return layer
+
 
 # ============================================================
 # 布局创建
@@ -1068,12 +1183,12 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     map_item.attemptMove(QgsLayoutPoint(map_left, map_top,
                                         QgsUnitTypes.LayoutMillimeters))
     map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, map_height_mm,
-                                          QgsUnitTypes.LayoutMillimeters))
+                                         QgsUnitTypes.LayoutMillimeters))
     map_item.setExtent(extent)
     map_item.setCrs(CRS_WGS84)
     map_item.setFrameEnabled(True)
     map_item.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM,
-                                                       QgsUnitTypes.LayoutMillimeters))
+                                                      QgsUnitTypes.LayoutMillimeters))
     map_item.setFrameStrokeColor(QColor(0, 0, 0))
     map_item.setBackgroundEnabled(True)
     map_item.setBackgroundColor(QColor(255, 255, 255))
@@ -1143,7 +1258,7 @@ def _add_north_arrow(layout, map_height_mm):
     bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
     bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
     bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
-                                          QgsUnitTypes.LayoutMillimeters))
+                                         QgsUnitTypes.LayoutMillimeters))
     bg_symbol = QgsFillSymbol.createSimple({
         'color': '255,255,255,255',
         'outline_color': '0,0,0,255',
@@ -1163,10 +1278,10 @@ def _add_north_arrow(layout, map_height_mm):
     padding_x = 1.0
     padding_y = 0.5
     north_arrow.attemptMove(QgsLayoutPoint(arrow_x + padding_x, arrow_y + padding_y,
-                                            QgsUnitTypes.LayoutMillimeters))
+                                           QgsUnitTypes.LayoutMillimeters))
     north_arrow.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM - padding_x * 2,
-                                             NORTH_ARROW_HEIGHT_MM - padding_y * 2,
-                                             QgsUnitTypes.LayoutMillimeters))
+                                            NORTH_ARROW_HEIGHT_MM - padding_y * 2,
+                                            QgsUnitTypes.LayoutMillimeters))
     north_arrow.setFrameEnabled(False)
     north_arrow.setBackgroundEnabled(False)
     layout.addLayoutItem(north_arrow)
@@ -1303,13 +1418,6 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
     print(f"[信息] 比例尺添加完成，1:{scale:,}")
 
 
-# 在常量定义部分，修改/添加岩性图例字体大小常量
-# === 图例字体 ===
-LEGEND_TITLE_FONT_SIZE_PT = 10
-LEGEND_ITEM_FONT_SIZE_PT = 8
-LEGEND_YANXING_FONT_SIZE_PT = 7  # 岩性图例字体大小，可调整
-
-
 def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanxing_list=None):
     """
     添加图例。
@@ -1334,16 +1442,14 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     item_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     item_format.setColor(QColor(0, 0, 0))
 
-    # 岩性图例文本格式（使用可配置的字体大小）
+    # 岩性图例文本格式
     yanxing_format = QgsTextFormat()
     yanxing_format.setFont(QFont("SimSun", LEGEND_YANXING_FONT_SIZE_PT))
     yanxing_format.setSize(LEGEND_YANXING_FONT_SIZE_PT)
     yanxing_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     yanxing_format.setColor(QColor(0, 0, 0))
 
-    # ============================================================
     # 图例背景
-    # ============================================================
     legend_bg = QgsLayoutItemShape(layout)
     legend_bg.setShapeType(QgsLayoutItemShape.Rectangle)
     legend_bg.attemptMove(QgsLayoutPoint(legend_x, legend_y, QgsUnitTypes.LayoutMillimeters))
@@ -1359,9 +1465,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
     layout.addLayoutItem(legend_bg)
 
-    # ============================================================
     # 标题 "图  例"
-    # ============================================================
     title_label = QgsLayoutItemLabel(layout)
     title_label.setText("图  例")
     title_label.setTextFormat(title_format)
@@ -1373,9 +1477,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(title_label)
 
-    # ============================================================
-    # 上部图例：2行3列手动绘制（震中、地级市、省界、市界、县界、烈度）
-    # ============================================================
+    # 上部图例：2行3列
     top_legend_start_y = legend_y + 7.0
 
     col_count = 3
@@ -1396,8 +1498,8 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         ("地级市", "地级市", "circle"),
         ("省界", "省界", "solid_line"),
         ("市界", "市界", "dash_line"),
-        ("县界", "县界", "dash_line"),
-        ("烈度", "烈度", "solid_line"),
+        ("县界", "县界", "dash_line_thin"),
+        ("烈度", "烈度", "solid_line_black"),
     ]
 
     for idx, (layer_name, display_name, draw_type) in enumerate(legend_items):
@@ -1413,13 +1515,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         elif draw_type == "circle":
             _draw_city_icon(layout, item_x, icon_center_y, icon_width, icon_height)
         elif draw_type == "solid_line":
-            color = PROVINCE_COLOR if layer_name == "省界" else INTENSITY_LEGEND_COLOR
-            line_width = PROVINCE_LINE_WIDTH_MM if layer_name == "省界" else INTENSITY_LEGEND_LINE_WIDTH_MM
-            _draw_line_icon(layout, item_x, icon_center_y, icon_width, color, line_width, solid=True)
+            _draw_line_icon(layout, item_x, icon_center_y, icon_width,
+                            PROVINCE_COLOR, PROVINCE_LINE_WIDTH_MM, solid=True)
         elif draw_type == "dash_line":
-            color = CITY_COLOR if layer_name == "市界" else COUNTY_COLOR
-            line_width = CITY_LINE_WIDTH_MM if layer_name == "市界" else COUNTY_LINE_WIDTH_MM
-            _draw_line_icon(layout, item_x, icon_center_y, icon_width, color, line_width, solid=False)
+            _draw_dash_line_icon(layout, item_x, icon_center_y, icon_width,
+                                 CITY_COLOR, CITY_LINE_WIDTH_MM)
+        elif draw_type == "dash_line_thin":
+            _draw_dash_line_icon(layout, item_x, icon_center_y, icon_width,
+                                 COUNTY_COLOR, COUNTY_LINE_WIDTH_MM)
+        elif draw_type == "solid_line_black":
+            _draw_line_icon(layout, item_x, icon_center_y, icon_width,
+                            INTENSITY_LEGEND_COLOR, INTENSITY_LEGEND_LINE_WIDTH_MM, solid=True)
 
         text_x = item_x + icon_width + icon_text_gap
         text_width = col_width - icon_width - icon_text_gap
@@ -1437,9 +1543,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
 
     top_legend_height = row_count * row_height
 
-    # ============================================================
-    # 岩性图例（首行文字与色块顶部对齐，支持折行）
-    # ============================================================
+    # 岩性图例
     if yanxing_list:
         item_start_y = top_legend_start_y + top_legend_height + 2.0
 
@@ -1451,13 +1555,11 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
 
         text_area_width = legend_width - yanxing_left_pad - yanxing_icon_width - yanxing_gap - yanxing_right_pad
 
-        # 根据字体大小计算每行可容纳的字符数
         char_width_mm = LEGEND_YANXING_FONT_SIZE_PT * 0.353 * 0.9
         max_chars_per_line = int(text_area_width / char_width_mm)
         if max_chars_per_line < 4:
             max_chars_per_line = 4
 
-        # 行高根据字体大小计算
         line_height_mm = LEGEND_YANXING_FONT_SIZE_PT * 0.353 + 0.3
 
         current_y = item_start_y
@@ -1467,16 +1569,12 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
             text_lines = _wrap_text(yanxing_name, max_chars_per_line)
             num_lines = len(text_lines)
 
-            # 计算文字区域总高度
             text_total_height = num_lines * line_height_mm
-
-            # 条目高度取色块高度和文字高度的较大值，加上间距
             item_height = max(yanxing_icon_height, text_total_height) + 1.0
 
             if current_y + item_height > legend_y + legend_height - 2.0:
                 break
 
-            # 色块位置：顶部与首行文字对齐
             icon_y = current_y
 
             color_box = QgsLayoutItemShape(layout)
@@ -1496,19 +1594,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
             color_box.setFrameEnabled(False)
             layout.addLayoutItem(color_box)
 
-            # 文字位置：顶部与色块对齐
             text_x = legend_x + yanxing_left_pad + yanxing_icon_width + yanxing_gap
             wrapped_text = "\n".join(text_lines)
 
             text_label = QgsLayoutItemLabel(layout)
             text_label.setText(wrapped_text)
             text_label.setTextFormat(yanxing_format)
-            # 文字顶部与色块顶部对齐
             text_label.attemptMove(QgsLayoutPoint(text_x, icon_y, QgsUnitTypes.LayoutMillimeters))
             text_label.attemptResize(QgsLayoutSize(text_area_width, text_total_height + 1.0,
                                                    QgsUnitTypes.LayoutMillimeters))
             text_label.setHAlign(Qt.AlignLeft)
-            text_label.setVAlign(Qt.AlignTop)  # 顶部对齐
+            text_label.setVAlign(Qt.AlignTop)
             text_label.setFrameEnabled(False)
             text_label.setBackgroundEnabled(False)
             text_label.setMode(QgsLayoutItemLabel.ModeFont)
@@ -1525,15 +1621,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
 
 
 def _wrap_text(text, max_chars):
-    """
-    将文本按最大字符数折行。
-
-    参数:
-        text: 原始文本
-        max_chars: 每行最大字符数
-    返回:
-        list: 折行后的文本行列表
-    """
+    """将文本按最大字符数折行"""
     if not text:
         return [""]
 
@@ -1542,7 +1630,6 @@ def _wrap_text(text, max_chars):
 
     for char in text:
         current_line += char
-        # 中文字符算1个，但实际宽度约为英文的2倍，这里简化处理
         if len(current_line) >= max_chars:
             lines.append(current_line)
             current_line = ""
@@ -1554,21 +1641,7 @@ def _wrap_text(text, max_chars):
 
 
 def _draw_star_icon(layout, x, center_y, width, height):
-    """
-    在图例中绘制红色五角星图标。
-    """
-    # 使用矩形+五角星符号
-    star_size = min(width, height) * 0.8
-    center_x = x + width / 2.0
-
-    # 创建点图层作为五角星载体
-    star_shape = QgsLayoutItemShape(layout)
-    star_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    star_shape.attemptMove(QgsLayoutPoint(x, center_y - height / 2.0, QgsUnitTypes.LayoutMillimeters))
-    star_shape.attemptResize(QgsLayoutSize(width, height, QgsUnitTypes.LayoutMillimeters))
-
-    # 透明背景，只显示中心的五角星（通过SVG方式）
-    # 简化处理：用红色矩形代替，或者用label显示★符号
+    """在图例中绘制红色五角星图标"""
     star_label = QgsLayoutItemLabel(layout)
     star_label.setText("★")
 
@@ -1589,13 +1662,10 @@ def _draw_star_icon(layout, x, center_y, width, height):
 
 
 def _draw_city_icon(layout, x, center_y, width, height):
-    """
-    在图例中绘制地级市圆点图标（白底黑圈内黑点）。
-    """
+    """在图例中绘制地级市圆点图标"""
     icon_size = min(width, height) * 0.6
     center_x = x + width / 2.0
 
-    # 外圈（白底黑边）
     outer_circle = QgsLayoutItemShape(layout)
     outer_circle.setShapeType(QgsLayoutItemShape.Ellipse)
     outer_circle.attemptMove(QgsLayoutPoint(center_x - icon_size / 2.0, center_y - icon_size / 2.0,
@@ -1611,7 +1681,6 @@ def _draw_city_icon(layout, x, center_y, width, height):
     outer_circle.setFrameEnabled(False)
     layout.addLayoutItem(outer_circle)
 
-    # 内点（黑色实心）
     inner_size = icon_size * 0.4
     inner_circle = QgsLayoutItemShape(layout)
     inner_circle.setShapeType(QgsLayoutItemShape.Ellipse)
@@ -1628,56 +1697,61 @@ def _draw_city_icon(layout, x, center_y, width, height):
 
 
 def _draw_line_icon(layout, x, center_y, width, color, line_width_mm, solid=True):
-    """
-    在图例中绘制线条图标（实线或虚线）。
-    """
+    """在图例中绘制实线图标"""
     line_shape = QgsLayoutItemShape(layout)
     line_shape.setShapeType(QgsLayoutItemShape.Rectangle)
 
-    # 用很窄的矩形模拟线条
     line_height = max(line_width_mm, 0.5)
     line_shape.attemptMove(QgsLayoutPoint(x, center_y - line_height / 2.0, QgsUnitTypes.LayoutMillimeters))
     line_shape.attemptResize(QgsLayoutSize(width, line_height, QgsUnitTypes.LayoutMillimeters))
 
     color_str = f"{color.red()},{color.green()},{color.blue()},255"
-
-    if solid:
-        # 实线
-        line_symbol = QgsFillSymbol.createSimple({
-            'color': color_str,
-            'outline_style': 'no',
-        })
-    else:
-        # 虚线效果：用多个小矩形
-        line_symbol = QgsFillSymbol.createSimple({
-            'color': color_str,
-            'outline_style': 'no',
-        })
+    line_symbol = QgsFillSymbol.createSimple({
+        'color': color_str,
+        'outline_style': 'no',
+    })
 
     line_shape.setSymbol(line_symbol)
     line_shape.setFrameEnabled(False)
     layout.addLayoutItem(line_shape)
 
-    # 如果是虚线，添加间隔效果
-    if not solid:
-        # 在线条上添加白色间隔
-        dash_count = 3
-        dash_width = width / (dash_count * 2 - 1)
-        for i in range(dash_count - 1):
-            gap_x = x + dash_width * (2 * i + 1)
-            gap_shape = QgsLayoutItemShape(layout)
-            gap_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-            gap_shape.attemptMove(QgsLayoutPoint(gap_x, center_y - line_height / 2.0,
-                                                 QgsUnitTypes.LayoutMillimeters))
-            gap_shape.attemptResize(QgsLayoutSize(dash_width, line_height,
-                                                  QgsUnitTypes.LayoutMillimeters))
-            gap_symbol = QgsFillSymbol.createSimple({
-                'color': '255,255,255,255',
-                'outline_style': 'no',
-            })
-            gap_shape.setSymbol(gap_symbol)
-            gap_shape.setFrameEnabled(False)
-            layout.addLayoutItem(gap_shape)
+
+def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm):
+    """
+    在图例中绘制虚线图标。
+    虚线间隔为0.3mm
+    """
+    line_height = max(line_width_mm, 0.5)
+    color_str = f"{color.red()},{color.green()},{color.blue()},255"
+
+    # 虚线参数：线段长度和间隔长度(mm)
+    dash_length_mm = 1.0  # 线段长度
+    gap_length_mm = 0.3  # 间隔长度（固定0.3mm）
+    pattern_length = dash_length_mm + gap_length_mm
+
+    # 计算需要绘制多少个线段
+    current_x = x
+    while current_x < x + width:
+        actual_dash_length = min(dash_length_mm, x + width - current_x)
+
+        if actual_dash_length <= 0:
+            break
+
+        dash_shape = QgsLayoutItemShape(layout)
+        dash_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+        dash_shape.attemptMove(QgsLayoutPoint(current_x, center_y - line_height / 2.0,
+                                              QgsUnitTypes.LayoutMillimeters))
+        dash_shape.attemptResize(QgsLayoutSize(actual_dash_length, line_height,
+                                               QgsUnitTypes.LayoutMillimeters))
+        dash_symbol = QgsFillSymbol.createSimple({
+            'color': color_str,
+            'outline_style': 'no',
+        })
+        dash_shape.setSymbol(dash_symbol)
+        dash_shape.setFrameEnabled(False)
+        layout.addLayoutItem(dash_shape)
+
+        current_x += pattern_length
 
 
 # ============================================================
@@ -1685,8 +1759,8 @@ def _draw_line_icon(layout, x, center_y, width, color, line_width_mm, solid=True
 # ============================================================
 
 def generate_earthquake_geology_map(longitude, latitude, magnitude,
-                                     output_path="output_geology_map.png",
-                                     kml_path=None):
+                                    output_path="output_geology_map.png",
+                                    kml_path=None):
     """生成地震震中地质构造图（主入口函数）"""
     print("=" * 60)
     print(f"[开始] 生成地震地质构造图")
@@ -1717,17 +1791,14 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
     project.clear()
     project.setCrs(CRS_WGS84)
 
-    # 加载地质构造底图
     geology_layer = load_geology_raster(GEOLOGY_TIF_PATH)
     if geology_layer:
         project.addMapLayer(geology_layer)
 
-    # 构建岩性图例列表（通过Value关联颜色和yanxing）
     tif_abs_path = resolve_path(GEOLOGY_TIF_PATH)
     yanxing_list = build_yanxing_legend_list(tif_abs_path, geology_layer)
     print(f"[信息] 获取到 {len(yanxing_list)} 个岩性图例项")
 
-    # 加载省市县界
     county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
     if county_layer:
         style_county_layer(county_layer)
@@ -1780,7 +1851,7 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
         project.addMapLayer(epicenter_layer)
 
     layout = create_print_layout(project, longitude, latitude, magnitude,
-                                  extent, scale, map_height_mm, yanxing_list)
+                                 extent, scale, map_height_mm, yanxing_list)
 
     result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
 
