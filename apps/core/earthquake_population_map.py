@@ -15,7 +15,7 @@
     第四档：500~1000人/平方公里
     第五档：＞1000人/平方公里
 - 图例位于主图左下角
-- 基本图例项（震中、地级市、省界、市界、县界、烈度）采用2行3列布局
+- 基本图例项（震中、地级市、省界、市界、县界、烈度）采用3行2列布局
 """
 
 import os
@@ -1472,7 +1472,7 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     图例位置：左边框与主图左边框对齐，下边框与主图下边框对齐。
 
     包含内容：
-    - 基本图例项（震中、地级市、省界、市界、县界、烈度）采用2行3列布局
+    - 基本图例项（震中、地级市、省界、市界、县界、烈度）采用3行2列布局
     - 人口密度分5档图例（带渐变色块）
 
     参数:
@@ -1550,7 +1550,7 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     # ========================================
     basic_legend_start_y = legend_y + 5.5
 
-    # 2行3列布局参数
+    # 3行2列布局参数
     col_count = 2  # 列数
     row_count = 3  # 行数
     left_pad = 2.0  # 左边距
@@ -1682,7 +1682,7 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
         layout.addLayoutItem(text_label)
 
     print(f"[信息] 人口密度图例添加完成，共 {len(population_legend_list)} 档")
-    print("[信息] 基本图例项采用2行3列布局")
+    print("[信息] 基本图例项采用3行2列布局")
     print("[信息] 图例添加完成（位于主图左下角）")
 
 
@@ -2211,7 +2211,7 @@ def test_tif_path():
 def test_legend_layout():
     """
     测试图例布局配置。
-    验证基本图例项采用2行3列布局。
+    验证基本图例项采用3行2列布局。
     """
     print("\n--- 测试: 图例布局配置 ---")
 
@@ -2225,13 +2225,13 @@ def test_legend_layout():
         ("烈度", "solid_line_black"),
     ]
 
-    # 验证图例项数量为6（2行×3列）
+    # 验证图例项数量为6（3行×2列）
     assert len(legend_items) == 6
-    print(f"  图例项数量: {len(legend_items)} (2行×3列=6) ✓")
+    print(f"  图例项数量: {len(legend_items)} (3行×2列=6) ✓")
 
-    # 验证2行3列布局
-    col_count = 3
-    row_count = 2
+    # 验证3行2列布局
+    col_count = 2
+    row_count = 3
 
     for idx, (name, icon_type) in enumerate(legend_items):
         row = idx // col_count
