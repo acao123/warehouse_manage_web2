@@ -140,16 +140,20 @@ PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
 # === 市界样式 ===
 CITY_COLOR = QColor(160, 160, 160)
 CITY_LINE_WIDTH_MM = 0.24
+# 虚线间隔: 0.3mm
 # 虚线模式：[线段长度, 间隔长度]，单位为线宽的倍数
-# 0.3mm间隔 / 0.24mm线宽 ≈ 1.25倍
-CITY_DASH_PATTERN = [8.0, 1.25]
+# 0.3mm间隔 / 0.24mm线宽 = 1.25倍
+CITY_DASH_GAP_MM = 0.3
+CITY_DASH_PATTERN = [8.0, CITY_DASH_GAP_MM / CITY_LINE_WIDTH_MM]
 
 # === 县界样式 ===
 COUNTY_COLOR = QColor(160, 160, 160)
 COUNTY_LINE_WIDTH_MM = 0.14
+# 虚线间隔: 0.2mm
 # 虚线模式：[线段长度, 间隔长度]，单位为线宽的倍数
-# 0.3mm间隔 / 0.14mm线宽 ≈ 2.14倍
-COUNTY_DASH_PATTERN = [14.0, 2.14]
+# 0.2mm间隔 / 0.14mm线宽 ≈ 1.43倍
+COUNTY_DASH_GAP_MM = 0.2
+COUNTY_DASH_PATTERN = [10.0, COUNTY_DASH_GAP_MM / COUNTY_LINE_WIDTH_MM]
 
 # === 市名称标注 ===
 CITY_LABEL_FONT_SIZE_PT = 9
@@ -182,7 +186,6 @@ INTENSITY_LEGEND_LINE_WIDTH_MM = 0.5
 
 # WGS84
 CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
-
 
 # ============================================================
 # 工具函数
@@ -363,7 +366,7 @@ def _contains_garbled_chars(text):
 
 def read_dbf_file(dbf_path):
     """
-    读取DBF文件，返回(���段名列表, 记录列表)。
+    读取DBF文件，返回(字段名列表, 记录列表)。
     增强编码处理，修复中文乱码问题。
     """
     if not os.path.exists(dbf_path):
@@ -502,7 +505,7 @@ def _get_raster_layer_colors(raster_layer):
                 color_map[val] = (color.red(), color.green(), color.blue(), 255)
             except (ValueError, TypeError):
                 continue
-        print(f"  从栅格图层渲染器获取颜色，共 {len(color_map)} 个条目")
+        print(f"  ��栅格图层渲染器获取颜色，共 {len(color_map)} 个条目")
 
     return color_map
 
@@ -813,7 +816,7 @@ def load_vector_layer(shp_path, layer_name):
 
 
 # ============================================================
-# 图层样式设置函数 - 使用QgsLinePatternFillSymbolLayer实现虚线边框
+# 图层样式设置函数
 # ============================================================
 
 def style_province_layer(layer):
@@ -839,61 +842,39 @@ def style_city_layer(layer):
     颜色: R=160, G=160, B=160
     线宽: 0.24mm
     虚线间隔: 0.3mm
-
-    使用QgsFillSymbol配合线符号层实现虚线边框
     """
-    # 创建带虚线边框的填充符号
+    # 创建填充符号
     symbol = QgsFillSymbol()
 
-    # 获取默认的填充层并设置为透明
-    fill_layer = symbol.symbolLayer(0)
-    if isinstance(fill_layer, QgsSimpleFillSymbolLayer):
-        fill_layer.setColor(QColor(0, 0, 0, 0))
-        fill_layer.setStrokeStyle(Qt.NoPen)  # 不使用默认边框
-
-    # 创建虚线边框符号层
-    line_symbol = QgsLineSymbol()
-    line_sl = QgsSimpleLineSymbolLayer()
-    line_sl.setColor(CITY_COLOR)
-    line_sl.setWidth(CITY_LINE_WIDTH_MM)
-    line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    line_sl.setPenStyle(Qt.CustomDashLine)
-    # 设置虚线模式 [线段长度, 间隔长度]，单位为线宽的倍数
-    line_sl.setCustomDashVector(CITY_DASH_PATTERN)
-    line_sl.setPenJoinStyle(Qt.MiterJoin)
-    line_sl.setPenCapStyle(Qt.FlatCap)
-    line_symbol.changeSymbolLayer(0, line_sl)
-
-    # 使用setDataDefinedProperty或直接设置stroke
-    # 对于QgsFillSymbol，我们需要重新构建符号
+    # 创建简单填充符号层，设置透明填充和虚线边框
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))  # 透明填充
     fill_sl.setStrokeColor(CITY_COLOR)
     fill_sl.setStrokeWidth(CITY_LINE_WIDTH_MM)
     fill_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
     fill_sl.setStrokeStyle(Qt.CustomDashLine)
-    # 对于QgsSimpleFillSymbolLayer，使用setPenJoinStyle
     fill_sl.setPenJoinStyle(Qt.MiterJoin)
 
-    # 设置自定义虚线向量（需要使用strokeStyle属性）
-    # QgsSimpleFillSymbolLayer 不支持 setCustomDashVector
-    # 改用标准虚线样式，并通过属性设置
+    # 设置自定义虚线向量
+    # QGIS 3.40.15 中 QgsSimpleFillSymbolLayer 支持通过属性设置自定义虚线
+    # 虚线模式: [线段长度, 间隔长度]，单位为线宽的倍数
+    # 线段长度设为合适值，间隔 = 0.3mm / 0.24mm = 1.25 倍线宽
+    dash_pattern = [4.0, CITY_DASH_GAP_MM / CITY_LINE_WIDTH_MM]
 
-    # 方案：使用符号层的属性系统设置自定义虚线
-    props = {
-        'color': '0,0,0,0',
-        'outline_color': f'{CITY_COLOR.red()},{CITY_COLOR.green()},{CITY_COLOR.blue()},255',
-        'outline_width': str(CITY_LINE_WIDTH_MM),
-        'outline_width_unit': 'MM',
-        'outline_style': 'dash',
-        'joinstyle': 'miter',
-    }
+    # 使用 setCustomDashVector 方法（如果可用）
+    if hasattr(fill_sl, 'setCustomDashVector'):
+        fill_sl.setCustomDashVector(dash_pattern)
+    else:
+        # 备用方案：使用标准虚线样式
+        fill_sl.setStrokeStyle(Qt.DashLine)
 
-    new_symbol = QgsFillSymbol.createSimple(props)
-    layer.renderer().setSymbol(new_symbol)
+    symbol.changeSymbolLayer(0, fill_sl)
+    layer.renderer().setSymbol(symbol)
     layer.triggerRepaint()
+
     print(
-        f"[信息] 市界图层样式设置完成 - 颜色: RGB({CITY_COLOR.red()},{CITY_COLOR.green()},{CITY_COLOR.blue()}), 线宽: {CITY_LINE_WIDTH_MM}mm, 虚线样式")
+        f"[信息] 市界图层样式设置完成 - 颜色: RGB({CITY_COLOR.red()},{CITY_COLOR.green()},{CITY_COLOR.blue()}), "
+        f"线宽: {CITY_LINE_WIDTH_MM}mm, 虚线间隔: {CITY_DASH_GAP_MM}mm")
 
 
 def style_county_layer(layer):
@@ -901,29 +882,46 @@ def style_county_layer(layer):
     设置县界图层样式。
     颜色: R=160, G=160, B=160
     线宽: 0.14mm
-    虚线间隔: 0.3mm
+    虚线间隔: 0.2mm
     """
-    props = {
-        'color': '0,0,0,0',
-        'outline_color': f'{COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()},255',
-        'outline_width': str(COUNTY_LINE_WIDTH_MM),
-        'outline_width_unit': 'MM',
-        'outline_style': 'dash',
-        'joinstyle': 'miter',
-    }
+    # 创建填充符号
+    symbol = QgsFillSymbol()
 
-    new_symbol = QgsFillSymbol.createSimple(props)
-    layer.renderer().setSymbol(new_symbol)
+    # 创建简单填充符号层，设置透明填充和虚线边框
+    fill_sl = QgsSimpleFillSymbolLayer()
+    fill_sl.setColor(QColor(0, 0, 0, 0))  # 透明填充
+    fill_sl.setStrokeColor(COUNTY_COLOR)
+    fill_sl.setStrokeWidth(COUNTY_LINE_WIDTH_MM)
+    fill_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
+    fill_sl.setStrokeStyle(Qt.CustomDashLine)
+    fill_sl.setPenJoinStyle(Qt.MiterJoin)
+
+    # 设置自定义虚线向量
+    # 虚线模式: [线段长度, 间隔长度]，单位为线宽的倍数
+    # 线段长度设为合适值，间隔 = 0.2mm / 0.14mm ≈ 1.43 倍线宽
+    dash_pattern = [7.0, COUNTY_DASH_GAP_MM / COUNTY_LINE_WIDTH_MM]
+
+    # 使用 setCustomDashVector 方法（如果可用）
+    if hasattr(fill_sl, 'setCustomDashVector'):
+        fill_sl.setCustomDashVector(dash_pattern)
+    else:
+        # 备用方案：使用标准虚线样式
+        fill_sl.setStrokeStyle(Qt.DashLine)
+
+    symbol.changeSymbolLayer(0, fill_sl)
+    layer.renderer().setSymbol(symbol)
     layer.triggerRepaint()
+
     print(
-        f"[信息] 县界图层样式设置完成 - 颜色: RGB({COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()}), 线宽: {COUNTY_LINE_WIDTH_MM}mm, 虚线样式")
+        f"[信息] 县界图层样式设置完成 - 颜色: RGB({COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()}), "
+        f"线宽: {COUNTY_LINE_WIDTH_MM}mm, 虚线间隔: {COUNTY_DASH_GAP_MM}mm")
 
 
 def _setup_province_labels(layer):
     """配置省界图层标注"""
     field_name = _find_name_field(layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
     if not field_name:
-        print("[警告] ��找到省份名称字段，跳过标注设置")
+        print("[警告] 未找到省份名称字段，跳过标注设置")
         return
 
     settings = QgsPalLayerSettings()
@@ -1114,7 +1112,7 @@ def create_province_legend_layer():
 def create_city_legend_layer():
     """
     创建市界图例用的线图层。
-    使用虚线样式。
+    线宽: 0.24mm，虚线间隔: 0.3mm
     """
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "市界", "memory")
     provider = layer.dataProvider()
@@ -1125,20 +1123,24 @@ def create_city_legend_layer():
     line_sl.setColor(CITY_COLOR)
     line_sl.setWidth(CITY_LINE_WIDTH_MM)
     line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    line_sl.setPenStyle(Qt.DashLine)
+    line_sl.setPenStyle(Qt.CustomDashLine)
+
+    # 设置自定义虚线向量：[线段长度, 间隔长度]，单位为线宽的倍数
+    dash_pattern = [4.0, CITY_DASH_GAP_MM / CITY_LINE_WIDTH_MM]
+    line_sl.setCustomDashVector(dash_pattern)
 
     symbol = QgsLineSymbol()
     symbol.changeSymbolLayer(0, line_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     layer.triggerRepaint()
-    print("[信息] 创建市界图例线图层")
+    print(f"[信息] 创建市界图例线图层 - 线宽: {CITY_LINE_WIDTH_MM}mm, 虚线间隔: {CITY_DASH_GAP_MM}mm")
     return layer
 
 
 def create_county_legend_layer():
     """
     创建县界图例用的线图层。
-    使用虚线样式。
+    线宽: 0.14mm，虚线间隔: 0.2mm
     """
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "县界", "memory")
     provider = layer.dataProvider()
@@ -1149,15 +1151,18 @@ def create_county_legend_layer():
     line_sl.setColor(COUNTY_COLOR)
     line_sl.setWidth(COUNTY_LINE_WIDTH_MM)
     line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    line_sl.setPenStyle(Qt.DashLine)
+    line_sl.setPenStyle(Qt.CustomDashLine)
+
+    # 设置自定义虚线向量：[线段长度, 间隔长度]，单位为线宽的倍数
+    dash_pattern = [7.0, COUNTY_DASH_GAP_MM / COUNTY_LINE_WIDTH_MM]
+    line_sl.setCustomDashVector(dash_pattern)
 
     symbol = QgsLineSymbol()
     symbol.changeSymbolLayer(0, line_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     layer.triggerRepaint()
-    print("[信息] 创建县界图例线图层")
+    print(f"[信息] 创建县界图例线图层 - 线宽: {COUNTY_LINE_WIDTH_MM}mm, 虚线间隔: {COUNTY_DASH_GAP_MM}mm")
     return layer
-
 
 # ============================================================
 # 布局创建
@@ -1497,8 +1502,8 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         ("震中", "震中", "star"),
         ("地级市", "地级市", "circle"),
         ("省界", "省界", "solid_line"),
-        ("市界", "市界", "dash_line"),
-        ("县界", "县界", "dash_line_thin"),
+        ("市界", "市界", "dash_line_city"),
+        ("县界", "县界", "dash_line_county"),
         ("烈度", "烈度", "solid_line_black"),
     ]
 
@@ -1517,12 +1522,14 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         elif draw_type == "solid_line":
             _draw_line_icon(layout, item_x, icon_center_y, icon_width,
                             PROVINCE_COLOR, PROVINCE_LINE_WIDTH_MM, solid=True)
-        elif draw_type == "dash_line":
+        elif draw_type == "dash_line_city":
+            # 市界：线宽0.24mm，虚线间隔0.3mm
             _draw_dash_line_icon(layout, item_x, icon_center_y, icon_width,
-                                 CITY_COLOR, CITY_LINE_WIDTH_MM)
-        elif draw_type == "dash_line_thin":
+                                 CITY_COLOR, CITY_LINE_WIDTH_MM, CITY_DASH_GAP_MM)
+        elif draw_type == "dash_line_county":
+            # 县界：线宽0.14mm，虚线间隔0.2mm
             _draw_dash_line_icon(layout, item_x, icon_center_y, icon_width,
-                                 COUNTY_COLOR, COUNTY_LINE_WIDTH_MM)
+                                 COUNTY_COLOR, COUNTY_LINE_WIDTH_MM, COUNTY_DASH_GAP_MM)
         elif draw_type == "solid_line_black":
             _draw_line_icon(layout, item_x, icon_center_y, icon_width,
                             INTENSITY_LEGEND_COLOR, INTENSITY_LEGEND_LINE_WIDTH_MM, solid=True)
@@ -1545,7 +1552,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
 
     # 岩性图例
     if yanxing_list:
-        item_start_y = top_legend_start_y + top_legend_height + 2.0
+        item_start_y = top_legend_start_y + top_legend_height + 4.0
 
         yanxing_icon_width = 5.0
         yanxing_icon_height = 2.5
@@ -1716,18 +1723,26 @@ def _draw_line_icon(layout, x, center_y, width, color, line_width_mm, solid=True
     layout.addLayoutItem(line_shape)
 
 
-def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm):
+def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_gap_mm):
     """
     在图例中绘制虚线图标。
-    虚线间隔为0.3mm
+    参数:
+        layout: 布局对象
+        x: 起始X坐标
+        center_y: 中心Y坐标
+        width: 图标总宽度
+        color: 线条颜色
+        line_width_mm: 线宽(mm)
+        dash_gap_mm: 虚线间隔(mm)
     """
     line_height = max(line_width_mm, 0.5)
     color_str = f"{color.red()},{color.green()},{color.blue()},255"
 
     # 虚线参数：线段长度和间隔长度(mm)
-    dash_length_mm = 1.0  # 线段长度
-    gap_length_mm = 0.3  # 间隔长度（固定0.3mm）
-    pattern_length = dash_length_mm + gap_length_mm
+    # 线段长度设为间隔的3-4倍，视觉效果较好
+    dash_length_mm = max(dash_gap_mm * 3.5, 0.8)
+
+    pattern_length = dash_length_mm + dash_gap_mm
 
     # 计算需要绘制多少个线段
     current_x = x
@@ -1761,7 +1776,7 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm):
 def generate_earthquake_geology_map(longitude, latitude, magnitude,
                                     output_path="output_geology_map.png",
                                     kml_path=None):
-    """生成地震震中地质构造图（主入口函数）"""
+    """生成地震震中地质构造图（��入口函数）"""
     print("=" * 60)
     print(f"[开始] 生成地震地质构造图")
     print(f"  震中: ({longitude}, {latitude}), 震级: M{magnitude}")
@@ -1968,6 +1983,33 @@ def test_build_yanxing_legend_list():
     print("  岩性图例列表测试完成")
 
 
+def test_boundary_styles():
+    """测试市界和县界样式参数"""
+    print("\n--- 测试: 市界和县界样式参数 ---")
+
+    # 测试市界参数
+    assert CITY_COLOR.red() == 160
+    assert CITY_COLOR.green() == 160
+    assert CITY_COLOR.blue() == 160
+    assert CITY_LINE_WIDTH_MM == 0.24
+    assert CITY_DASH_GAP_MM == 0.3
+    print(f"  市界颜色: RGB({CITY_COLOR.red()},{CITY_COLOR.green()},{CITY_COLOR.blue()}) ✓")
+    print(f"  市界线宽: {CITY_LINE_WIDTH_MM}mm ✓")
+    print(f"  市界虚线间隔: {CITY_DASH_GAP_MM}mm ✓")
+
+    # 测试县界参数
+    assert COUNTY_COLOR.red() == 160
+    assert COUNTY_COLOR.green() == 160
+    assert COUNTY_COLOR.blue() == 160
+    assert COUNTY_LINE_WIDTH_MM == 0.14
+    assert COUNTY_DASH_GAP_MM == 0.2
+    print(f"  县界颜色: RGB({COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()}) ✓")
+    print(f"  县界线宽: {COUNTY_LINE_WIDTH_MM}mm ✓")
+    print(f"  县界虚线间隔: {COUNTY_DASH_GAP_MM}mm ✓")
+
+    print("  市界和县界样式参数测试通过 ✓")
+
+
 def run_all_tests():
     """运行所有测试"""
     print("\n" + "=" * 60)
@@ -1978,9 +2020,10 @@ def run_all_tests():
     test_calculate_extent()
     test_int_to_roman()
     test_build_yanxing_legend_list()
+    test_boundary_styles()
 
     print("\n" + "=" * 60)
-    print("全部测试执行完成")
+    print("全部测试执行完��")
     print("=" * 60)
 
 
