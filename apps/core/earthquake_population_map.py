@@ -1627,16 +1627,29 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     pop_legend_start_y = basic_legend_start_y + basic_legend_height + 2.0
 
     # 人口密度标题
-    pop_title = QgsLayoutItemLabel(layout)
-    pop_title.setText("人口密度(人/km²)")
-    pop_title.setTextFormat(item_format)
-    pop_title.attemptMove(QgsLayoutPoint(legend_x + left_pad, pop_legend_start_y, QgsUnitTypes.LayoutMillimeters))
-    pop_title.attemptResize(QgsLayoutSize(legend_width - left_pad - right_pad, 3.5, QgsUnitTypes.LayoutMillimeters))
-    pop_title.setHAlign(Qt.AlignLeft)
-    pop_title.setVAlign(Qt.AlignVCenter)
-    pop_title.setFrameEnabled(False)
-    pop_title.setBackgroundEnabled(False)
-    layout.addLayoutItem(pop_title)
+    pop_title_left = QgsLayoutItemLabel(layout)
+    pop_title_left.setText("人口密度")
+    pop_title_left.setTextFormat(item_format)
+    pop_title_left.attemptMove(QgsLayoutPoint(legend_x + left_pad, pop_legend_start_y, QgsUnitTypes.LayoutMillimeters))
+    pop_title_left.attemptResize(QgsLayoutSize(14.0, 3.5, QgsUnitTypes.LayoutMillimeters))
+    pop_title_left.setHAlign(Qt.AlignLeft)
+    pop_title_left.setVAlign(Qt.AlignVCenter)
+    pop_title_left.setFrameEnabled(False)
+    pop_title_left.setBackgroundEnabled(False)
+    layout.addLayoutItem(pop_title_left)
+
+    pop_title_unit = QgsLayoutItemLabel(layout)
+    pop_title_unit.setText("(人/km²)")
+    pop_title_unit.setTextFormat(population_format)
+    pop_title_unit.attemptMove(QgsLayoutPoint(legend_x + left_pad + 14.5, pop_legend_start_y,
+                                              QgsUnitTypes.LayoutMillimeters))
+    pop_title_unit.attemptResize(QgsLayoutSize(legend_width - left_pad - right_pad - 14.5, 3.5,
+                                               QgsUnitTypes.LayoutMillimeters))
+    pop_title_unit.setHAlign(Qt.AlignLeft)
+    pop_title_unit.setVAlign(Qt.AlignVCenter)
+    pop_title_unit.setFrameEnabled(False)
+    pop_title_unit.setBackgroundEnabled(False)
+    layout.addLayoutItem(pop_title_unit)
 
     # 人口密度分档色块和标签
     # 修改为可调节间距
