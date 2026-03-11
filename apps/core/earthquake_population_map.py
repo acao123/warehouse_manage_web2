@@ -1509,7 +1509,7 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
 
     # 人口图例文本格式
     population_format = QgsTextFormat()
-    population_format.setFont(QFont("SimSun", LEGEND_POPULATION_FONT_SIZE_PT))
+    population_format.setFont(QFont("Times New Roman", LEGEND_POPULATION_FONT_SIZE_PT))  # 修改为Times New Roman
     population_format.setSize(LEGEND_POPULATION_FONT_SIZE_PT)
     population_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     population_format.setColor(QColor(0, 0, 0))
@@ -1644,7 +1644,7 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     pop_icon_width = 5.0  # 色块宽度
     pop_icon_height = 2.5  # 色块高度
     pop_item_height = 4  # 每项高度
-    pop_gap = 3  # 色块与文字间距
+    pop_gap = 1.5  # 色块与文字间距
 
     population_legend_list = build_population_legend_list()
 
