@@ -10,7 +10,7 @@
 - 加载"滑坡.shp"和"斜坡.shp"文件
 - 统计输出图范围内滑坡和斜坡数量
 - 图例位于主图左下角，包含震中、地级市、省界、市界、县界、烈度、滑坡、斜坡
-- 图例布局：基本图例项采用3行2列布局
+- 图例布局：基本图例项采用3行2列布局，滑坡和斜坡单列展示
 """
 
 import os
@@ -153,6 +153,10 @@ CITY_LABEL_COLOR = QColor(0, 0, 0)
 LEGEND_TITLE_FONT_SIZE_PT = 10
 LEGEND_ITEM_FONT_SIZE_PT = 8
 
+# === 图例框尺寸常量 ===
+LEGEND_WIDTH_MM = 32.0
+LEGEND_HEIGHT_MM = 38.0
+
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
 
@@ -174,13 +178,17 @@ INTENSITY_LEGEND_COLOR = QColor(0, 0, 0)
 INTENSITY_LEGEND_LINE_WIDTH_MM = 0.5
 
 # === 滑坡样式配置 ===
-# 滑坡：实心圆点
-LANDSLIDE_COLOR = QColor(190,178,151)
+# 滑坡：实心圆点，带边框
+LANDSLIDE_COLOR = QColor(190, 178, 151)
+LANDSLIDE_STROKE_COLOR = QColor(18, 17, 15)
+LANDSLIDE_STROKE_WIDTH_MM = 0.1
 LANDSLIDE_SIZE_MM = 2.0
 
 # === 斜坡样式配置 ===
-# 斜坡：实心圆点
-SLOPE_COLOR = QColor(125,139,143)
+# 斜坡：实心圆点，带边框
+SLOPE_COLOR = QColor(125, 139, 143)
+SLOPE_STROKE_COLOR = QColor(6, 6, 6)
+SLOPE_STROKE_WIDTH_MM = 0.1
 SLOPE_SIZE_MM = 2.0
 
 # WGS84坐标系
@@ -602,65 +610,98 @@ def _setup_intensity_labels(layer):
 
 def load_tianditu_basemap():
     """
-    加载天地图矢量底图(XYZ Tiles方式)
+    加载天地图矢量底图(XYZ Tiles方式，使用{s}轮询节点)
 
     返回:
         QgsRasterLayer或None, 天地图底图图层
     """
-    # 使用XYZ Tiles方式加载天地图
-    # 天地图矢量底图URL（Web墨卡托投影）
+    # 使用XYZ Tiles方式加载天地图，使用{s}进行服务器轮询
+    # 天地图服务器节点：t0-t7
     tianditu_url = (
-            "http://t0.tianditu.gov.cn/vec_w/wmts?"
+            "http://t{s}.tianditu.gov.cn/vec_w/wmts?"
             "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
             "&LAYER=vec&STYLE=default&TILEMATRIXSET=w"
             "&FORMAT=tiles&TILECOL={x}&TILEROW={y}&TILEMATRIX={z}"
             "&tk=" + TIANDITU_TK
     )
 
-    # 构建XYZ图层URI
-    uri = f"type=xyz&url={tianditu_url}&zmax=18&zmin=0"
+    # 构建XYZ图层URI，使用subdomains参数实现轮询
+    # 对URL进行编码处理
+    from urllib.parse import quote
+    encoded_url = quote(tianditu_url, safe='/:?=&{}')
+
+    uri = f"type=xyz&url={encoded_url}&zmax=18&zmin=0&http-header:referer=https://www.tianditu.gov.cn/"
+
+    # 设置subdomains
+    uri += "&subdomains=0,1,2,3,4,5,6,7"
 
     layer = QgsRasterLayer(uri, "天地图矢量底图", "wms")
 
     if layer.isValid():
-        print("[信息] 成功加载天地图矢量底图")
+        print("[信息] 成功加载天地图矢量底图（使用轮询节点）")
         return layer
     else:
         print("[警告] 天地图矢量底图加载失败，尝试备用方式...")
-        # 备用方式：使用简化的URL
-        uri_simple = f"type=xyz&url=http://t0.tianditu.gov.cn/DataServer?T=vec_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
-        layer = QgsRasterLayer(uri_simple, "天地图矢量底图", "wms")
+        # 备用方式1：直接使用单节点
+        uri_backup1 = (
+            f"type=xyz&"
+            f"url=http://t0.tianditu.gov.cn/vec_w/wmts?"
+            f"SERVICE%3DWMTS%26REQUEST%3DGetTile%26VERSION%3D1.0.0"
+            f"%26LAYER%3Dvec%26STYLE%3Ddefault%26TILEMATRIXSET%3Dw"
+            f"%26FORMAT%3Dtiles%26TILECOL%3D{{x}}%26TILEROW%3D{{y}}%26TILEMATRIX%3D{{z}}"
+            f"%26tk%3D{TIANDITU_TK}&zmax=18&zmin=0"
+        )
+        layer = QgsRasterLayer(uri_backup1, "天地图矢量底图", "wms")
         if layer.isValid():
-            print("[信息] 使用备用方式成功加载天地图矢量底图")
+            print("[信息] 使用备用方式1成功加载天地图矢量底图")
             return layer
+
+        # 备用方式2：使用DataServer接口
+        uri_backup2 = f"type=xyz&url=http://t0.tianditu.gov.cn/DataServer?T=vec_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}&zmax=18&zmin=0"
+        layer = QgsRasterLayer(uri_backup2, "天地图矢量底图", "wms")
+        if layer.isValid():
+            print("[信息] 使用备用方式2成功加载天地图矢量底图")
+            return layer
+
         print("[错误] 无法加载天地图矢量底图")
         return None
 
 
 def load_tianditu_annotation():
     """
-    加载天地图矢量注记图层
+    加载天地图矢量注记图层（使用{s}轮询节点）
 
     返回:
         QgsRasterLayer或None, 天地图注记图层
     """
-    # 天地图矢量注记URL
+    # 天地图矢量注记URL，使用{s}进行服务器轮询
     tianditu_url = (
-            "http://t0.tianditu.gov.cn/cva_w/wmts?"
+            "http://t{s}.tianditu.gov.cn/cva_w/wmts?"
             "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
             "&LAYER=cva&STYLE=default&TILEMATRIXSET=w"
             "&FORMAT=tiles&TILECOL={x}&TILEROW={y}&TILEMATRIX={z}"
             "&tk=" + TIANDITU_TK
     )
 
-    uri = f"type=xyz&url={tianditu_url}&zmax=18&zmin=0"
+    from urllib.parse import quote
+    encoded_url = quote(tianditu_url, safe='/:?=&{}')
+
+    uri = f"type=xyz&url={encoded_url}&zmax=18&zmin=0&http-header:referer=https://www.tianditu.gov.cn/"
+    uri += "&subdomains=0,1,2,3,4,5,6,7"
 
     layer = QgsRasterLayer(uri, "天地图矢量注记", "wms")
 
     if layer.isValid():
-        print("[信息] 成功加载天地图矢量注记")
+        print("[信息] 成功加载天地图矢量注记（使用轮询节点）")
         return layer
     else:
+        print("[警告] 天地图矢量注记加载失败，尝试备用方式...")
+        # 备用方式
+        uri_backup = f"type=xyz&url=http://t0.tianditu.gov.cn/DataServer?T=cva_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}&zmax=18&zmin=0"
+        layer = QgsRasterLayer(uri_backup, "天地图矢量注记", "wms")
+        if layer.isValid():
+            print("[信息] 使用备用方式成功加载天地图矢量注记")
+            return layer
         print("[警告] 天地图矢量注记加载失败")
         return None
 
@@ -685,12 +726,12 @@ def load_landslide_layer(shp_path):
         print(f"[错误] 无法加载滑坡图层: {abs_path}")
         return None
 
-    # 设置滑坡样式：深灰色实心圆点
+    # 设置滑坡样式：实心圆点，带细边框
     marker_sl = QgsSimpleMarkerSymbolLayer()
     marker_sl.setShape(Qgis.MarkerShape.Circle)
     marker_sl.setColor(LANDSLIDE_COLOR)
-    marker_sl.setStrokeColor(QColor(50, 50, 50))
-    marker_sl.setStrokeWidth(0.1)
+    marker_sl.setStrokeColor(LANDSLIDE_STROKE_COLOR)
+    marker_sl.setStrokeWidth(LANDSLIDE_STROKE_WIDTH_MM)
     marker_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
     marker_sl.setSize(LANDSLIDE_SIZE_MM)
     marker_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
@@ -724,12 +765,12 @@ def load_slope_layer(shp_path):
         print(f"[错误] 无法加载斜坡图层: {abs_path}")
         return None
 
-    # 设置斜坡样式：浅灰色实心圆点
+    # 设置斜坡样式：实心圆点，带细边框
     marker_sl = QgsSimpleMarkerSymbolLayer()
     marker_sl.setShape(Qgis.MarkerShape.Circle)
     marker_sl.setColor(SLOPE_COLOR)
-    marker_sl.setStrokeColor(QColor(100, 100, 100))
-    marker_sl.setStrokeWidth(0.1)
+    marker_sl.setStrokeColor(SLOPE_STROKE_COLOR)
+    marker_sl.setStrokeWidth(SLOPE_STROKE_WIDTH_MM)
     marker_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
     marker_sl.setSize(SLOPE_SIZE_MM)
     marker_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
@@ -772,7 +813,7 @@ def load_vector_layer(shp_path, layer_name):
 
 def style_province_layer(layer):
     """
-    设置���界图层样式
+    设置省界图层样式
 
     参数:
         layer: QgsVectorLayer, 省界图层
@@ -1466,7 +1507,7 @@ def _add_legend(layout, map_item, map_height_mm):
     """
     添加图例（位于主图左下角）
     - 基本图例项（震中、地级市、省界、市界、县界、烈度）采用3行2列布局
-    - 滑坡和斜坡图例项
+    - 滑坡和斜坡图例项单行展示
 
     参数:
         layout: QgsPrintLayout, 打印布局
@@ -1477,9 +1518,9 @@ def _add_legend(layout, map_item, map_height_mm):
     map_left = BORDER_LEFT_MM
     map_bottom = BORDER_TOP_MM + map_height_mm
 
-    # 图例尺寸参数
-    legend_width = 55.0
-    legend_height = 40.0
+    # 使用常量设置图例尺寸
+    legend_width = LEGEND_WIDTH_MM
+    legend_height = LEGEND_HEIGHT_MM
     legend_x = map_left
     legend_y = map_bottom - legend_height
 
@@ -1591,27 +1632,29 @@ def _add_legend(layout, map_item, map_height_mm):
 
     basic_legend_height = row_count * row_height
 
-    # 滑坡和斜坡图例项
+    # 滑坡和斜坡图例项：单行展示（两个图例项水平排列在同一行）
     hazard_legend_start_y = basic_legend_start_y + basic_legend_height + 2.0
     hazard_row_height = 4.5
     hazard_icon_width = 4.0
     hazard_icon_text_gap = 1.0
 
+    # 滑坡和斜坡在同一行，使用与基本图例相同的列布局
     hazard_items = [
-        ("滑坡", LANDSLIDE_COLOR, LANDSLIDE_SIZE_MM),
-        ("斜坡", SLOPE_COLOR, SLOPE_SIZE_MM),
+        ("滑坡", LANDSLIDE_COLOR, LANDSLIDE_STROKE_COLOR, LANDSLIDE_STROKE_WIDTH_MM, LANDSLIDE_SIZE_MM),
+        ("斜坡", SLOPE_COLOR, SLOPE_STROKE_COLOR, SLOPE_STROKE_WIDTH_MM, SLOPE_SIZE_MM),
     ]
 
-    for idx, (display_name, color, size) in enumerate(hazard_items):
-        col = idx % col_count
-        row = idx // col_count
+    for idx, (display_name, fill_color, stroke_color, stroke_width, size) in enumerate(hazard_items):
+        col = idx % col_count  # 两个图例项在同一行的两列
+        row = 0  # 同一行
 
         item_x = legend_x + left_pad + col * (col_width + col_gap)
         item_y = hazard_legend_start_y + row * hazard_row_height
         icon_center_y = item_y + hazard_row_height / 2.0
 
-        # 绘制圆点图标
-        _draw_point_icon(layout, item_x, icon_center_y, hazard_icon_width, color, size)
+        # 绘制带边框的圆点图标
+        _draw_point_icon_with_stroke(layout, item_x, icon_center_y, hazard_icon_width,
+                                     fill_color, stroke_color, stroke_width, size)
 
         text_x = item_x + hazard_icon_width + hazard_icon_text_gap
         text_width = col_width - hazard_icon_width - hazard_icon_text_gap
@@ -1780,7 +1823,7 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def _draw_point_icon(layout, x, center_y, width, color, size_mm):
     """
-    在图例中绘制圆点图标
+    在图例中绘制圆点图标（无边框）
 
     参数:
         layout: QgsPrintLayout, 打印布局
@@ -1803,6 +1846,41 @@ def _draw_point_icon(layout, x, center_y, width, color, size_mm):
         'color': color_str,
         'outline_color': '50,50,50,255',
         'outline_width': '0.1',
+        'outline_width_unit': 'MM',
+    })
+    circle.setSymbol(circle_symbol)
+    circle.setFrameEnabled(False)
+    layout.addLayoutItem(circle)
+
+
+def _draw_point_icon_with_stroke(layout, x, center_y, width, fill_color, stroke_color, stroke_width_mm, size_mm):
+    """
+    在图例中绘制带边框的圆点图标
+
+    参数:
+        layout: QgsPrintLayout, 打印布局
+        x: float, X坐标
+        center_y: float, 中心Y坐标
+        width: float, 图标宽度
+        fill_color: QColor, 填充颜色
+        stroke_color: QColor, 边框颜色
+        stroke_width_mm: float, 边框宽度(毫米)
+        size_mm: float, 圆点大小(毫米)
+    """
+    center_x = x + width / 2.0
+
+    circle = QgsLayoutItemShape(layout)
+    circle.setShapeType(QgsLayoutItemShape.Ellipse)
+    circle.attemptMove(QgsLayoutPoint(center_x - size_mm / 2.0, center_y - size_mm / 2.0,
+                                      QgsUnitTypes.LayoutMillimeters))
+    circle.attemptResize(QgsLayoutSize(size_mm, size_mm, QgsUnitTypes.LayoutMillimeters))
+
+    fill_color_str = f"{fill_color.red()},{fill_color.green()},{fill_color.blue()},255"
+    stroke_color_str = f"{stroke_color.red()},{stroke_color.green()},{stroke_color.blue()},255"
+    circle_symbol = QgsFillSymbol.createSimple({
+        'color': fill_color_str,
+        'outline_color': stroke_color_str,
+        'outline_width': str(stroke_width_mm),
         'outline_width_unit': 'MM',
     })
     circle.setSymbol(circle_symbol)
@@ -2103,22 +2181,47 @@ def test_landslide_slope_styles():
     print("\n--- 测试: 滑坡和斜坡样式配置 ---")
 
     # 测试滑坡样式
-    assert LANDSLIDE_COLOR.red() == 89
-    assert LANDSLIDE_COLOR.green() == 89
-    assert LANDSLIDE_COLOR.blue() == 89
+    assert LANDSLIDE_COLOR.red() == 190
+    assert LANDSLIDE_COLOR.green() == 178
+    assert LANDSLIDE_COLOR.blue() == 151
+    assert LANDSLIDE_STROKE_COLOR.red() == 18
+    assert LANDSLIDE_STROKE_COLOR.green() == 17
+    assert LANDSLIDE_STROKE_COLOR.blue() == 15
+    assert LANDSLIDE_STROKE_WIDTH_MM == 0.1
     assert LANDSLIDE_SIZE_MM == 2.0
-    print(f"  滑坡颜色: RGB({LANDSLIDE_COLOR.red()},{LANDSLIDE_COLOR.green()},{LANDSLIDE_COLOR.blue()}) ✓")
+    print(f"  滑坡填充颜色: RGB({LANDSLIDE_COLOR.red()},{LANDSLIDE_COLOR.green()},{LANDSLIDE_COLOR.blue()}) ✓")
+    print(
+        f"  滑坡边框颜色: RGB({LANDSLIDE_STROKE_COLOR.red()},{LANDSLIDE_STROKE_COLOR.green()},{LANDSLIDE_STROKE_COLOR.blue()}) ✓")
+    print(f"  滑坡边框宽度: {LANDSLIDE_STROKE_WIDTH_MM}mm ✓")
     print(f"  滑坡大小: {LANDSLIDE_SIZE_MM}mm ✓")
 
     # 测试斜坡样式
-    assert SLOPE_COLOR.red() == 166
-    assert SLOPE_COLOR.green() == 166
-    assert SLOPE_COLOR.blue() == 166
+    assert SLOPE_COLOR.red() == 125
+    assert SLOPE_COLOR.green() == 139
+    assert SLOPE_COLOR.blue() == 143
+    assert SLOPE_STROKE_COLOR.red() == 54
+    assert SLOPE_STROKE_COLOR.green() == 58
+    assert SLOPE_STROKE_COLOR.blue() == 59
+    assert SLOPE_STROKE_WIDTH_MM == 0.1
     assert SLOPE_SIZE_MM == 2.0
-    print(f"  斜坡颜色: RGB({SLOPE_COLOR.red()},{SLOPE_COLOR.green()},{SLOPE_COLOR.blue()}) ✓")
+    print(f"  斜坡填充颜色: RGB({SLOPE_COLOR.red()},{SLOPE_COLOR.green()},{SLOPE_COLOR.blue()}) ✓")
+    print(f"  斜坡边框颜色: RGB({SLOPE_STROKE_COLOR.red()},{SLOPE_STROKE_COLOR.green()},{SLOPE_STROKE_COLOR.blue()}) ✓")
+    print(f"  斜坡边框宽度: {SLOPE_STROKE_WIDTH_MM}mm ✓")
     print(f"  斜坡大小: {SLOPE_SIZE_MM}mm ✓")
 
     print("  滑坡和斜坡样式配置测试通过 ✓")
+
+
+def test_legend_size_constants():
+    """测试图例尺寸常量"""
+    print("\n--- 测试: 图例尺寸常量 ---")
+
+    assert LEGEND_WIDTH_MM == 55.0
+    assert LEGEND_HEIGHT_MM == 38.0
+    print(f"  图例宽度: {LEGEND_WIDTH_MM}mm ✓")
+    print(f"  图例高度: {LEGEND_HEIGHT_MM}mm ✓")
+
+    print("  图例尺寸常量测试通过 ✓")
 
 
 def test_resolve_path():
@@ -2220,6 +2323,7 @@ def run_all_tests():
     test_boundary_styles()
     test_tianditu_config()
     test_landslide_slope_styles()
+    test_legend_size_constants()
     test_resolve_path()
     test_choose_tick_step()
     test_create_north_arrow_svg()
@@ -2256,3 +2360,4 @@ if __name__ == "__main__":
         )
         print(f"\n{stats}")
         print(f"\n{result}")
+
