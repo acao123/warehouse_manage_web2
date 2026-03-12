@@ -187,7 +187,7 @@ LANDSLIDE_SIZE_MM = 2.0
 # === 斜坡样式配置 ===
 # 斜坡：实心圆点，带边框
 SLOPE_COLOR = QColor(125, 139, 143)
-SLOPE_STROKE_COLOR = QColor(54, 58, 59)
+SLOPE_STROKE_COLOR = QColor(6, 6, 6)
 SLOPE_STROKE_WIDTH_MM = 0.1
 SLOPE_SIZE_MM = 2.0
 
@@ -610,15 +610,20 @@ def _setup_intensity_labels(layer):
 
 def load_tianditu_basemap():
     """
-    加载天地图矢量底图(XYZ Tiles方式，使用{s}轮询节点)
+    加载天地图矢量底图(WMTS方式，使用{s}轮询节点)
+    使用 vec_c (EPSG:4326 投影) 以匹配项目坐标系
 
     返回:
         QgsRasterLayer或None, 天地图底图图层
     """
-    # 主要方式：使用DataServer接口 + {s}轮询节点（不做URL编码，直接传入占位符）
+    # 主要方式：使用WMTS接口 + {s}轮询节点
     uri = (
         f"type=xyz"
-        f"&url=http://t{{s}}.tianditu.gov.cn/DataServer?T=vec_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
+        f"&url=http://t{{s}}.tianditu.gov.cn/vec_c/wmts?"
+        f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+        f"&LAYER=vec&STYLE=default&TILEMATRIXSET=c"
+        f"&FORMAT=tiles&TILEMATRIX={{z}}&TILEROW={{y}}&TILECOL={{x}}"
+        f"&tk={TIANDITU_TK}"
         f"&zmin=0&zmax=18"
         f"&subdomains=0,1,2,3,4,5,6,7"
     )
@@ -626,14 +631,18 @@ def load_tianditu_basemap():
     layer = QgsRasterLayer(uri, "天地图矢量底图", "wms")
 
     if layer.isValid():
-        print("[信息] 成功加载天地图矢量底图（使用轮询节点）")
+        print("[信息] 成功加载天地图矢量底图（使用WMTS轮询节点）")
         return layer
 
     print("[警告] 天地图矢量底图加载失败，尝试备用方式...")
-    # 备用方式1：DataServer单节点
+    # 备用方式1：WMTS单节点
     uri_backup1 = (
         f"type=xyz"
-        f"&url=http://t0.tianditu.gov.cn/DataServer?T=vec_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
+        f"&url=http://t0.tianditu.gov.cn/vec_c/wmts?"
+        f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+        f"&LAYER=vec&STYLE=default&TILEMATRIXSET=c"
+        f"&FORMAT=tiles&TILEMATRIX={{z}}&TILEROW={{y}}&TILECOL={{x}}"
+        f"&tk={TIANDITU_TK}"
         f"&zmin=0&zmax=18"
     )
     layer = QgsRasterLayer(uri_backup1, "天地图矢量底图", "wms")
@@ -641,14 +650,10 @@ def load_tianditu_basemap():
         print("[信息] 使用备用方式1成功加载天地图矢量底图")
         return layer
 
-    # 备用方式2：WMTS单节点
+    # 备用方式2：DataServer接口（使用vec_c而非vec_w）
     uri_backup2 = (
         f"type=xyz"
-        f"&url=http://t0.tianditu.gov.cn/vec_w/wmts?"
-        f"SERVICE%3DWMTS%26REQUEST%3DGetTile%26VERSION%3D1.0.0"
-        f"%26LAYER%3Dvec%26STYLE%3Ddefault%26TILEMATRIXSET%3Dw"
-        f"%26FORMAT%3Dtiles%26TILECOL%3D{{x}}%26TILEROW%3D{{y}}%26TILEMATRIX%3D{{z}}"
-        f"%26tk%3D{TIANDITU_TK}"
+        f"&url=http://t0.tianditu.gov.cn/DataServer?T=vec_c&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
         f"&zmin=0&zmax=18"
     )
     layer = QgsRasterLayer(uri_backup2, "天地图矢量底图", "wms")
@@ -657,20 +662,30 @@ def load_tianditu_basemap():
         return layer
 
     print("[错误] 无法加载天地图矢量底图")
+    print("[调试] 检查以下内容:")
+    print("  - 天地图API密钥是否有效")
+    print("  - 网络连接是否正常")
+    print("  - URL是否正确")
+    print("  - 项目坐标系是否与底图匹配")
     return None
 
 
 def load_tianditu_annotation():
     """
     加载天地图矢量注记图层（使用{s}轮询节点）
+    使用 cva_c (EPSG:4326 投影) 以匹配项目坐标系
 
     返回:
         QgsRasterLayer或None, 天地图注记图层
     """
-    # 主要方式：使用DataServer接口 + {s}轮询节点（不做URL编码，直接传入占位符）
+    # 主要方式：使用WMTS接口 + {s}轮询节点
     uri = (
         f"type=xyz"
-        f"&url=http://t{{s}}.tianditu.gov.cn/DataServer?T=cva_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
+        f"&url=http://t{{s}}.tianditu.gov.cn/cva_c/wmts?"
+        f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+        f"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
+        f"&FORMAT=tiles&TILEMATRIX={{z}}&TILEROW={{y}}&TILECOL={{x}}"
+        f"&tk={TIANDITU_TK}"
         f"&zmin=0&zmax=18"
         f"&subdomains=0,1,2,3,4,5,6,7"
     )
@@ -678,34 +693,34 @@ def load_tianditu_annotation():
     layer = QgsRasterLayer(uri, "天地图矢量注记", "wms")
 
     if layer.isValid():
-        print("[信息] 成功加载天地图矢量注记（使用轮询节点）")
+        print("[信息] 成功加载天地图矢量注记（使用WMTS轮询节点）")
         return layer
 
     print("[警告] 天地图矢量注记加载失败，尝试备用方式...")
-    # 备用方式1：DataServer单节点
+    # 备用方式1：WMTS单节点
     uri_backup1 = (
         f"type=xyz"
-        f"&url=http://t0.tianditu.gov.cn/DataServer?T=cva_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
+        f"&url=http://t0.tianditu.gov.cn/cva_c/wmts?"
+        f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+        f"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
+        f"&FORMAT=tiles&TILEMATRIX={{z}}&TILEROW={{y}}&TILECOL={{x}}"
+        f"&tk={TIANDITU_TK}"
         f"&zmin=0&zmax=18"
     )
     layer = QgsRasterLayer(uri_backup1, "天地图矢量注记", "wms")
     if layer.isValid():
-        print("[信息] 使用备用方式1成功加载天地图矢量注记")
+        print("[信息] 使用备用方式1成功加载天地图注记")
         return layer
 
-    # 备用方式2：WMTS单节点
+    # 备用方式2：DataServer接口（使用cva_c而非cva_w）
     uri_backup2 = (
         f"type=xyz"
-        f"&url=http://t0.tianditu.gov.cn/cva_w/wmts?"
-        f"SERVICE%3DWMTS%26REQUEST%3DGetTile%26VERSION%3D1.0.0"
-        f"%26LAYER%3Dcva%26STYLE%3Ddefault%26TILEMATRIXSET%3Dw"
-        f"%26FORMAT%3Dtiles%26TILECOL%3D{{x}}%26TILEROW%3D{{y}}%26TILEMATRIX%3D{{z}}"
-        f"%26tk%3D{TIANDITU_TK}"
+        f"&url=http://t0.tianditu.gov.cn/DataServer?T=cva_c&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
         f"&zmin=0&zmax=18"
     )
     layer = QgsRasterLayer(uri_backup2, "天地图矢量注记", "wms")
     if layer.isValid():
-        print("[信息] 使用备用方式2成功加载天地图矢量注记")
+        print("[信息] 使用备用方式2成功加载天地图注记")
         return layer
 
     print("[警告] 天地图矢量注记加载失败")
@@ -1827,38 +1842,6 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
         current_x += pattern_length
 
 
-def _draw_point_icon(layout, x, center_y, width, color, size_mm):
-    """
-    在图例中绘制圆点图标（无边框）
-
-    参数:
-        layout: QgsPrintLayout, 打印布局
-        x: float, X坐标
-        center_y: float, 中心Y坐标
-        width: float, 图标宽度
-        color: QColor, 填充颜色
-        size_mm: float, 圆点大小(毫米)
-    """
-    center_x = x + width / 2.0
-
-    circle = QgsLayoutItemShape(layout)
-    circle.setShapeType(QgsLayoutItemShape.Ellipse)
-    circle.attemptMove(QgsLayoutPoint(center_x - size_mm / 2.0, center_y - size_mm / 2.0,
-                                      QgsUnitTypes.LayoutMillimeters))
-    circle.attemptResize(QgsLayoutSize(size_mm, size_mm, QgsUnitTypes.LayoutMillimeters))
-
-    color_str = f"{color.red()},{color.green()},{color.blue()},255"
-    circle_symbol = QgsFillSymbol.createSimple({
-        'color': color_str,
-        'outline_color': '50,50,50,255',
-        'outline_width': '0.1',
-        'outline_width_unit': 'MM',
-    })
-    circle.setSymbol(circle_symbol)
-    circle.setFrameEnabled(False)
-    layout.addLayoutItem(circle)
-
-
 def _draw_point_icon_with_stroke(layout, x, center_y, width, fill_color, stroke_color, stroke_width_mm, size_mm):
     """
     在图例中绘制带边框的圆点图标
@@ -2098,255 +2081,10 @@ def export_layout_to_png(layout, output_path, dpi=150):
 
 
 # ============================================================
-# 测试方法
-# ============================================================
-
-def test_magnitude_config():
-    """测试震级配置获取"""
-    print("\n--- 测试: get_magnitude_config ---")
-    config_s = get_magnitude_config(4.5)
-    assert config_s["scale"] == 150000
-    assert config_s["map_size_km"] == 30
-    print(f"  M4.5 -> 范围{config_s['map_size_km']}km, 比例尺1:{config_s['scale']} ✓")
-
-    config_m = get_magnitude_config(6.5)
-    assert config_m["scale"] == 500000
-    assert config_m["map_size_km"] == 100
-    print(f"  M6.5 -> 范围{config_m['map_size_km']}km, 比例尺1:{config_m['scale']} ✓")
-
-    config_l = get_magnitude_config(7.5)
-    assert config_l["scale"] == 1500000
-    assert config_l["map_size_km"] == 300
-    print(f"  M7.5 -> 范围{config_l['map_size_km']}km, 比例尺1:{config_l['scale']} ✓")
-    print("  所有震级配置测试通过 ✓")
-
-
-def test_calculate_extent():
-    """测试地图范围计算"""
-    print("\n--- 测试: calculate_extent ---")
-    extent = calculate_extent(116.4, 39.9, 15)
-    assert extent.xMinimum() < 116.4 < extent.xMaximum()
-    assert extent.yMinimum() < 39.9 < extent.yMaximum()
-    delta_y = extent.yMaximum() - extent.yMinimum()
-    assert abs(delta_y - 0.2703) < 0.02
-    print(f"  15km半径范围: 纬度差{delta_y:.4f}° ✓")
-    print("  所有范围计算测试通过 ✓")
-
-
-def test_int_to_roman():
-    """测试罗马数字转换"""
-    print("\n--- 测试: int_to_roman ---")
-    assert int_to_roman(4) == "IV"
-    assert int_to_roman(5) == "V"
-    assert int_to_roman(6) == "VI"
-    assert int_to_roman(9) == "IX"
-    assert int_to_roman(10) == "X"
-    assert int_to_roman(12) == "XII"
-    print("  IV=4, V=5, VI=6, IX=9, X=10, XII=12 ✓")
-    print("  罗马数字转换测试通过 ✓")
-
-
-def test_boundary_styles():
-    """测试市界和县界样式参数"""
-    print("\n--- 测试: 市界和县界样式参数 ---")
-
-    # 测试市界参数
-    assert CITY_COLOR.red() == 160
-    assert CITY_COLOR.green() == 160
-    assert CITY_COLOR.blue() == 160
-    assert CITY_LINE_WIDTH_MM == 0.24
-    assert CITY_DASH_GAP_MM == 0.3
-    print(f"  市界颜色: RGB({CITY_COLOR.red()},{CITY_COLOR.green()},{CITY_COLOR.blue()}) ✓")
-    print(f"  市界线宽: {CITY_LINE_WIDTH_MM}mm ✓")
-    print(f"  市界虚线间隔: {CITY_DASH_GAP_MM}mm ✓")
-
-    # 测试县界参数
-    assert COUNTY_COLOR.red() == 160
-    assert COUNTY_COLOR.green() == 160
-    assert COUNTY_COLOR.blue() == 160
-    assert COUNTY_LINE_WIDTH_MM == 0.14
-    assert COUNTY_DASH_GAP_MM == 0.2
-    print(f"  县界颜色: RGB({COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()}) ✓")
-    print(f"  县界线宽: {COUNTY_LINE_WIDTH_MM}mm ✓")
-    print(f"  县界虚线间隔: {COUNTY_DASH_GAP_MM}mm ✓")
-
-    print("  市界和县界样式参数测试通过 ✓")
-
-
-def test_tianditu_config():
-    """测试天地图配置"""
-    print("\n--- 测试: 天地图配置 ---")
-
-    assert TIANDITU_TK is not None and len(TIANDITU_TK) > 0
-    print(f"  天地图Token: {TIANDITU_TK[:10]}... ✓")
-    print("  天地图配置测试通过 ✓")
-
-
-def test_landslide_slope_styles():
-    """测试滑坡和斜坡样式配置"""
-    print("\n--- 测试: 滑坡和斜坡样式配置 ---")
-
-    # 测试滑坡样式
-    assert LANDSLIDE_COLOR.red() == 190
-    assert LANDSLIDE_COLOR.green() == 178
-    assert LANDSLIDE_COLOR.blue() == 151
-    assert LANDSLIDE_STROKE_COLOR.red() == 18
-    assert LANDSLIDE_STROKE_COLOR.green() == 17
-    assert LANDSLIDE_STROKE_COLOR.blue() == 15
-    assert LANDSLIDE_STROKE_WIDTH_MM == 0.1
-    assert LANDSLIDE_SIZE_MM == 2.0
-    print(f"  滑坡填充颜色: RGB({LANDSLIDE_COLOR.red()},{LANDSLIDE_COLOR.green()},{LANDSLIDE_COLOR.blue()}) ✓")
-    print(
-        f"  滑坡边框颜色: RGB({LANDSLIDE_STROKE_COLOR.red()},{LANDSLIDE_STROKE_COLOR.green()},{LANDSLIDE_STROKE_COLOR.blue()}) ✓")
-    print(f"  滑坡边框宽度: {LANDSLIDE_STROKE_WIDTH_MM}mm ✓")
-    print(f"  滑坡大小: {LANDSLIDE_SIZE_MM}mm ✓")
-
-    # 测试斜坡样式
-    assert SLOPE_COLOR.red() == 125
-    assert SLOPE_COLOR.green() == 139
-    assert SLOPE_COLOR.blue() == 143
-    assert SLOPE_STROKE_COLOR.red() == 54
-    assert SLOPE_STROKE_COLOR.green() == 58
-    assert SLOPE_STROKE_COLOR.blue() == 59
-    assert SLOPE_STROKE_WIDTH_MM == 0.1
-    assert SLOPE_SIZE_MM == 2.0
-    print(f"  斜坡填充颜色: RGB({SLOPE_COLOR.red()},{SLOPE_COLOR.green()},{SLOPE_COLOR.blue()}) ✓")
-    print(f"  斜坡边框颜色: RGB({SLOPE_STROKE_COLOR.red()},{SLOPE_STROKE_COLOR.green()},{SLOPE_STROKE_COLOR.blue()}) ✓")
-    print(f"  斜坡边框宽度: {SLOPE_STROKE_WIDTH_MM}mm ✓")
-    print(f"  斜坡大小: {SLOPE_SIZE_MM}mm ✓")
-
-    print("  滑坡和斜坡样式配置测试通过 ✓")
-
-
-def test_legend_size_constants():
-    """测试图例尺寸常量"""
-    print("\n--- 测试: 图例尺寸常量 ---")
-
-    assert LEGEND_WIDTH_MM == 55.0
-    assert LEGEND_HEIGHT_MM == 38.0
-    print(f"  图例宽度: {LEGEND_WIDTH_MM}mm ✓")
-    print(f"  图例高度: {LEGEND_HEIGHT_MM}mm ✓")
-
-    print("  图例尺寸常量测试通过 ✓")
-
-
-def test_resolve_path():
-    """测试路径解析函数"""
-    print("\n--- 测试: resolve_path ---")
-
-    # 测试相对路径解析
-    rel_path = "../../data/test.shp"
-    abs_path = resolve_path(rel_path)
-    assert os.path.isabs(abs_path)
-    print(f"  相对路径 '{rel_path}' -> 绝对路径 ✓")
-
-    # 验证路径正规化
-    assert ".." not in abs_path or abs_path.count("..") == 0
-    print(f"  路径已正规化，不包含 '..' ✓")
-
-    print("  路径解析测试通过 ✓")
-
-
-def test_choose_tick_step():
-    """测试经纬度刻度间隔选择"""
-    print("\n--- 测试: _choose_tick_step ---")
-
-    # 小范围
-    step_small = _choose_tick_step(0.3, 4, 6)
-    assert step_small in [0.05, 0.1]
-    print(f"  范围0.3° -> 刻度间隔{step_small}° ✓")
-
-    # 中等范围
-    step_medium = _choose_tick_step(2.0, 4, 6)
-    assert step_medium in [0.25, 0.5]
-    print(f"  范围2.0° -> 刻度间隔{step_medium}° ✓")
-
-    # 大范围
-    step_large = _choose_tick_step(10.0, 4, 6)
-    assert step_large in [2.0, 2.5]
-    print(f"  范围10.0° -> 刻度间隔{step_large}° ✓")
-
-    print("  刻度间隔选择测试通过 ✓")
-
-
-def test_create_north_arrow_svg():
-    """测试指北针SVG创建"""
-    print("\n--- 测试: create_north_arrow_svg ---")
-
-    import tempfile
-    temp_dir = tempfile.gettempdir()
-    test_svg_path = os.path.join(temp_dir, "test_north_arrow.svg")
-
-    result_path = create_north_arrow_svg(test_svg_path)
-
-    assert result_path == test_svg_path
-    assert os.path.exists(test_svg_path)
-    print(f"  SVG文件创建成功: {test_svg_path} ✓")
-
-    # 验证SVG内容
-    with open(test_svg_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        assert '<svg' in content
-        assert 'viewBox' in content
-        assert '>N<' in content
-    print(f"  SVG内容验证通过 ✓")
-
-    # 清理
-    os.remove(test_svg_path)
-    print("  指北针SVG创建测试通过 ✓")
-
-
-def test_shp_paths():
-    """测试SHP文件路径配置"""
-    print("\n--- 测试: SHP文件路径配置 ---")
-
-    # 验证滑坡和斜坡路径格式
-    assert LANDSLIDE_SHP_PATH.endswith(".shp")
-    assert SLOPE_SHP_PATH.endswith(".shp")
-    print(f"  滑坡SHP路径: {LANDSLIDE_SHP_PATH} ✓")
-    print(f"  斜坡SHP路径: {SLOPE_SHP_PATH} ✓")
-
-    # 验证省市边界路径格式
-    assert PROVINCE_SHP_PATH.endswith(".shp")
-    assert CITY_SHP_PATH.endswith(".shp")
-    assert COUNTY_SHP_PATH.endswith(".shp")
-    print(f"  省界SHP路径格式正确 ✓")
-    print(f"  市界SHP路径格式正确 ✓")
-    print(f"  县界SHP路径格式正确 ✓")
-
-    print("  SHP文件路径配置测试通过 ✓")
-
-
-def run_all_tests():
-    """运行所有测试"""
-    print("\n" + "=" * 60)
-    print("运行 earthquake_landslide_slope_map 全部测试")
-    print("=" * 60)
-
-    test_magnitude_config()
-    test_calculate_extent()
-    test_int_to_roman()
-    test_boundary_styles()
-    test_tianditu_config()
-    test_landslide_slope_styles()
-    test_legend_size_constants()
-    test_resolve_path()
-    test_choose_tick_step()
-    test_create_north_arrow_svg()
-    test_shp_paths()
-
-    print("\n" + "=" * 60)
-    print("全部测试执行完成")
-    print("=" * 60)
-
-
-# ============================================================
 # 程序入口
 # ============================================================
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1].lower() == "test":
-        run_all_tests()
-    elif len(sys.argv) >= 4:
+    if len(sys.argv) >= 4:
         try:
             lon = float(sys.argv[1])
             lat = float(sys.argv[2])
@@ -2362,7 +2100,7 @@ if __name__ == "__main__":
         print("使用默认参数运行（示例地震 M7.8）...")
         result, stats = generate_earthquake_landslide_slope_map(
             longitude=118.18, latitude=39.63,
-            magnitude=7.8, output_path="earthquake_landslide_slope_M7.0.png"
+            magnitude=7.8, output_path="earthquake_landslide_slope_M7.8.png"
         )
         print(f"\n{stats}")
         print(f"\n{result}")
