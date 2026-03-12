@@ -88,7 +88,7 @@ CITY_SHP_PATH = (
 )
 COUNTY_SHP_PATH = (
     "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国县级行政区划数据/县级行政区划/县1.shp"
+    "/全国县级行政区划数据/县级行政区划/县.shp"
 )
 # 地级市点位数据
 CITY_POINTS_SHP_PATH = "../../data/geology/2023地级市点位数据/地级市点位数据.shp"
