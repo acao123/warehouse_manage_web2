@@ -154,8 +154,8 @@ LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
 
 # === 图例框尺寸常量 ===
-LEGEND_WIDTH_MM = 35.0
-LEGEND_HEIGHT_MM = 39.0
+LEGEND_WIDTH_MM = 55.0
+LEGEND_HEIGHT_MM = 38.0
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -187,7 +187,7 @@ LANDSLIDE_SIZE_MM = 2.0
 # === 斜坡样式配置 ===
 # 斜坡：实心圆点，带边框
 SLOPE_COLOR = QColor(125, 139, 143)
-SLOPE_STROKE_COLOR = QColor(6, 6, 6)
+SLOPE_STROKE_COLOR = QColor(54, 58, 59)
 SLOPE_STROKE_WIDTH_MM = 0.1
 SLOPE_SIZE_MM = 2.0
 
@@ -615,56 +615,49 @@ def load_tianditu_basemap():
     返回:
         QgsRasterLayer或None, 天地图底图图层
     """
-    # 使用XYZ Tiles方式加载天地图，使用{s}进行服务器轮询
-    # 天地图服务器节点：t0-t7
-    tianditu_url = (
-            "http://t{s}.tianditu.gov.cn/vec_w/wmts?"
-            "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-            "&LAYER=vec&STYLE=default&TILEMATRIXSET=w"
-            "&FORMAT=tiles&TILECOL={x}&TILEROW={y}&TILEMATRIX={z}"
-            "&tk=" + TIANDITU_TK
+    # 主要方式：使用DataServer接口 + {s}轮询节点（不做URL编码，直接传入占位符）
+    uri = (
+        f"type=xyz"
+        f"&url=http://t{{s}}.tianditu.gov.cn/DataServer?T=vec_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
+        f"&zmin=0&zmax=18"
+        f"&subdomains=0,1,2,3,4,5,6,7"
     )
-
-    # 构建XYZ图层URI，使用subdomains参数实现轮询
-    # 对URL进行编码处理
-    from urllib.parse import quote
-    encoded_url = quote(tianditu_url, safe='/:?=&{}')
-
-    uri = f"type=xyz&url={encoded_url}&zmax=18&zmin=0&http-header:referer=https://www.tianditu.gov.cn/"
-
-    # 设置subdomains
-    uri += "&subdomains=0,1,2,3,4,5,6,7"
 
     layer = QgsRasterLayer(uri, "天地图矢量底图", "wms")
 
     if layer.isValid():
         print("[信息] 成功加载天地图矢量底图（使用轮询节点）")
         return layer
-    else:
-        print("[警告] 天地图矢量底图加载失败，尝试备用方式...")
-        # 备用方式1：直接使用单节点
-        uri_backup1 = (
-            f"type=xyz&"
-            f"url=http://t0.tianditu.gov.cn/vec_w/wmts?"
-            f"SERVICE%3DWMTS%26REQUEST%3DGetTile%26VERSION%3D1.0.0"
-            f"%26LAYER%3Dvec%26STYLE%3Ddefault%26TILEMATRIXSET%3Dw"
-            f"%26FORMAT%3Dtiles%26TILECOL%3D{{x}}%26TILEROW%3D{{y}}%26TILEMATRIX%3D{{z}}"
-            f"%26tk%3D{TIANDITU_TK}&zmax=18&zmin=0"
-        )
-        layer = QgsRasterLayer(uri_backup1, "天地图矢量底图", "wms")
-        if layer.isValid():
-            print("[信息] 使用备用方式1成功加载天地图矢量底图")
-            return layer
 
-        # 备用方式2：使用DataServer接口
-        uri_backup2 = f"type=xyz&url=http://t0.tianditu.gov.cn/DataServer?T=vec_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}&zmax=18&zmin=0"
-        layer = QgsRasterLayer(uri_backup2, "天地图矢量底图", "wms")
-        if layer.isValid():
-            print("[信息] 使用备用方式2成功加载天地图矢量底图")
-            return layer
+    print("[警告] 天地图矢量底图加载失败，尝试备用方式...")
+    # 备用方式1：DataServer单节点
+    uri_backup1 = (
+        f"type=xyz"
+        f"&url=http://t0.tianditu.gov.cn/DataServer?T=vec_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
+        f"&zmin=0&zmax=18"
+    )
+    layer = QgsRasterLayer(uri_backup1, "天地图矢量底图", "wms")
+    if layer.isValid():
+        print("[信息] 使用备用方式1成功加载天地图矢量底图")
+        return layer
 
-        print("[错误] 无法加载天地图矢量底图")
-        return None
+    # 备用方式2：WMTS单节点
+    uri_backup2 = (
+        f"type=xyz"
+        f"&url=http://t0.tianditu.gov.cn/vec_w/wmts?"
+        f"SERVICE%3DWMTS%26REQUEST%3DGetTile%26VERSION%3D1.0.0"
+        f"%26LAYER%3Dvec%26STYLE%3Ddefault%26TILEMATRIXSET%3Dw"
+        f"%26FORMAT%3Dtiles%26TILECOL%3D{{x}}%26TILEROW%3D{{y}}%26TILEMATRIX%3D{{z}}"
+        f"%26tk%3D{TIANDITU_TK}"
+        f"&zmin=0&zmax=18"
+    )
+    layer = QgsRasterLayer(uri_backup2, "天地图矢量底图", "wms")
+    if layer.isValid():
+        print("[信息] 使用备用方式2成功加载天地图矢量底图")
+        return layer
+
+    print("[错误] 无法加载天地图矢量底图")
+    return None
 
 
 def load_tianditu_annotation():
@@ -674,36 +667,49 @@ def load_tianditu_annotation():
     返回:
         QgsRasterLayer或None, 天地图注记图层
     """
-    # 天地图矢量注记URL，使用{s}进行服务器轮询
-    tianditu_url = (
-            "http://t{s}.tianditu.gov.cn/cva_w/wmts?"
-            "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-            "&LAYER=cva&STYLE=default&TILEMATRIXSET=w"
-            "&FORMAT=tiles&TILECOL={x}&TILEROW={y}&TILEMATRIX={z}"
-            "&tk=" + TIANDITU_TK
+    # 主要方式：使用DataServer接口 + {s}轮询节点（不做URL编码，直接传入占位符）
+    uri = (
+        f"type=xyz"
+        f"&url=http://t{{s}}.tianditu.gov.cn/DataServer?T=cva_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
+        f"&zmin=0&zmax=18"
+        f"&subdomains=0,1,2,3,4,5,6,7"
     )
-
-    from urllib.parse import quote
-    encoded_url = quote(tianditu_url, safe='/:?=&{}')
-
-    uri = f"type=xyz&url={encoded_url}&zmax=18&zmin=0&http-header:referer=https://www.tianditu.gov.cn/"
-    uri += "&subdomains=0,1,2,3,4,5,6,7"
 
     layer = QgsRasterLayer(uri, "天地图矢量注记", "wms")
 
     if layer.isValid():
         print("[信息] 成功加载天地图矢量注记（使用轮询节点）")
         return layer
-    else:
-        print("[警告] 天地图矢量注记加载失败，尝试备用方式...")
-        # 备用方式
-        uri_backup = f"type=xyz&url=http://t0.tianditu.gov.cn/DataServer?T=cva_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}&zmax=18&zmin=0"
-        layer = QgsRasterLayer(uri_backup, "天地图矢量注记", "wms")
-        if layer.isValid():
-            print("[信息] 使用备用方式成功加载天地图矢量注记")
-            return layer
-        print("[警告] 天地图矢量注记加载失败")
-        return None
+
+    print("[警告] 天地图矢量注记加载失败，尝试备用方式...")
+    # 备用方式1：DataServer单节点
+    uri_backup1 = (
+        f"type=xyz"
+        f"&url=http://t0.tianditu.gov.cn/DataServer?T=cva_w&x={{x}}&y={{y}}&l={{z}}&tk={TIANDITU_TK}"
+        f"&zmin=0&zmax=18"
+    )
+    layer = QgsRasterLayer(uri_backup1, "天地图矢量注记", "wms")
+    if layer.isValid():
+        print("[信息] 使用备用方式1成功加载天地图矢量注记")
+        return layer
+
+    # 备用方式2：WMTS单节点
+    uri_backup2 = (
+        f"type=xyz"
+        f"&url=http://t0.tianditu.gov.cn/cva_w/wmts?"
+        f"SERVICE%3DWMTS%26REQUEST%3DGetTile%26VERSION%3D1.0.0"
+        f"%26LAYER%3Dcva%26STYLE%3Ddefault%26TILEMATRIXSET%3Dw"
+        f"%26FORMAT%3Dtiles%26TILECOL%3D{{x}}%26TILEROW%3D{{y}}%26TILEMATRIX%3D{{z}}"
+        f"%26tk%3D{TIANDITU_TK}"
+        f"&zmin=0&zmax=18"
+    )
+    layer = QgsRasterLayer(uri_backup2, "天地图矢量注记", "wms")
+    if layer.isValid():
+        print("[信息] 使用备用方式2成功加载天地图矢量注记")
+        return layer
+
+    print("[警告] 天地图矢量注记加载失败")
+    return None
 
 
 def load_landslide_layer(shp_path):
