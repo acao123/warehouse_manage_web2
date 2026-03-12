@@ -150,12 +150,12 @@ CITY_LABEL_FONT_SIZE_PT = 9
 CITY_LABEL_COLOR = QColor(0, 0, 0)
 
 # === 图例字体 ===
-LEGEND_TITLE_FONT_SIZE_PT = 10
-LEGEND_ITEM_FONT_SIZE_PT = 8
+LEGEND_TITLE_FONT_SIZE_PT = 12
+LEGEND_ITEM_FONT_SIZE_PT = 10
 
 # === 图例框尺寸常量 ===
-LEGEND_WIDTH_MM = 32.0
-LEGEND_HEIGHT_MM = 38.0
+LEGEND_WIDTH_MM = 35.0
+LEGEND_HEIGHT_MM = 39.0
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -1573,7 +1573,7 @@ def _add_legend(layout, map_item, map_height_mm):
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
-    row_height = 4.5
+    row_height = 7.0
     icon_width = 4.0
     icon_height = 2.5
     icon_text_gap = 1.0
@@ -1633,8 +1633,8 @@ def _add_legend(layout, map_item, map_height_mm):
     basic_legend_height = row_count * row_height
 
     # 滑坡和斜坡图例项：单行展示（两个图例项水平排列在同一行）
-    hazard_legend_start_y = basic_legend_start_y + basic_legend_height + 2.0
-    hazard_row_height = 4.5
+    hazard_legend_start_y = basic_legend_start_y + basic_legend_height
+    hazard_row_height = 7.0
     hazard_icon_width = 4.0
     hazard_icon_text_gap = 1.0
 
