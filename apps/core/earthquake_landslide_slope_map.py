@@ -1409,10 +1409,6 @@ def create_city_point_layer(extent):
     symbol.appendSymbolLayer(inner_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
 
-    name_field = _find_name_field(layer, ["市", "NAME", "城市", "地名", "CITY", "市名", "地级市"])
-    if name_field:
-        _setup_point_labels(layer, name_field, CITY_LABEL_FONT_SIZE_PT, CITY_LABEL_COLOR)
-
     layer.triggerRepaint()
     print(f"[信息] 加载地级市点位图层完成")
     return layer
@@ -1534,7 +1530,7 @@ def create_county_legend_layer():
 # 布局创建
 # ============================================================
 
-def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm):
+def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm, ordered_layers=None):
     """
     创建QGIS打印布局
 
@@ -1546,6 +1542,7 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
         extent: QgsRectangle, 地图范围
         scale: int, 比例尺
         map_height_mm: float, 地图高度(毫米)
+        ordered_layers: list或None, 按渲染顺序排列的图层列表（第一项在最上层）
 
     返回:
         QgsPrintLayout, 打印布局对象
@@ -1581,9 +1578,10 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     layout.addLayoutItem(map_item)
 
     # 显式设置地图项渲染的图层列表，确保底图等所有图层都能在布局中正确显示
-    all_layers = list(project.mapLayers().values())
-    if all_layers:
-        map_item.setLayers(all_layers)
+    layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
+    if layers_to_set:
+        map_item.setLayers(layers_to_set)
+    map_item.invalidateCache()
 
     # 添加经纬度网格
     _setup_map_grid(map_item, extent)
@@ -2341,9 +2339,13 @@ def generate_earthquake_landslide_slope_map(longitude, latitude, magnitude,
     if epicenter_layer:
         project.addMapLayer(epicenter_layer)
 
-    # 创建打印布局
+    # 创建打印布局（按正确渲染顺序传入图层：列表第一项在最上层）
+    ordered_layers = [lyr for lyr in [epicenter_layer, intensity_layer, city_point_layer,
+                                      province_layer, city_layer, county_layer,
+                                      landslide_layer, slope_layer, basemap_raster]
+                      if lyr is not None]
     layout = create_print_layout(project, longitude, latitude, magnitude,
-                                 extent, scale, map_height_mm)
+                                 extent, scale, map_height_mm, ordered_layers)
 
     # 导出为PNG
     result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
