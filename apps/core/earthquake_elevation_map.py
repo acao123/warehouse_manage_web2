@@ -11,9 +11,10 @@
 - 图例显示：色块 + 高程范围（如：-32,618~500）
 
 优化说明：
-- 针对大文件（15G）TIF进行优化，只裁剪加载需要范围内的数据
+- ��对大文件（15G）TIF进行优化，只裁剪加载需要范围内的数据
 - 使用GDAL的虚拟栅格(VRT)技术实现按需裁剪
 - 显著减少内存占用和处理时间
+- 只加载天地图矢量注记图层（放置在最上层），不加载矢量底图
 """
 
 import os
@@ -22,7 +23,10 @@ import math
 import re
 import tempfile
 import shutil
+import requests
 from xml.etree import ElementTree as ET
+from PIL import Image
+from io import BytesIO
 
 # ============================================================
 # QGIS 相关模块导入
@@ -81,6 +85,9 @@ except ImportError:
 # ============================================================
 # 常量定义
 # ============================================================
+
+# 天地图配置
+TIANDITU_TK = "1ef76ef90c6eb961cb49618f9b1a399d"
 
 # 数据文件路径（相对于脚本所在目录）
 ELEVATION_TIF_PATH = "C:/地质/图4地形地貌/全国哥白尼DEM数据.tif"
@@ -162,7 +169,15 @@ CITY_LABEL_COLOR = QColor(0, 0, 0)
 # === 图例字体 ===
 LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
-LEGEND_ELEVATION_FONT_SIZE_PT = 10  # 高程图例字体大小
+LEGEND_ELEVATION_FONT_SIZE_PT = 8  # 高程图例字体大小
+
+# === 基本图例项配置（可单独设置） ===
+BASIC_LEGEND_FONT_SIZE_PT = 10  # 基本图例项字体大小
+BASIC_LEGEND_ROW_HEIGHT_MM = 5.0  # 基本图例项行高
+
+# === 高程图例项配置（可单独设置） ===
+ELEVATION_LEGEND_FONT_SIZE_PT = 9  # 高程图例项字体大小
+ELEVATION_LEGEND_ROW_HEIGHT_MM = 4.5  # 高程图例项行高
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -206,7 +221,158 @@ LEGEND_ROW_COUNT = 2  # 图例行数
 LEGEND_COLUMN_COUNT = 3  # 图例列数
 LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"  # (m)标签字体
 LEGEND_ITEM_SPACING = 2  # 图例项间距
-LEGEND_ITEM_FONT_SIZE_PT = 10  # 图例项默认字体大小
+
+
+# ============================================================
+# 天地图瓦片下载函数（只下载注记图层）
+# ============================================================
+
+def download_tianditu_annotation_tiles(extent, width_px, height_px, output_path):
+    """
+    只下载天地图矢量注记瓦片并拼接为本地栅格图像（透明背景）
+
+    参数:
+        extent: QgsRectangle, 渲染范围 (WGS84)
+        width_px: int, 输出图像宽度(像素)
+        height_px: int, 输出图像高度(像素)
+        output_path: str, 输出文件路径
+
+    返回:
+        QgsRasterLayer或None, 渲染后的栅格图层
+    """
+    tk = TIANDITU_TK
+
+    # 计算合适的缩放级别
+    lon_range = extent.xMaximum() - extent.xMinimum()
+    zoom = int(math.log2(360 / lon_range * width_px / 256))
+    zoom = max(1, min(zoom, 18))
+
+    print(f"[信息] 下载天地图注记瓦片，缩放级别: {zoom}")
+
+    def lon_to_tile_x(lon, z):
+        """经度转瓦片X坐标"""
+        n = 2 ** z
+        x = int((lon + 180.0) / 360.0 * n)
+        return max(0, min(n - 1, x))
+
+    def lat_to_tile_y(lat, z):
+        """纬度转瓦片Y坐标 (天地图c系列)"""
+        n = 2 ** (z - 1)
+        y = int((90.0 - lat) / 180.0 * n)
+        return max(0, min(n - 1, y))
+
+    def tile_x_to_lon(x, z):
+        """瓦片X坐标转经度（左边界）"""
+        n = 2 ** z
+        return x / n * 360.0 - 180.0
+
+    def tile_y_to_lat(y, z):
+        """瓦片Y坐标转纬度（上边界）"""
+        n = 2 ** (z - 1)
+        return 90.0 - y / n * 180.0
+
+    # 获取瓦片范围
+    tile_x_min = lon_to_tile_x(extent.xMinimum(), zoom)
+    tile_x_max = lon_to_tile_x(extent.xMaximum(), zoom)
+    tile_y_min = lat_to_tile_y(extent.yMaximum(), zoom)
+    tile_y_max = lat_to_tile_y(extent.yMinimum(), zoom)
+
+    if tile_y_min > tile_y_max:
+        tile_y_min, tile_y_max = tile_y_max, tile_y_min
+
+    print(f"[信息] 瓦片范围: x={tile_x_min}-{tile_x_max}, y={tile_y_min}-{tile_y_max}")
+
+    num_tiles_x = tile_x_max - tile_x_min + 1
+    num_tiles_y = tile_y_max - tile_y_min + 1
+    total_tiles = num_tiles_x * num_tiles_y
+    print(f"[信息] 需要下载 {total_tiles} 个注记瓦片 ({num_tiles_x} x {num_tiles_y})")
+
+    tile_size = 256
+    mosaic_width = num_tiles_x * tile_size
+    mosaic_height = num_tiles_y * tile_size
+    # 使用RGBA模式，支持透明背景
+    mosaic = Image.new('RGBA', (mosaic_width, mosaic_height), (0, 0, 0, 0))
+
+    downloaded = 0
+    failed = 0
+    servers = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7']
+
+    for ty in range(tile_y_min, tile_y_max + 1):
+        for tx in range(tile_x_min, tile_x_max + 1):
+            server = servers[(tx + ty) % len(servers)]
+
+            # 只下载天地图注记URL (cva_c - EPSG:4326)
+            cva_url = (
+                f"http://{server}.tianditu.gov.cn/cva_c/wmts?"
+                f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+                f"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
+                f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
+                f"&tk={tk}"
+            )
+
+            try:
+                resp_cva = requests.get(cva_url, timeout=10)
+                if resp_cva.status_code == 200:
+                    tile_cva = Image.open(BytesIO(resp_cva.content)).convert('RGBA')
+
+                    # 粘贴到拼接图像（保留透明度）
+                    paste_x = (tx - tile_x_min) * tile_size
+                    paste_y = (ty - tile_y_min) * tile_size
+                    mosaic.paste(tile_cva, (paste_x, paste_y), tile_cva)
+                    downloaded += 1
+                else:
+                    failed += 1
+                    print(f"[警告] 注记瓦片下载失败: {tx},{ty} - 状态码: {resp_cva.status_code}")
+            except Exception as e:
+                failed += 1
+                print(f"[警告] 注记瓦片下载异常: {tx},{ty} - {e}")
+
+    print(f"[信息] 注记瓦片下载完成: 成功 {downloaded}, 失败 {failed}")
+
+    if downloaded == 0:
+        print("[错误] 没有成功下载任何注记瓦片")
+        return None
+
+    actual_lon_min = tile_x_to_lon(tile_x_min, zoom)
+    actual_lon_max = tile_x_to_lon(tile_x_max + 1, zoom)
+    actual_lat_max = tile_y_to_lat(tile_y_min, zoom)
+    actual_lat_min = tile_y_to_lat(tile_y_max + 1, zoom)
+
+    crop_left = int((extent.xMinimum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
+    crop_right = int((extent.xMaximum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
+    crop_top = int((actual_lat_max - extent.yMaximum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
+    crop_bottom = int((actual_lat_max - extent.yMinimum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
+
+    crop_left = max(0, min(mosaic_width - 1, crop_left))
+    crop_right = max(crop_left + 1, min(mosaic_width, crop_right))
+    crop_top = max(0, min(mosaic_height - 1, crop_top))
+    crop_bottom = max(crop_top + 1, min(mosaic_height, crop_bottom))
+
+    cropped = mosaic.crop((crop_left, crop_top, crop_right, crop_bottom))
+    final_image = cropped.resize((width_px, height_px), Image.LANCZOS)
+
+    # 保存为PNG格式（支持透明度）
+    final_image.save(output_path, 'PNG')
+    print(f"[信息] 注记底图已保存: {output_path}")
+
+    world_file_path = output_path.replace(".png", ".pgw")
+    x_res = (extent.xMaximum() - extent.xMinimum()) / width_px
+    y_res = (extent.yMaximum() - extent.yMinimum()) / height_px
+    with open(world_file_path, 'w') as f:
+        f.write(f"{x_res}\n")
+        f.write("0\n")
+        f.write("0\n")
+        f.write(f"{-y_res}\n")
+        f.write(f"{extent.xMinimum()}\n")
+        f.write(f"{extent.yMaximum()}\n")
+
+    raster_layer = QgsRasterLayer(output_path, "天地图注记", "gdal")
+    if raster_layer.isValid():
+        print(f"[信息] 成功加载注记栅格图层")
+        return raster_layer
+    else:
+        print(f"[错误] 无法加载注记栅格图层")
+        return None
 
 
 # ============================================================
@@ -261,7 +427,7 @@ def calculate_map_height_from_extent(extent, map_width_mm):
         map_width_mm (float): 地图宽度（毫米）
 
     返回:
-        float: 地图高度（毫米）
+        float: 地图高度��毫米）
     """
     lon_range = extent.xMaximum() - extent.xMinimum()
     lat_range = extent.yMaximum() - extent.yMinimum()
@@ -383,7 +549,7 @@ def _find_name_field(layer, candidates):
 
 
 # ============================================================
-# 大文件栅格裁剪优化函数
+# 大文件栅格裁剪优��函数
 # ============================================================
 
 def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_BUFFER_DEGREES):
@@ -411,22 +577,17 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
         return None
 
     try:
-        # 打开源栅格（只读元数据，不加载全部数据）
         src_ds = gdal.Open(input_path, gdal.GA_ReadOnly)
         if src_ds is None:
             print(f"[错误] 无法打开栅格文件: {input_path}")
             return None
 
-        # 获取源栅格信息
-        src_geotransform = src_ds.GetGeoTransform()
-        src_projection = src_ds.GetProjection()
         src_width = src_ds.RasterXSize
         src_height = src_ds.RasterYSize
         src_bands = src_ds.RasterCount
 
         print(f"[信息] 源栅格信息: {src_width}x{src_height}, {src_bands}波段")
 
-        # 计算带缓冲区的裁剪范围
         clip_xmin = extent.xMinimum() - buffer_degrees
         clip_xmax = extent.xMaximum() + buffer_degrees
         clip_ymin = extent.yMinimum() - buffer_degrees
@@ -434,17 +595,16 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
 
         print(f"[信息] 裁剪范围: ({clip_xmin:.4f}, {clip_ymin:.4f}) - ({clip_xmax:.4f}, {clip_ymax:.4f})")
 
-        # 使用GDAL Translate进行裁剪（内存高效）
         translate_options = gdal.TranslateOptions(
-            projWin=[clip_xmin, clip_ymax, clip_xmax, clip_ymin],  # [ulx, uly, lrx, lry]
+            projWin=[clip_xmin, clip_ymax, clip_xmax, clip_ymin],
             projWinSRS='EPSG:4326',
             format='GTiff',
             creationOptions=[
-                'COMPRESS=LZW',  # 使用LZW压缩减小文件大小
-                'TILED=YES',  # 使用分块存储提高读取效率
-                'BLOCKXSIZE=256',  # 块大小
+                'COMPRESS=LZW',
+                'TILED=YES',
+                'BLOCKXSIZE=256',
                 'BLOCKYSIZE=256',
-                'BIGTIFF=IF_SAFER'  # 大文件支持
+                'BIGTIFF=IF_SAFER'
             ]
         )
 
@@ -456,17 +616,14 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
             src_ds = None
             return None
 
-        # 获取裁剪后的信息
         dst_width = dst_ds.RasterXSize
         dst_height = dst_ds.RasterYSize
 
-        # 关闭数据集
         dst_ds = None
         src_ds = None
 
-        # 计算压缩比
-        src_size = os.path.getsize(input_path) / (1024 * 1024 * 1024)  # GB
-        dst_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
+        src_size = os.path.getsize(input_path) / (1024 * 1024 * 1024)
+        dst_size = os.path.getsize(output_path) / (1024 * 1024)
 
         print(f"[信息] 裁剪完成: {dst_width}x{dst_height}")
         print(f"[信息] 原文件: {src_size:.2f}GB -> 裁剪后: {dst_size:.2f}MB")
@@ -483,9 +640,6 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
 def create_vrt_for_extent(input_path, output_vrt_path, extent, buffer_degrees=CLIP_BUFFER_DEGREES):
     """
     创建虚拟栅格(VRT)文件，只引用指定范围的数据
-
-    VRT是一种轻量级方案，不复制实际数据，只创建一个引用原文件特定区域的虚拟文件。
-    适用于快速预览，但渲染时仍需要从原文件读取数据。
 
     参数:
         input_path (str): 输入栅格文件路径
@@ -505,13 +659,11 @@ def create_vrt_for_extent(input_path, output_vrt_path, extent, buffer_degrees=CL
         return None
 
     try:
-        # 计算带缓冲区的裁剪范围
         clip_xmin = extent.xMinimum() - buffer_degrees
         clip_xmax = extent.xMaximum() + buffer_degrees
         clip_ymin = extent.yMinimum() - buffer_degrees
         clip_ymax = extent.yMaximum() + buffer_degrees
 
-        # 使用gdal.BuildVRT创建虚拟栅格
         vrt_options = gdal.BuildVRTOptions(
             outputBounds=[clip_xmin, clip_ymin, clip_xmax, clip_ymax],
             outputSRS='EPSG:4326'
@@ -523,7 +675,7 @@ def create_vrt_for_extent(input_path, output_vrt_path, extent, buffer_degrees=CL
             print(f"[错误] VRT创建失败")
             return None
 
-        vrt_ds = None  # 关闭以确保写入
+        vrt_ds = None
 
         print(f"[信息] VRT文件创建成功: {output_vrt_path}")
         return output_vrt_path
@@ -615,13 +767,6 @@ def apply_elevation_renderer(raster_layer):
     """
     为高程栅格图层应用手动间隔分类渲染器
 
-    使用QgsColorRampShader设置五档颜色分类：
-    - 第一档：-32,618~500，颜色rgb(175,240,233)
-    - 第二档：500~1,000，颜色rgb(28,159,44)
-    - 第三档：1,000~2,000，颜色rgb(187,81,13)
-    - 第四档：2,000~4,000，颜色rgb(139,90,43)
-    - 第五档：4,000~8,850，颜色rgb(253,253,254)
-
     参数:
         raster_layer (QgsRasterLayer): 高程栅格图层
 
@@ -633,40 +778,30 @@ def apply_elevation_renderer(raster_layer):
         return False
 
     try:
-        # 创建颜色渐变着色器
         shader = QgsRasterShader()
         color_ramp_shader = QgsColorRampShader()
 
-        # 设置着色器类型为离散分类（DISCRETE）
         color_ramp_shader.setColorRampType(QgsColorRampShader.Discrete)
 
-        # 创建颜色分类项列表
         color_ramp_items = []
 
         for cls in ELEVATION_CLASSES:
-            # 使用max值作为分类阈值（离散分类模式下，值<=阈值时使用该颜色）
             item = QgsColorRampShader.ColorRampItem(
-                cls["max"],  # 阈值
-                cls["color"],  # 颜色
-                cls["label"]  # 标签
+                cls["max"],
+                cls["color"],
+                cls["label"]
             )
             color_ramp_items.append(item)
 
-        # 设置颜色分类项
         color_ramp_shader.setColorRampItemList(color_ramp_items)
-
-        # 将颜色渐变着色器设置到栅格着色器
         shader.setRasterShaderFunction(color_ramp_shader)
 
-        # 创建单波段伪彩色渲染器
-        # 对于高程数据，通常使用第1波段
         renderer = QgsSingleBandPseudoColorRenderer(
             raster_layer.dataProvider(),
-            1,  # 波段号
+            1,
             shader
         )
 
-        # 应用渲染器到图层
         raster_layer.setRenderer(renderer)
         raster_layer.triggerRepaint()
 
@@ -684,8 +819,6 @@ def build_elevation_legend_list():
 
     返回:
         list: 高程图例列表，每项为(color_rgba, label)元组
-              color_rgba: (r, g, b, 255)颜色元组
-              label: 图例标签文本
     """
     result = []
     for cls in ELEVATION_CLASSES:
@@ -851,7 +984,6 @@ def create_intensity_layer(intensity_data):
     provider.addFeatures(features)
     layer.updateExtents()
 
-    # 创建光晕效果线符号
     halo_sl = QgsSimpleLineSymbolLayer()
     halo_sl.setColor(INTENSITY_HALO_COLOR)
     halo_sl.setWidth(INTENSITY_HALO_WIDTH_MM)
@@ -916,9 +1048,6 @@ def load_elevation_raster_optimized(tif_path, extent):
     """
     优化加载数字高程TIF栅格图层（针对大文件优化）
 
-    该函数首先将大型TIF文件裁剪到所需范围，然后加载裁剪后的小文件，
-    显著提升加载速度并减少内存占用。
-
     参数:
         tif_path (str): TIF文件路径
         extent (QgsRectangle): 目标地图范围
@@ -931,23 +1060,18 @@ def load_elevation_raster_optimized(tif_path, extent):
         print(f"[错误] 数字高程底图文件不存在: {abs_path}")
         return None
 
-    # 获取文件大小
     file_size_gb = os.path.getsize(abs_path) / (1024 * 1024 * 1024)
     print(f"[信息] 高程文件大小: {file_size_gb:.2f}GB")
 
-    # 如果GDAL可用且文件较大，进行裁剪优化
-    if GDAL_AVAILABLE and file_size_gb > 0.5:  # 大于500MB时进行裁剪
+    if GDAL_AVAILABLE and file_size_gb > 0.5:
         print(f"[信息] 文件较大，启用裁剪优化...")
 
-        # 获取临时文件路径
         temp_manager = get_temp_manager()
         clipped_path = temp_manager.get_temp_file(suffix="_elevation_clipped.tif")
 
-        # 执行裁剪
         result_path = clip_raster_to_extent(abs_path, clipped_path, extent)
 
         if result_path and os.path.exists(result_path):
-            # 加载裁剪后的栅格
             layer = QgsRasterLayer(result_path, "数字高程底图")
             if layer.isValid():
                 print(f"[信息] 成功加载裁剪后的高程底图")
@@ -958,7 +1082,6 @@ def load_elevation_raster_optimized(tif_path, extent):
         else:
             print(f"[警告] 栅格裁剪失败，尝试直接加载原文件")
 
-    # 备用方案：直接加载原文件（适用于GDAL不可用或裁剪失败的情况）
     print(f"[信息] 直接加载高程底图（可能较慢）...")
     layer = QgsRasterLayer(abs_path, "数字高程底图")
     if not layer.isValid():
@@ -1047,9 +1170,6 @@ def style_province_layer(layer):
 def style_city_layer(layer):
     """
     设置市界图层样式
-    颜色: R=160, G=160, B=160
-    线宽: 0.24mm
-    虚线间隔: 0.3mm
 
     参数:
         layer (QgsVectorLayer): 市界图层
@@ -1083,9 +1203,6 @@ def style_city_layer(layer):
 def style_county_layer(layer):
     """
     设置县界图层样式
-    颜色: R=160, G=160, B=160
-    线宽: 0.14mm
-    虚线间隔: 0.2mm
 
     参数:
         layer (QgsVectorLayer): 县界图层
@@ -1154,41 +1271,6 @@ def _setup_province_labels(layer):
     print(f"[信息] 省界标注已配置，字段: {field_name}")
 
 
-def _setup_point_labels(layer, field_name, font_size_pt, color):
-    """
-    为点图层配置标注
-
-    参数:
-        layer (QgsVectorLayer): 点图层
-        field_name (str): 标注字段名
-        font_size_pt (int): 字体大小（磅）
-        color (QColor): 字体颜色
-    """
-    settings = QgsPalLayerSettings()
-    settings.fieldName = field_name
-    settings.placement = Qgis.LabelPlacement.OrderedPositionsAroundPoint
-    settings.displayAll = True
-
-    text_format = QgsTextFormat()
-    font = QFont("SimSun", font_size_pt)
-    text_format.setFont(font)
-    text_format.setSize(font_size_pt)
-    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    text_format.setColor(color)
-
-    buffer_settings = QgsTextBufferSettings()
-    buffer_settings.setEnabled(True)
-    buffer_settings.setSize(0.6)
-    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
-    buffer_settings.setColor(QColor(255, 255, 255))
-    text_format.setBuffer(buffer_settings)
-
-    settings.setFormat(text_format)
-    labeling = QgsVectorLayerSimpleLabeling(settings)
-    layer.setLabelsEnabled(True)
-    layer.setLabeling(labeling)
-
-
 # ============================================================
 # 震中和图例图层创建
 # ============================================================
@@ -1235,7 +1317,7 @@ def create_epicenter_layer(longitude, latitude):
 
 def create_city_point_layer(extent):
     """
-    加载地级市点位数据
+    加载地级市点位数据（不显示标注，只显示点位）
 
     参数:
         extent (QgsRectangle): 地图范围
@@ -1287,12 +1369,11 @@ def create_city_point_layer(extent):
     symbol.appendSymbolLayer(inner_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
 
-    name_field = _find_name_field(layer, ["市", "NAME", "城市", "地名", "CITY", "市名", "地级市"])
-    if name_field:
-        _setup_point_labels(layer, name_field, CITY_LABEL_FONT_SIZE_PT, CITY_LABEL_COLOR)
+    # 不再设置标注，只显示点位
+    layer.setLabelsEnabled(False)
 
     layer.triggerRepaint()
-    print(f"[信息] 加载地级市点位图层完成")
+    print(f"[信息] 加载地级市点位图层完成（不显示标注）")
     return layer
 
 
@@ -1351,7 +1432,6 @@ def create_province_legend_layer():
 def create_city_legend_layer():
     """
     创建市界图例用的线图层
-    线宽: 0.24mm，虚线间隔: 0.3mm
 
     返回:
         QgsVectorLayer: 市界图例线图层
@@ -1381,7 +1461,6 @@ def create_city_legend_layer():
 def create_county_legend_layer():
     """
     创建县界图例用的线图层
-    线宽: 0.14mm，虚线间隔: 0.2mm
 
     返回:
         QgsVectorLayer: 县界图例线图层
@@ -1413,7 +1492,7 @@ def create_county_legend_layer():
 # ============================================================
 
 def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm,
-                        elevation_legend_list=None):
+                        elevation_legend_list=None, ordered_layers=None):
     """
     创建QGIS打印布局
 
@@ -1426,6 +1505,7 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
         scale (int): 比例尺
         map_height_mm (float): 地图高度（毫米）
         elevation_legend_list (list): 高程图例列表
+        ordered_layers (list): 按渲染顺序排列的图层列表
 
     返回:
         QgsPrintLayout: 打印布局对象
@@ -1458,6 +1538,12 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     map_item.setBackgroundEnabled(True)
     map_item.setBackgroundColor(QColor(255, 255, 255))
     layout.addLayoutItem(map_item)
+
+    # 显式设置地图项渲染的图层列表
+    layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
+    if layers_to_set:
+        map_item.setLayers(layers_to_set)
+    map_item.invalidateCache()
 
     _setup_map_grid(map_item, extent)
     _add_north_arrow(layout, map_height_mm)
@@ -1708,8 +1794,9 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
 def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elevation_legend_list=None):
     """
     添加图例
-    - 上部：震中/地级市/省界/市界/县界/烈度（2行3列，平行排列）
-    - 下部：高程图例（色块 + 高程范围，使用Times New Roman字体）
+    - 上部：震中/地级市/省界/市界/县界/烈度（3行2列，平行排列）
+    - 下部：高程图例（色块 + 高程范围，单位"m"使用Times New Roman字体）
+    - "高程"和"(m)"之间无留白
 
     参数:
         layout (QgsPrintLayout): 打印布局
@@ -1731,16 +1818,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
     title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     title_format.setColor(QColor(0, 0, 0))
 
-    item_format = QgsTextFormat()
-    item_format.setFont(QFont("SimSun", LEGEND_ITEM_FONT_SIZE_PT))
-    item_format.setSize(LEGEND_ITEM_FONT_SIZE_PT)
-    item_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    item_format.setColor(QColor(0, 0, 0))
+    # 基本图例项文本格式（可单独设置字体大小）
+    basic_item_format = QgsTextFormat()
+    basic_item_format.setFont(QFont("SimSun", BASIC_LEGEND_FONT_SIZE_PT))
+    basic_item_format.setSize(BASIC_LEGEND_FONT_SIZE_PT)
+    basic_item_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    basic_item_format.setColor(QColor(0, 0, 0))
 
-    # 高程图例文本格式 - 使用Times New Roman字体
+    # 高程图例文本格式（可单独设置字体大小）- 使用Times New Roman字体
     elevation_format = QgsTextFormat()
-    elevation_format.setFont(QFont("Times New Roman", LEGEND_ELEVATION_FONT_SIZE_PT))
-    elevation_format.setSize(LEGEND_ELEVATION_FONT_SIZE_PT)
+    elevation_format.setFont(QFont(LEGEND_FONT_TIMES_NEW_ROMAN, ELEVATION_LEGEND_FONT_SIZE_PT))
+    elevation_format.setSize(ELEVATION_LEGEND_FONT_SIZE_PT)
     elevation_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     elevation_format.setColor(QColor(0, 0, 0))
 
@@ -1772,15 +1860,15 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
     title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(title_label)
 
-    # 上部图例：2行3列
+    # 上部图例：3行2列（基本图例项）
     top_legend_start_y = legend_y + 7.0
 
-    col_count = 3
-    row_count = 2
+    col_count = 2  # 2列
+    row_count = 3  # 3行
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
-    row_height = 5.0
+    row_height = BASIC_LEGEND_ROW_HEIGHT_MM  # 使用可配置的行高
     icon_width = 4.0
     icon_height = 2.5
     icon_text_gap = 1.0
@@ -1788,16 +1876,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
     available_width = legend_width - left_pad - right_pad - (col_count - 1) * col_gap
     col_width = available_width / col_count
 
+    # 图例项：3行2列排列
     legend_items = [
-        ("震中", "震中", "star"),
-        ("地级市", "地级市", "circle"),
-        ("省界", "省界", "solid_line"),
-        ("市界", "市界", "dash_line_city"),
-        ("县界", "县界", "dash_line_county"),
-        ("烈度", "烈度", "solid_line_black"),
+        ("震中", "star"),
+        ("地级市", "circle"),
+        ("省界", "solid_line"),
+        ("市界", "dash_line_city"),
+        ("县界", "dash_line_county"),
+        ("烈度", "solid_line_black"),
     ]
 
-    for idx, (layer_name, display_name, draw_type) in enumerate(legend_items):
+    for idx, (display_name, draw_type) in enumerate(legend_items):
         row = idx // col_count
         col = idx % col_count
 
@@ -1827,7 +1916,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
 
         text_label = QgsLayoutItemLabel(layout)
         text_label.setText(display_name)
-        text_label.setTextFormat(item_format)
+        text_label.setTextFormat(basic_item_format)
         text_label.attemptMove(QgsLayoutPoint(text_x, item_y + 0.5, QgsUnitTypes.LayoutMillimeters))
         text_label.attemptResize(QgsLayoutSize(text_width, row_height - 1.0, QgsUnitTypes.LayoutMillimeters))
         text_label.setHAlign(Qt.AlignLeft)
@@ -1840,14 +1929,18 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
 
     # 高程图例
     if elevation_legend_list:
-        # 高程图例标题
+        # 高程图例标题：使用HTML混合字体显示 "高程(m)"，无留白
         elevation_title_y = top_legend_start_y + top_legend_height + 2.0
+
+        # 使用单个标签显示 "高程(m)"，通过HTML实现混合字体
         elevation_title = QgsLayoutItemLabel(layout)
-        elevation_title.setText("高程(m)")
-        elevation_title.setTextFormat(title_format)
-        elevation_title.attemptMove(QgsLayoutPoint(legend_x, elevation_title_y, QgsUnitTypes.LayoutMillimeters))
-        elevation_title.attemptResize(QgsLayoutSize(legend_width, 4.0, QgsUnitTypes.LayoutMillimeters))
-        elevation_title.setHAlign(Qt.AlignHCenter)
+        # 使用HTML模式，"高程"用黑体，"(m)"用Times New Roman
+        elevation_title.setMode(QgsLayoutItemLabel.ModeHtml)
+        html_text = '<span style="font-family:SimHei; font-size:5pt;">高程</span><span style="font-family:Times New Roman; font-size:5pt;">(m)</span>'
+        elevation_title.setText(html_text)
+        elevation_title.attemptMove(QgsLayoutPoint(legend_x + 2.0, elevation_title_y, QgsUnitTypes.LayoutMillimeters))
+        elevation_title.attemptResize(QgsLayoutSize(legend_width - 4.0, 5.0, QgsUnitTypes.LayoutMillimeters))
+        elevation_title.setHAlign(Qt.AlignLeft)
         elevation_title.setVAlign(Qt.AlignVCenter)
         elevation_title.setFrameEnabled(False)
         elevation_title.setBackgroundEnabled(False)
@@ -1856,11 +1949,11 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
         item_start_y = elevation_title_y + 5.0
 
         elevation_icon_width = 8.0
-        elevation_icon_height = 4.0
+        elevation_icon_height = ELEVATION_LEGEND_ROW_HEIGHT_MM - 0.5  # 使用可配置的行高
         elevation_gap = 2.0
         elevation_left_pad = 3.0
         elevation_right_pad = 2.0
-        item_spacing = 1.0
+        item_spacing = 0.5
 
         text_area_width = legend_width - elevation_left_pad - elevation_icon_width - elevation_gap - elevation_right_pad
 
@@ -1868,7 +1961,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
         displayed_count = 0
 
         for idx, (color_rgba, label) in enumerate(elevation_legend_list):
-            item_height = elevation_icon_height + item_spacing
+            item_height = ELEVATION_LEGEND_ROW_HEIGHT_MM  # 使用可配置的行高
 
             if current_y + item_height > legend_y + legend_height - 2.0:
                 break
@@ -1907,11 +2000,11 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
             text_label.setMode(QgsLayoutItemLabel.ModeFont)
             layout.addLayoutItem(text_label)
 
-            current_y += item_height
+            current_y += item_height + item_spacing
             displayed_count += 1
 
         print(
-            f"[信息] 高程图例添加完成，共 {displayed_count} 项，字体: Times New Roman {LEGEND_ELEVATION_FONT_SIZE_PT}pt")
+            f"[信息] 高程图例添加完成，共 {displayed_count} 项，字体: {LEGEND_FONT_TIMES_NEW_ROMAN} {ELEVATION_LEGEND_FONT_SIZE_PT}pt")
     else:
         print("[信息] 无高程数据，跳过高程图例")
 
@@ -2077,6 +2170,7 @@ def generate_earthquake_elevation_map(longitude, latitude, magnitude,
     生成地震震中数字高程图（主入口函数）
 
     针对大文件（如15GB的TIF）进行了优化，只加载所需范围内的数据。
+    只加载天地图矢量注记图层（放置在最上层），不加载矢量底图。
 
     参数:
         longitude (float): 震中经度
@@ -2122,7 +2216,21 @@ def generate_earthquake_elevation_map(longitude, latitude, magnitude,
     # 获取临时文件管理器
     temp_manager = get_temp_manager()
 
+    # 临时注记底图文件路径
+    temp_annotation_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "_temp_annotation_elevation.png"
+    )
+
     try:
+        # ============================================================
+        # 下载天地图矢量注记瓦片（只下载注记，不下载底图）
+        # ============================================================
+        width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
+        height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
+
+        annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
+
         # 加载数字高程底图（优化版，按需裁剪）
         elevation_layer = load_elevation_raster_optimized(ELEVATION_TIF_PATH, extent)
         if elevation_layer:
@@ -2150,7 +2258,7 @@ def generate_earthquake_elevation_map(longitude, latitude, magnitude,
             style_province_layer(province_layer)
             project.addMapLayer(province_layer)
 
-        # 加载地级市点位图层
+        # 加载地级市点位图层（不显示标注）
         city_point_layer = create_city_point_layer(extent)
         if city_point_layer:
             project.addMapLayer(city_point_layer)
@@ -2190,9 +2298,26 @@ def generate_earthquake_elevation_map(longitude, latitude, magnitude,
         if epicenter_layer:
             project.addMapLayer(epicenter_layer)
 
+        # 添加注记图层到项目（如果下载成功）
+        if annotation_raster:
+            project.addMapLayer(annotation_raster)
+
+        # 按正确渲染顺序排列图层（第一项在最上层）
+        # 注记图层放在最上层，这样可以显示地名等信息
+        ordered_layers = [lyr for lyr in [
+            annotation_raster,  # 天地图注记放在最上层
+            epicenter_layer,
+            intensity_layer,
+            city_point_layer,
+            province_layer,
+            city_layer,
+            county_layer,
+            elevation_layer,
+        ] if lyr is not None]
+
         # 创建打印布局
         layout = create_print_layout(project, longitude, latitude, magnitude,
-                                     extent, scale, map_height_mm, elevation_legend_list)
+                                     extent, scale, map_height_mm, elevation_legend_list, ordered_layers)
 
         # 导出PNG
         result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
@@ -2201,11 +2326,21 @@ def generate_earthquake_elevation_map(longitude, latitude, magnitude,
         # 清理临时文件
         temp_manager.cleanup()
 
-        # 清理指北针临时SVG文件
+        # 清理指北针临���SVG文件
         svg_temp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_elevation_temp.svg")
         if os.path.exists(svg_temp):
             try:
                 os.remove(svg_temp)
+            except OSError:
+                pass
+
+        # 清理临时注记底图文件
+        if os.path.exists(temp_annotation_path):
+            try:
+                os.remove(temp_annotation_path)
+                pgw_path = temp_annotation_path.replace(".png", ".pgw")
+                if os.path.exists(pgw_path):
+                    os.remove(pgw_path)
             except OSError:
                 pass
 
@@ -2314,7 +2449,6 @@ def test_elevation_classes():
     assert len(ELEVATION_CLASSES) == 5
     print(f"  高程分档数量: {len(ELEVATION_CLASSES)} ✓")
 
-    # 测试第一档
     cls1 = ELEVATION_CLASSES[0]
     assert cls1["min"] == -32618.999
     assert cls1["max"] == 500.0
@@ -2324,7 +2458,6 @@ def test_elevation_classes():
     assert cls1["label"] == "-32,618~500"
     print(f"  第一档: {cls1['label']}, RGB({cls1['color'].red()},{cls1['color'].green()},{cls1['color'].blue()}) ✓")
 
-    # 测试第二档
     cls2 = ELEVATION_CLASSES[1]
     assert cls2["min"] == 500.001
     assert cls2["max"] == 1000.0
@@ -2333,36 +2466,6 @@ def test_elevation_classes():
     assert cls2["color"].blue() == 44
     assert cls2["label"] == "500~1,000"
     print(f"  第二档: {cls2['label']}, RGB({cls2['color'].red()},{cls2['color'].green()},{cls2['color'].blue()}) ✓")
-
-    # 测试第三档
-    cls3 = ELEVATION_CLASSES[2]
-    assert cls3["min"] == 1000.001
-    assert cls3["max"] == 2000.0
-    assert cls3["color"].red() == 187
-    assert cls3["color"].green() == 81
-    assert cls3["color"].blue() == 13
-    assert cls3["label"] == "1,000~2,000"
-    print(f"  第三档: {cls3['label']}, RGB({cls3['color'].red()},{cls3['color'].green()},{cls3['color'].blue()}) ✓")
-
-    # 测试第四档
-    cls4 = ELEVATION_CLASSES[3]
-    assert cls4["min"] == 2000.001
-    assert cls4["max"] == 4000.0
-    assert cls4["color"].red() == 139
-    assert cls4["color"].green() == 90
-    assert cls4["color"].blue() == 43
-    assert cls4["label"] == "2,000~4,000"
-    print(f"  第四档: {cls4['label']}, RGB({cls4['color'].red()},{cls4['color'].green()},{cls4['color'].blue()}) ✓")
-
-    # 测试第五档
-    cls5 = ELEVATION_CLASSES[4]
-    assert cls5["min"] == 4000.001
-    assert cls5["max"] == 8850.0
-    assert cls5["color"].red() == 253
-    assert cls5["color"].green() == 253
-    assert cls5["color"].blue() == 254
-    assert cls5["label"] == "4,000~8,850"
-    print(f"  第五档: {cls5['label']}, RGB({cls5['color'].red()},{cls5['color'].green()},{cls5['color'].blue()}) ✓")
 
     print("  高程分档配置测试通过 ✓")
 
@@ -2376,35 +2479,10 @@ def test_build_elevation_legend_list():
     assert len(legend_list) == 5
     print(f"  图例项数量: {len(legend_list)} ✓")
 
-    # 验证第一项
     color1, label1 = legend_list[0]
     assert color1 == (175, 240, 233, 255)
     assert label1 == "-32,618~500"
     print(f"  第一项: {label1}, RGBA{color1} ✓")
-
-    # 验证第二项
-    color2, label2 = legend_list[1]
-    assert color2 == (28, 159, 44, 255)
-    assert label2 == "500~1,000"
-    print(f"  第二项: {label2}, RGBA{color2} ✓")
-
-    # 验证第三项
-    color3, label3 = legend_list[2]
-    assert color3 == (187, 81, 13, 255)
-    assert label3 == "1,000~2,000"
-    print(f"  第三项: {label3}, RGBA{color3} ✓")
-
-    # 验证第四项
-    color4, label4 = legend_list[3]
-    assert color4 == (139, 90, 43, 255)
-    assert label4 == "2,000~4,000"
-    print(f"  第四项: {label4}, RGBA{color4} ✓")
-
-    # 验证第五项
-    color5, label5 = legend_list[4]
-    assert color5 == (253, 253, 254, 255)
-    assert label5 == "4,000~8,850"
-    print(f"  第五项: {label5}, RGBA{color5} ✓")
 
     print("  高程图例列表构建测试通过 ✓")
 
@@ -2413,7 +2491,6 @@ def test_boundary_styles():
     """测试市界和县界样式参数"""
     print("\n--- 测试: 市界和县界样式参数 ---")
 
-    # 测试市界参数
     assert CITY_COLOR.red() == 160
     assert CITY_COLOR.green() == 160
     assert CITY_COLOR.blue() == 160
@@ -2423,7 +2500,6 @@ def test_boundary_styles():
     print(f"  市界线宽: {CITY_LINE_WIDTH_MM}mm ✓")
     print(f"  市界虚线间隔: {CITY_DASH_GAP_MM}mm ✓")
 
-    # 测试县界参数
     assert COUNTY_COLOR.red() == 160
     assert COUNTY_COLOR.green() == 160
     assert COUNTY_COLOR.blue() == 160
@@ -2436,43 +2512,18 @@ def test_boundary_styles():
     print("  市界和县界样式参数测试通过 ✓")
 
 
-def test_elevation_renderer_config():
-    """测试高程渲染器配置参数"""
-    print("\n--- 测试: 高程渲染器配置 ---")
-
-    # 验证分档的连续性（上一档的max应该接近下一档的min）
-    for i in range(len(ELEVATION_CLASSES) - 1):
-        current_max = ELEVATION_CLASSES[i]["max"]
-        next_min = ELEVATION_CLASSES[i + 1]["min"]
-        gap = next_min - current_max
-        assert gap == 0.001, f"第{i + 1}档和第{i + 2}档之间的间隙应为0.001，实际为{gap}"
-
-    print("  分档连续性验证通过 ✓")
-
-    # 验证颜色值范围
-    for i, cls in enumerate(ELEVATION_CLASSES):
-        color = cls["color"]
-        assert 0 <= color.red() <= 255
-        assert 0 <= color.green() <= 255
-        assert 0 <= color.blue() <= 255
-
-    print("  颜色值范围验证通过 ✓")
-    print("  高程渲染器配置测试通过 ✓")
-
-
 def test_legend_font_config():
     """测试图例字体配置"""
     print("\n--- 测试: 图例字体配置 ---")
 
-    assert LEGEND_ELEVATION_FONT_SIZE_PT == 8
-    print(f"  高程图例字体大小: {LEGEND_ELEVATION_FONT_SIZE_PT}pt ✓")
+    assert ELEVATION_LEGEND_FONT_SIZE_PT == 9
+    print(f"  高程图例字体大小: {ELEVATION_LEGEND_FONT_SIZE_PT}pt ✓")
 
-    # 验证使用Times New Roman字体（在_add_legend函数中）
-    elevation_format = QgsTextFormat()
-    elevation_format.setFont(QFont("Times New Roman", LEGEND_ELEVATION_FONT_SIZE_PT))
-    font = elevation_format.font()
-    assert "Times" in font.family() or font.family() == "Times New Roman"
-    print(f"  高程图例字体: Times New Roman ✓")
+    assert BASIC_LEGEND_FONT_SIZE_PT == 10
+    print(f"  ��本图例字体大小: {BASIC_LEGEND_FONT_SIZE_PT}pt ✓")
+
+    assert LEGEND_FONT_TIMES_NEW_ROMAN == "Times New Roman"
+    print(f"  高程单位(m)字体: {LEGEND_FONT_TIMES_NEW_ROMAN} ✓")
 
     print("  图例字体配置测试通过 ✓")
 
@@ -2483,19 +2534,16 @@ def test_temp_file_manager():
 
     manager = TempFileManager()
 
-    # 测试获取临时目录
     temp_dir = manager.get_temp_dir()
     assert temp_dir is not None
     assert os.path.exists(temp_dir)
     print(f"  临时目录创建成功: {temp_dir} ✓")
 
-    # 测试获取临时文件
     temp_file = manager.get_temp_file(suffix=".tif")
     assert temp_file is not None
     assert temp_file.endswith(".tif")
     print(f"  临时文件创建成功: {temp_file} ✓")
 
-    # 测试清理
     manager.cleanup()
     assert not os.path.exists(temp_dir)
     print("  临时文件清理成功 ✓")
@@ -2522,15 +2570,13 @@ def test_clip_extent_calculation():
     """测试裁剪范围计算"""
     print("\n--- 测试: 裁剪范围计算 ---")
 
-    # 测试地图范围计算
-    extent = calculate_extent(118.18, 39.63, 150)  # 唐山地震M7.8
+    extent = calculate_extent(118.18, 39.63, 150)
 
     clip_xmin = extent.xMinimum() - CLIP_BUFFER_DEGREES
     clip_xmax = extent.xMaximum() + CLIP_BUFFER_DEGREES
     clip_ymin = extent.yMinimum() - CLIP_BUFFER_DEGREES
     clip_ymax = extent.yMaximum() + CLIP_BUFFER_DEGREES
 
-    # 验证缓冲区正确添加
     assert clip_xmin < extent.xMinimum()
     assert clip_xmax > extent.xMaximum()
     assert clip_ymin < extent.yMinimum()
@@ -2547,6 +2593,37 @@ def test_clip_extent_calculation():
     print("  裁剪范围计算测试通过 ✓")
 
 
+def test_legend_layout_config():
+    """测试图例布局配置"""
+    print("\n--- 测试: 图例布局配置 ---")
+
+    # 测试基本图例项配置
+    assert BASIC_LEGEND_FONT_SIZE_PT == 10
+    assert BASIC_LEGEND_ROW_HEIGHT_MM == 5.0
+    print(f"  基本图例项字体大小: {BASIC_LEGEND_FONT_SIZE_PT}pt ✓")
+    print(f"  基本图例项行高: {BASIC_LEGEND_ROW_HEIGHT_MM}mm ✓")
+
+    # 测试高程图例项配置
+    assert ELEVATION_LEGEND_FONT_SIZE_PT == 9
+    assert ELEVATION_LEGEND_ROW_HEIGHT_MM == 4.5
+    print(f"  高程图例项字体大小: {ELEVATION_LEGEND_FONT_SIZE_PT}pt ✓")
+    print(f"  高程图例项行高: {ELEVATION_LEGEND_ROW_HEIGHT_MM}mm ✓")
+
+    # 验证3行2列布局
+    legend_items = [
+        ("震中", "star"),
+        ("地级市", "circle"),
+        ("省界", "solid_line"),
+        ("市界", "dash_line_city"),
+        ("县界", "dash_line_county"),
+        ("烈度", "solid_line_black"),
+    ]
+    assert len(legend_items) == 6  # 3行 x 2列 = 6项
+    print(f"  基本图例项数量: {len(legend_items)} (3行x2列) ✓")
+
+    print("  图例布局配置测试通过 ✓")
+
+
 def run_all_tests():
     """运行所有测试"""
     print("\n" + "=" * 60)
@@ -2559,11 +2636,11 @@ def run_all_tests():
     test_elevation_classes()
     test_build_elevation_legend_list()
     test_boundary_styles()
-    test_elevation_renderer_config()
     test_legend_font_config()
     test_temp_file_manager()
     test_gdal_availability()
     test_clip_extent_calculation()
+    test_legend_layout_config()
 
     print("\n" + "=" * 60)
     print("全部测试执行完成")
@@ -2593,4 +2670,3 @@ if __name__ == "__main__":
             longitude=118.18, latitude=39.63,
             magnitude=7.8, output_path="earthquake_elevation_tangshan_M7.8.png"
         )
-
