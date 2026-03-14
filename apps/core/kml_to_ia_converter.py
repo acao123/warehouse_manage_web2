@@ -672,93 +672,100 @@ class KmlToIaConverter:
         return layer
 
     def _run_qgis_interpolation(
-        self,
-        x_utm: np.ndarray,
-        y_utm: np.ndarray,
-        values: np.ndarray,
-        tmp_asc_path: str,
+            self,
+            x_utm: np.ndarray,
+            y_utm: np.ndarray,
+            values: np.ndarray,
+            output_tif_path: str,
     ) -> None:
         """
-        使用 QGIS 3.40.15 自带的插值算法将采样点插值到 ASC 栅格文件。
-
-        根据 self.interp_method 选择 'qgis_idw' 或 'qgis_tin' 插值器，
-        通过 QgsGridFileWriter 逐行流式写入 ASC 文件，
-        不在内存中构建完整的栅格数组，内存占用低。
-
-        QGIS IDW（反距离权重）调参说明：
-            self.qgis_idw_power（默认2.0，推荐1.0~4.0）
-                — 距离衰减幂次，值越大近点主导，结果越局部化；
-                  值越小远点影响增大，结果越平滑；
-                  QGIS IDW 使用全部采样点，通过空间索引加速
-
-        QGIS TIN（三角网线性插值）调参说明：
-            self.qgis_tin_method（默认0）
-                — 0=Linear（线性插值，速度快，无振荡）
-                — 1=Clough-Tocher（曲线插值，更平滑，计算量较大）
-
-        参数:
-            x_utm: 采样点X坐标(UTM)
-            y_utm: 采样点Y坐标(UTM)
-            values: 采样点对应值
-            tmp_asc_path: 输出临时 ASC 文件路径
+        使用 QGIS 插值器手动插值（优化版：批量处理每行）
         """
         # ---- 构建 QGIS 内存矢量图层 ----
         layer = self._build_qgs_vector_layer(x_utm, y_utm, values)
 
         # ---- 构建 QgsInterpolator.LayerData ----
         layer_data = QgsInterpolator.LayerData()
-        layer_data.source = layer                                          # 数据源（矢量图层）
-        layer_data.valueSource = QgsInterpolator.ValueSource.ValueAttribute   # 使用属性字段中的值
-        layer_data.interpolationAttribute = 0                              # 第0个字段（'value'）
-        layer_data.sourceType = QgsInterpolator.SourceType.SourcePoints    # 点要素类型
+        layer_data.source = layer
+        layer_data.valueSource = QgsInterpolator.ValueSource.ValueAttribute
+        layer_data.interpolationAttribute = 0
+        layer_data.sourceType = QgsInterpolator.SourceType.SourcePoints
 
         # ---- 创建插值器 ----
         method = self.interp_method
         if method == 'qgis_idw':
-            # IDW：反距离权重插值
-            # setDistanceCoefficient 设置距离衰减幂次；
-            # QGIS IDW 使用全部采样点（通过空间索引加速），不限制搜索半径
             interpolator = QgsIDWInterpolator([layer_data])
             interpolator.setDistanceCoefficient(self.qgis_idw_power)
+            print(f"  使用 QGIS IDW 插值，幂次={self.qgis_idw_power}")
         elif method == 'qgis_tin':
-            # TIN：三角网线性插值 / Clough-Tocher 曲线插值
-            # qgis_tin_method=0 → Linear；qgis_tin_method=1 → CloughTocher
             tin_enum = (
                 QgsTinInterpolator.TinInterpolation.Linear
                 if self.qgis_tin_method == 0
                 else QgsTinInterpolator.TinInterpolation.CloughTocher
             )
             interpolator = QgsTinInterpolator([layer_data], tin_enum)
+            print(f"  使用 QGIS TIN 插值，方法={self.qgis_tin_method}")
         else:
-            raise ValueError(
-                f"不支持的QGIS插值方法: '{method}'，可选: 'qgis_idw', 'qgis_tin'"
-            )
+            raise ValueError(f"不支持的QGIS插值方法: '{method}'")
 
-        # ---- 构建栅格空间范围 ----
-        extent = QgsRectangle(
-            self._x_min, self._y_min,
-            self._x_max, self._y_max
+        # ---- 创建输出 GeoTIFF ----
+        os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+        driver = gdal.GetDriverByName('GTiff')
+        out_ds = driver.Create(
+            output_tif_path,
+            self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
+            ['COMPRESS=LZW', 'TILED=YES'],
         )
+        out_ds.SetGeoTransform(self._geo_transform)
+        out_ds.SetProjection(self._utm_srs.ExportToWkt())
+        band = out_ds.GetRasterBand(1)
+        band.SetNoDataValue(-9999.0)
 
-        # ---- 流式写入 ASC 文件（逐行，内存友好）----
-        # QgsGridFileWriter 不在内存中保留完整栅格，直接按行写入文件
-        # QGIS 3.40 API：QgsGridFileWriter(interpolator, outputPath, extent, nCols, nRows)
-        writer = QgsGridFileWriter(
-            interpolator,
-            tmp_asc_path,
-            extent,
-            self._n_cols,
-            self._n_rows,
-        )
-        error_code = writer.writeFile()
-        if error_code != 0:
-            raise RuntimeError(
-                f"QgsGridFileWriter 写入失败，错误码: {error_code}"
-            )
+        # ---- 预计算所有列的 X 坐标 ----
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
 
-        # 显式释放 QGIS 对象，加快内存回收
-        del writer, interpolator, layer_data, layer
+        # ---- 逐行插值（比逐块更细粒度的进度显示）----
+        n_rows = self._n_rows
+        print(f"  开始插值，共 {n_rows} 行 × {self._n_cols} 列 = {n_rows * self._n_cols:,} 像素...")
+
+        import time as _time
+        start_time = _time.time()
+        report_interval = max(1, n_rows // 20)  # 每 5% 报告一次
+
+        for row_idx in range(n_rows):
+            # 当前行的 Y 坐标
+            y = self._y_max - (row_idx + 0.5) * self.resolution
+
+            # 插值当前行的所有像素
+            row_data = np.full(self._n_cols, -9999.0, dtype=np.float32)
+            for col_idx, x in enumerate(grid_x):
+                success, value = interpolator.interpolatePoint(x, y)
+                if success == 0:
+                    row_data[col_idx] = max(0.0, value)
+
+            # 写入当前行
+            band.WriteArray(row_data.reshape(1, -1), 0, row_idx)
+
+            # 进度报告
+            if (row_idx + 1) % report_interval == 0 or row_idx == n_rows - 1:
+                elapsed = _time.time() - start_time
+                progress = 100.0 * (row_idx + 1) / n_rows
+                eta = elapsed / (row_idx + 1) * (n_rows - row_idx - 1) if row_idx > 0 else 0
+                print(f"  进度: {row_idx + 1}/{n_rows} 行 ({progress:.1f}%), "
+                      f"已用时: {elapsed:.1f}s, 预计剩余: {eta:.1f}s")
+
+        # ---- 完成 ----
+        band.ComputeStatistics(False)
+        band.FlushCache()
+        out_ds = None
+        band = None
+
+        del interpolator, layer_data, layer
         gc.collect()
+
+        total_time = _time.time() - start_time
+        print(f"  插值完成，总耗时: {total_time:.1f}s")
+        print(f"  已保存: {output_tif_path}")
 
     def _asc_to_geotiff(self, asc_path: str, tif_path: str) -> None:
         """
@@ -1023,54 +1030,25 @@ class KmlToIaConverter:
         print(f"  已保存: {output_tif_path}")
 
     def _interpolate_to_file(
-        self,
-        x_utm: np.ndarray,
-        y_utm: np.ndarray,
-        values: np.ndarray,
-        output_tif_path: str,
+            self,
+            x_utm: np.ndarray,
+            y_utm: np.ndarray,
+            values: np.ndarray,
+            output_tif_path: str,
     ) -> None:
         """
         统一插值入口：根据 self.interp_method 路由到对应的插值方法。
-
-        QGIS 方法（'qgis_idw'/'qgis_tin'）：
-            调用 QGIS 插值算法写入临时 ASC 文件，再转换为最终 GeoTIFF 格式，
-            处理完成后清理临时文件。
-
-        scipy 方法（'scipy_idw'）：
-            直接使用 scipy RBFInterpolator 分块写入 GeoTIFF，无 ASC 中间文件。
-
-        kriging 方法（'kriging'）：
-            直接使用 pykrige OrdinaryKriging 分块写入 GeoTIFF，无 ASC 中间文件。
-
-        参数:
-            x_utm: 采样点X坐标(UTM)
-            y_utm: 采样点Y坐标(UTM)
-            values: 采样点值
-            output_tif_path: 输出 GeoTIFF 文件路径
         """
         method = self.interp_method
 
         if method in ('qgis_idw', 'qgis_tin'):
-            # QGIS 方法：通过临时 ASC 文件，再转换为 GeoTIFF
-            with tempfile.NamedTemporaryFile(suffix='.asc', delete=False) as tmp:
-                tmp_asc_path = tmp.name
-            try:
-                self._run_qgis_interpolation(x_utm, y_utm, values, tmp_asc_path)
-                self._asc_to_geotiff(tmp_asc_path, output_tif_path)
-            finally:
-                # 使用 os.path.splitext 安全地替换扩展名，避免路径中含多个 '.asc' 时误替换
-                base, _ = os.path.splitext(tmp_asc_path)
-                for ext in ('.asc', '.prj'):
-                    candidate = base + ext
-                    if os.path.exists(candidate):
-                        os.remove(candidate)
+            # QGIS 方法：直接输出 GeoTIFF（绕过有问题的 QgsGridFileWriter）
+            self._run_qgis_interpolation(x_utm, y_utm, values, output_tif_path)
 
         elif method == 'scipy_idw':
-            # scipy RBF 方法：直接写入 GeoTIFF，分块处理节省内存
             self._run_scipy_interpolation(x_utm, y_utm, values, output_tif_path)
 
         elif method == 'kriging':
-            # pykrige 克里金方法：直接写入 GeoTIFF，分块处理节省内存
             self._run_kriging_interpolation(x_utm, y_utm, values, output_tif_path)
 
         else:
@@ -1287,12 +1265,12 @@ if __name__ == "__main__":
         pga_output_path="../../data/geology/kml/PGA.tif",    # PGA输出路径（不需要可设为None）
         ia_output_path="../../data/geology/ia/Ia.tif",       # Ia输出路径
         resolution=30,              # 输出分辨率(米)；推荐10~100，越小精度越高但越慢
-        sample_interval=5,          # 等值线采样间隔；推荐3~10，越小采样越密
+        sample_interval=10,          # 等值线采样间隔；推荐3~10，越小采样越密
         export_pga=False,           # 是否同时输出PGA.tif
 
         # 选择插值方法：'qgis_idw'（快）、'qgis_tin'（精确）、
         #               'scipy_idw'（需scipy）、'kriging'（最精确，需pykrige）
-        interp_method='qgis_idw',
+        interp_method='scipy_idw',
 
         # QGIS IDW 参数（仅 interp_method='qgis_idw' 时有效）
         qgis_idw_power=2.0,         # IDW幂次；推荐1.0~4.0，越大近点主导
