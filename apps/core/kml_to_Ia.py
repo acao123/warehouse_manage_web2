@@ -315,6 +315,7 @@ class KmlToIaConverter:
         self._x_max: float = 0.0
         self._y_min: float = 0.0
         self._y_max: float = 0.0
+        self._res_deg: float = 0.0  # 分辨率（度），由 _build_grid 计算
 
     # ==================== KML 解析 ====================
 
@@ -444,62 +445,47 @@ class KmlToIaConverter:
 
     def _determine_utm_projection(self, lon_min: float, lon_max: float):
         """
-        根据数据经度范围自动确定UTM投影带
-
-        投影选择规则（中国常用投影规范）：
-            - 中国大陆经度范围：约73°E ~ 135°E
-            - UTM 6°分带公式：zone = int((lon_center + 180) / 6) + 1
-            - 北半球 EPSG = 32600 + zone
-            例如：中心经度103° → zone=48 → EPSG:32648
+        设置输出投影为 EPSG:4326（WGS 84）
 
         参数:
             lon_min (float): 经度最小值
             lon_max (float): 经度最大值
         """
-        lon_center = (lon_min + lon_max) / 2.0
-        utm_zone = int((lon_center + 180.0) / 6.0) + 1
-        self._utm_epsg = 32600 + utm_zone  # 北半球
+        self._utm_epsg = 4326
 
         print(f"\n投影信息:")
         print(f"  数据经度范围: {lon_min:.4f}° ~ {lon_max:.4f}°")
-        print(f"  中心经度: {lon_center:.4f}°")
-        print(f"  UTM带号: Zone {utm_zone}N")
-        print(f"  EPSG代码: {self._utm_epsg}")
+        print(f"  输出投影: EPSG:4326 (WGS 84)")
 
     def _create_transformer(self):
         """
-        创建 WGS84(EPSG:4326) → UTM 坐标转换器
+        设置 EPSG:4326 (WGS 84) 空间参考系统。
 
-        兼容 GDAL 3.0+ 的轴顺序问题，
-        强制使用传统GIS顺序（经度在前，纬度在后）
+        输出投影直接使用经纬度坐标系，无需坐标转换，
+        创建恒等变换以保持接口兼容。
         """
-        src_srs = osr.SpatialReference()
-        src_srs.ImportFromEPSG(4326)
-        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(4326)
+        srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-        dst_srs = osr.SpatialReference()
-        dst_srs.ImportFromEPSG(self._utm_epsg)
-        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-
-        self._utm_srs = dst_srs
-        self._transformer = osr.CoordinateTransformation(src_srs, dst_srs)
+        self._utm_srs = srs
+        self._transformer = osr.CoordinateTransformation(srs, srs)
 
     def _transform_coords_batch(
         self, lons: np.ndarray, lats: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        分批批量将WGS84经纬度坐标转换为UTM平面坐标（内存优化版）
+        分批批量将经纬度坐标传递为输出坐标（EPSG:4326，恒等变换）
 
-        将坐标数组分成多批次处理，每批大小由 self.coord_batch_size 控制，
-        避免一次性分配过大的临时缓冲区。每批使用 TransformPoints() 批量转换，
-        比逐点调用 TransformPoint() 效率更高。
+        输出投影为 EPSG:4326，坐标无需转换，直接返回经度和纬度。
+        保留批量处理结构以兼容接口。
 
         参数:
             lons (np.ndarray): 经度数组
             lats (np.ndarray): 纬度数组
 
         返回:
-            tuple: (x_utm数组, y_utm数组)，转换失败的点值为NaN
+            tuple: (x数组, y数组)，即经度与纬度，转换失败的点值为NaN
         """
         n = len(lons)
         x_out = np.empty(n, dtype=np.float64)
@@ -601,7 +587,7 @@ class KmlToIaConverter:
         del rows   # 立即释放中间列表
         gc.collect()
 
-        # 坐标转换到UTM（分批处理，控制每批内存峰值）
+        # 坐标转换（EPSG:4326恒等变换，直接使用经纬度作为x/y坐标）
         x_utm, y_utm = self._transform_coords_batch(lons_arr, lats_arr)
         del lons_arr, lats_arr   # 释放经纬度数组
         gc.collect()
@@ -613,8 +599,8 @@ class KmlToIaConverter:
         ia_arr = ia_arr[valid]
 
         # -------- 去重处理 --------
-        # 将坐标四舍五入到0.01米精度后去重，防止插值奇异矩阵
-        coords_rounded = np.round(np.column_stack([x_utm, y_utm]), decimals=2)
+        # 将坐标四舍五入到0.00001度精度（约1m）后去重，防止插值奇异矩阵
+        coords_rounded = np.round(np.column_stack([x_utm, y_utm]), decimals=5)
         _, unique_idx = np.unique(coords_rounded, axis=0, return_index=True)
         del coords_rounded   # 释放临时数组
         unique_idx.sort()    # 保持原始顺序
@@ -634,28 +620,32 @@ class KmlToIaConverter:
 
     def _build_grid(self, x_utm: np.ndarray, y_utm: np.ndarray):
         """
-        根据采样点范围构建输出栅格网格参数
+        根据采样点范围构建输出栅格网格参数（EPSG:4326，经纬度坐标）
 
         在数据范围外扩展 10 个像素作为缓冲区。
 
         参数:
-            x_utm (np.ndarray): 采样点X坐标(UTM)
-            y_utm (np.ndarray): 采样点Y坐标(UTM)
+            x_utm (np.ndarray): 采样点经度坐标（度）
+            y_utm (np.ndarray): 采样点纬度坐标（度）
         """
-        buffer = self.resolution * 10
+        # 将分辨率从米转换为度（1度约等于111000米，适用于中纬度地区）
+        # 注意：此近似对纬度方向（南北）较准确，经度方向随纬度增大而缩短，
+        # 在赤道附近1°≈111km，对中国常用区域（25°~45°N）误差约10%~30%。
+        self._res_deg = self.resolution / 111000.0
+        buffer = self._res_deg * 10
 
         x_min = x_utm.min() - buffer
         x_max = x_utm.max() + buffer
         y_min = y_utm.min() - buffer
         y_max = y_utm.max() + buffer
 
-        self._n_cols = int(np.ceil((x_max - x_min) / self.resolution))
-        self._n_rows = int(np.ceil((y_max - y_min) / self.resolution))
+        self._n_cols = int(np.ceil((x_max - x_min) / self._res_deg))
+        self._n_rows = int(np.ceil((y_max - y_min) / self._res_deg))
 
         # GeoTIFF 仿射变换参数:
         # (左上角X, 像素宽度, 旋转, 左上角Y, 旋转, 像素高度负值)
-        self._geo_transform = (x_min, self.resolution, 0.0,
-                               y_max, 0.0, -self.resolution)
+        self._geo_transform = (x_min, self._res_deg, 0.0,
+                               y_max, 0.0, -self._res_deg)
 
         # 记录网格坐标范围供插值使用
         self._x_min = x_min
@@ -664,10 +654,10 @@ class KmlToIaConverter:
         self._y_max = y_max
 
         print(f"\n栅格网格信息:")
-        print(f"  分辨率: {self.resolution}m × {self.resolution}m")
+        print(f"  分辨率: {self.resolution}m ≈ {self._res_deg:.6f}° × {self._res_deg:.6f}°")
         print(f"  网格大小: {self._n_cols} 列 × {self._n_rows} 行")
-        print(f"  X范围: {x_min:.2f} ~ {x_max:.2f} m")
-        print(f"  Y范围: {y_min:.2f} ~ {y_max:.2f} m")
+        print(f"  经度范围: {x_min:.6f}° ~ {x_max:.6f}°")
+        print(f"  纬度范围: {y_min:.6f}° ~ {y_max:.6f}°")
         print(f"  总像素数: {self._n_cols * self._n_rows:,}")
 
         # 估算内存使用（每像素4字节float32，预估4倍开销）
@@ -693,8 +683,8 @@ class KmlToIaConverter:
         要素以批次方式添加（每批 5000 个），控制每次写入的内存峰值。
 
         参数:
-            x_utm (np.ndarray): 采样点X坐标(UTM)
-            y_utm (np.ndarray): 采样点Y坐标(UTM)
+            x_utm (np.ndarray): 采样点经度坐标（EPSG:4326，度）
+            y_utm (np.ndarray): 采样点纬度坐标（EPSG:4326，度）
             values (np.ndarray): 采样点对应值
             field_name (str): 值字段名，默认'value'
 
@@ -796,8 +786,8 @@ class KmlToIaConverter:
         band = out_ds.GetRasterBand(1)
         band.SetNoDataValue(-9999.0)
 
-        # ---- 预计算所有列的 X 坐标 ----
-        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
+        # ---- 预计算所有列的 X 坐标（经度，度）----
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_deg
 
         # ---- 逐行插值 ----
         n_rows = self._n_rows
@@ -808,7 +798,7 @@ class KmlToIaConverter:
 
         for row_idx in range(n_rows):
             # Y坐标从上（大值）到下（小值）递减，栅格原点在左上角
-            y = self._y_max - (row_idx + 0.5) * self.resolution
+            y = self._y_max - (row_idx + 0.5) * self._res_deg
 
             row_data = np.full(self._n_cols, -9999.0, dtype=np.float32)
             for col_idx, x in enumerate(grid_x):
@@ -905,8 +895,8 @@ class KmlToIaConverter:
         band = out_ds.GetRasterBand(1)
         band.SetNoDataValue(-9999.0)
 
-        # 生成输出网格列坐标（像素中心X，所有行共用）
-        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
+        # 生成输出网格列坐标（像素中心经度，所有行共用）
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_deg
 
         # 分块处理（按行分块，每块 chunk_size 行）
         n_rows = self._n_rows
@@ -918,10 +908,10 @@ class KmlToIaConverter:
             row_end = min(row_start + chunk_rows, n_rows)
             actual_rows = row_end - row_start
 
-            # 本块的像素中心Y坐标
+            # 本块的像素中心Y坐标（纬度）
             # Y坐标从上（大值）到下（小值）递减，因为栅格原点在左上角，
             # row_start=0对应最高Y坐标（_y_max），行索引增加Y坐标减小
-            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self.resolution
+            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_deg
 
             # 展开为预测点坐标列表，shape: (actual_rows * n_cols, 2)
             xx, yy = np.meshgrid(grid_x, grid_y)
@@ -1015,8 +1005,8 @@ class KmlToIaConverter:
         band = out_ds.GetRasterBand(1)
         band.SetNoDataValue(-9999.0)
 
-        # 列坐标（所有行共用）
-        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
+        # 列坐标（经度，所有行共用）
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_deg
 
         n_rows = self._n_rows
         chunk_rows = self.chunk_size
@@ -1035,7 +1025,7 @@ class KmlToIaConverter:
             row_end = min(row_start + chunk_rows, n_rows)
             actual_rows = row_end - row_start
 
-            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self.resolution
+            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_deg
             xx, yy = np.meshgrid(grid_x, grid_y)
             pts = np.column_stack([xx.ravel(), yy.ravel()])
             del xx, yy
@@ -1111,9 +1101,11 @@ class KmlToIaConverter:
         # 计算震中（几何中心）
         center_x = float(np.mean(x_utm))
         center_y = float(np.mean(y_utm))
-        print(f"  震中坐标（UTM）: ({center_x:.1f}, {center_y:.1f})")
+        print(f"  震中坐标（经纬度）: ({center_x:.6f}°, {center_y:.6f}°)")
 
-        # 计算每个采样点到震中的距离
+        # 计算每个采样点到震中的距离（度，近似欧氏距离）
+        # 注意：经纬度空间中的欧氏距离是近似值，不考虑地球曲率和纬度对经度距离的影响，
+        # 适用于区域范围较小（数十至数百公里）的场景。
         distances = np.sqrt((x_utm - center_x) ** 2 + (y_utm - center_y) ** 2)
 
         # 按距离排序
@@ -1123,9 +1115,9 @@ class KmlToIaConverter:
         del distances, sorted_idx
         gc.collect()
 
-        # 对距离去重：将距离相差不超过 resolution/2 的点合并取均值
+        # 对距离去重：将距离相差不超过 _res_deg/2 的点合并取均值
         # 避免 interp1d 在重复距离处报错或产生不稳定
-        tol = self.resolution / 2.0
+        tol = self._res_deg / 2.0
         merged_dists = [dist_sorted[0]]
         merged_vals = [val_sorted[0]]
         running_sum = val_sorted[0]
@@ -1151,7 +1143,7 @@ class KmlToIaConverter:
         val_arr = np.array(merged_vals, dtype=np.float64)
         del merged_dists, merged_vals
 
-        print(f"  距离范围: {dist_arr[0]:.0f}m ~ {dist_arr[-1]:.0f}m，"
+        print(f"  距离范围: {dist_arr[0]:.6f}° ~ {dist_arr[-1]:.6f}°，"
               f"合并后控制点数: {len(dist_arr)}")
 
         # 建立 距离→Ia 的1D插值函数
@@ -1179,7 +1171,7 @@ class KmlToIaConverter:
         band = out_ds.GetRasterBand(1)
         band.SetNoDataValue(-9999.0)
 
-        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_deg
 
         n_rows = self._n_rows
         chunk_rows = self.chunk_size
@@ -1189,7 +1181,7 @@ class KmlToIaConverter:
             row_end = min(row_start + chunk_rows, n_rows)
             actual_rows = row_end - row_start
 
-            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self.resolution
+            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_deg
             xx, yy = np.meshgrid(grid_x, grid_y)
 
             # 计算每个像素到震中的距离
@@ -1279,7 +1271,7 @@ class KmlToIaConverter:
         band = out_ds.GetRasterBand(1)
         band.SetNoDataValue(-9999.0)
 
-        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_deg
 
         n_rows = self._n_rows
         chunk_rows = self.chunk_size
@@ -1289,7 +1281,7 @@ class KmlToIaConverter:
             row_end = min(row_start + chunk_rows, n_rows)
             actual_rows = row_end - row_start
 
-            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self.resolution
+            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_deg
 
             # pykrige 接受1D的x/y坐标网格（非展开）
             z, _ss = ok.execute(
@@ -1423,11 +1415,7 @@ class KmlToIaConverter:
 
             ring = ogr.Geometry(ogr.wkbLinearRing)
             for lon, lat in coords:
-                try:
-                    result = self._transformer.TransformPoint(float(lon), float(lat))
-                    ring.AddPoint(result[0], result[1])
-                except Exception:
-                    continue
+                ring.AddPoint(float(lon), float(lat))
 
             # 强制闭合
             if ring.GetPointCount() >= 3:
@@ -1561,9 +1549,9 @@ class KmlToIaConverter:
 
         流程:
             1. 解析KML文件
-            2. 确定UTM投影并创建坐标转换器
-            3. 准备采样点（生成器下采样 + 随机抽样 + 批量坐标转换 + 去重）
-            4. 构建输出栅格网格
+            2. 设置 EPSG:4326 输出投影并初始化空间参考
+            3. 准备采样点（生成器下采样 + 随机抽样 + 去重），坐标保持经纬度
+            4. 构建输出栅格网格（经纬度坐标，分辨率按度计算）
             5. （可选）PGA等值线矢量栅格化并输出PGA.tif（非插值）
             6. 使用选定的插值方法计算并输出Ia.tif
                - 'scipy_tin' ：scipy Delaunay三角网，平滑无突变（推荐）
@@ -1599,19 +1587,19 @@ class KmlToIaConverter:
                 print("错误: 未找到有效的PGA等值线")
                 return False
 
-            # 3. 确定投影
+            # 3. 设置 EPSG:4326 输出投影
             all_lons = [coord[0] for c in contours for coord in c['coordinates']]
             self._determine_utm_projection(min(all_lons), max(all_lons))
             del all_lons
             gc.collect()
 
-            # 4. 创建坐标转换器
+            # 4. 初始化空间参考系统（EPSG:4326）
             self._create_transformer()
 
-            # 5. 准备采样点（生成器 + 随机抽样 + 批量转换，内存友好）
+            # 5. 准备采样点（生成器 + 随机抽样 + 去重，坐标保持经纬度）
             x_utm, y_utm, ia_values = self._prepare_sample_points()
 
-            # 6. 构建栅格网格
+            # 6. 构建栅格网格（经纬度坐标，分辨率按度计算）
             self._build_grid(x_utm, y_utm)
 
             # 7. PGA矢量栅格化（可选，使用矢量栅格化而非插值）
