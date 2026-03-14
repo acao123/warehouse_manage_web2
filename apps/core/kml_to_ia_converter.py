@@ -54,7 +54,7 @@ from qgis.analysis import (
     QgsGridFileWriter,
     QgsIDWInterpolator,
     QgsInterpolator,
-    QgsTINInterpolator,
+    QgsTinInterpolator,
 )
 from PyQt5.QtCore import QVariant
 
@@ -596,11 +596,11 @@ class KmlToIaConverter:
             # TIN：三角网线性插值 / Clough-Tocher 曲线插值
             # tin_method=0 → Linear；tin_method=1 → CloughTocher
             tin_enum = (
-                QgsTINInterpolator.TinInterpolation.Linear
+                QgsTinInterpolator.TinInterpolation.Linear
                 if self.tin_method == 0
-                else QgsTINInterpolator.TinInterpolation.CloughTocher
+                else QgsTinInterpolator.TinInterpolation.CloughTocher
             )
-            interpolator = QgsTINInterpolator([layer_data], tin_enum)
+            interpolator = QgsTinInterpolator([layer_data], tin_enum)
         else:
             raise ValueError(
                 f"不支持的插值方法: '{method}'，可选: 'idw', 'tin'"
@@ -906,7 +906,7 @@ class KmlToIaConverter:
 if __name__ == "__main__":
     converter = KmlToIaConverter(
         kml_path="../../data/geology/kml/source.kml",        # 输入KML文件路径
-        pga_output_path=None,                                 # PGA输出路径（不需要可设为None）
+        pga_output_path="../../data/geology/kml/PGA.tif",                                 # PGA输出路径（不需要可设为None）
         ia_output_path="../../data/geology/ia/Ia.tif",        # Ia输出路径
         resolution=30,          # 输出分辨率(米)；推荐10~100，越小精度越高但越慢
         sample_interval=5,      # 等值线采样间隔；推荐3~10，越小采样越密

@@ -169,15 +169,15 @@ CITY_LABEL_COLOR = QColor(0, 0, 0)
 # === 图例字体 ===
 LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
-LEGEND_ELEVATION_FONT_SIZE_PT = 8  # 高程图例字体大小
+LEGEND_ELEVATION_FONT_SIZE_PT = 12  # 高程图例字体大小
 
 # === 基本图例项配置（可单独设置） ===
 BASIC_LEGEND_FONT_SIZE_PT = 10  # 基本图例项字体大小
-BASIC_LEGEND_ROW_HEIGHT_MM = 5.0  # 基本图例项行高
+BASIC_LEGEND_ROW_HEIGHT_MM = 8.0  # 基本图例项行高
 
 # === 高程图例项配置（可单独设置） ===
-ELEVATION_LEGEND_FONT_SIZE_PT = 9  # 高程图例项字体大小
-ELEVATION_LEGEND_ROW_HEIGHT_MM = 4.5  # 高程图例项行高
+ELEVATION_LEGEND_FONT_SIZE_PT = 10  # 高程图例项字体大小
+ELEVATION_LEGEND_ROW_HEIGHT_MM = 6  # 高程图例项行高
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -1929,22 +1929,62 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
 
     # 高程图例
     if elevation_legend_list:
-        # 高程图例标题：使用HTML混合字体显示 "高程(m)"，无留白
+        # 高程图例标题：改为普通标签实现，避免HTML模式；仅"m"使用Times New Roman
         elevation_title_y = top_legend_start_y + top_legend_height + 2.0
 
-        # 使用单个标签显示 "高程(m)"，通过HTML实现混合字体
-        elevation_title = QgsLayoutItemLabel(layout)
-        # 使用HTML模式，"高程"用黑体，"(m)"用Times New Roman
-        elevation_title.setMode(QgsLayoutItemLabel.ModeHtml)
-        html_text = '<span style="font-family:SimHei; font-size:5pt;">高程</span><span style="font-family:Times New Roman; font-size:5pt;">(m)</span>'
-        elevation_title.setText(html_text)
-        elevation_title.attemptMove(QgsLayoutPoint(legend_x + 2.0, elevation_title_y, QgsUnitTypes.LayoutMillimeters))
-        elevation_title.attemptResize(QgsLayoutSize(legend_width - 4.0, 5.0, QgsUnitTypes.LayoutMillimeters))
-        elevation_title.setHAlign(Qt.AlignHCenter)
-        elevation_title.setVAlign(Qt.AlignVCenter)
-        elevation_title.setFrameEnabled(False)
-        elevation_title.setBackgroundEnabled(False)
-        layout.addLayoutItem(elevation_title)
+        elevation_title_cn_format = QgsTextFormat()
+        elevation_title_cn_font = QFont("SimHei")
+        elevation_title_cn_font.setPointSizeF(10.0)
+        elevation_title_cn_format.setFont(elevation_title_cn_font)
+        elevation_title_cn_format.setSize(10.0)
+        elevation_title_cn_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+        elevation_title_cn_format.setColor(QColor(0, 0, 0))
+
+        elevation_title_m_format = QgsTextFormat()
+        elevation_title_m_font = QFont(LEGEND_FONT_TIMES_NEW_ROMAN)
+        elevation_title_m_font.setPointSizeF(10.0)
+        elevation_title_m_format.setFont(elevation_title_m_font)
+        elevation_title_m_format.setSize(10.0)
+        elevation_title_m_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+        elevation_title_m_format.setColor(QColor(0, 0, 0))
+
+        # 以组合方式居中显示“高程(m)”，其中仅 m 使用 Times New Roman
+        title_group_width = 12.0
+        title_group_x = legend_x + (legend_width - title_group_width) / 2.0
+
+        elevation_title_cn_left = QgsLayoutItemLabel(layout)
+        elevation_title_cn_left.setText("高程(")
+        elevation_title_cn_left.setTextFormat(elevation_title_cn_format)
+        elevation_title_cn_left.attemptMove(QgsLayoutPoint(title_group_x, elevation_title_y, QgsUnitTypes.LayoutMillimeters))
+        elevation_title_cn_left.attemptResize(QgsLayoutSize(8.2, 5.0, QgsUnitTypes.LayoutMillimeters))
+        elevation_title_cn_left.setHAlign(Qt.AlignRight)
+        elevation_title_cn_left.setVAlign(Qt.AlignVCenter)
+        elevation_title_cn_left.setFrameEnabled(False)
+        elevation_title_cn_left.setBackgroundEnabled(False)
+        layout.addLayoutItem(elevation_title_cn_left)
+
+        elevation_title_m = QgsLayoutItemLabel(layout)
+        elevation_title_m.setText("m")
+        elevation_title_m.setTextFormat(elevation_title_m_format)
+        # 轻微上移，修正 Times New Roman 小写 m 的视觉基线偏低问题
+        elevation_title_m.attemptMove(QgsLayoutPoint(title_group_x + 8.2, elevation_title_y - 0.4, QgsUnitTypes.LayoutMillimeters))
+        elevation_title_m.attemptResize(QgsLayoutSize(2.0, 5.0, QgsUnitTypes.LayoutMillimeters))
+        elevation_title_m.setHAlign(Qt.AlignHCenter)
+        elevation_title_m.setVAlign(Qt.AlignVCenter)
+        elevation_title_m.setFrameEnabled(False)
+        elevation_title_m.setBackgroundEnabled(False)
+        layout.addLayoutItem(elevation_title_m)
+
+        elevation_title_cn_right = QgsLayoutItemLabel(layout)
+        elevation_title_cn_right.setText(")")
+        elevation_title_cn_right.setTextFormat(elevation_title_cn_format)
+        elevation_title_cn_right.attemptMove(QgsLayoutPoint(title_group_x + 10.2, elevation_title_y, QgsUnitTypes.LayoutMillimeters))
+        elevation_title_cn_right.attemptResize(QgsLayoutSize(1.8, 5.0, QgsUnitTypes.LayoutMillimeters))
+        elevation_title_cn_right.setHAlign(Qt.AlignLeft)
+        elevation_title_cn_right.setVAlign(Qt.AlignVCenter)
+        elevation_title_cn_right.setFrameEnabled(False)
+        elevation_title_cn_right.setBackgroundEnabled(False)
+        layout.addLayoutItem(elevation_title_cn_right)
 
         item_start_y = elevation_title_y + 5.0
 
@@ -2670,3 +2710,4 @@ if __name__ == "__main__":
             longitude=118.18, latitude=39.63,
             magnitude=7.8, output_path="earthquake_elevation_tangshan_M7.8.png"
         )
+
