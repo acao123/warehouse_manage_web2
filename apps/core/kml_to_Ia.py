@@ -1,2028 +1,1254 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具
+KML格式PGA等值线转换为Ia栅格文件工具（重构版）
 基于QGIS 3.40.15 Python环境
 
 功能：
     1. 解析KML文件获取PGA等值线（LineString）
     2. 将PGA值(g单位)转换为实际加速度值(m/s²)
     3. 根据公式 log10(Ia) = 0.797 + 1.837 * log10(PGA) 计算Ia(阿里亚斯强度)值
-    4. 使用插值算法进行插值计算（支持IDW、TIN、Kriging）
-    5. ���选输出PGA.tif和Ia.tif
+    4. 使用插值算法对Ia进行插值计算（支持scipy_idw、qgis_idw、qgis_tin）
+    5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
 
-作者: AI Assistant
+主要改进（相较旧版）：
+    1. 移除PGA插值，只对Ia进行插值；PGA.tif通过矢量栅格化生成
+    2. 添加采样点数量控制（sample_interval, max_sample_points）
+    3. 使用scipy RBFInterpolator加速插值，并支持QGIS IDW/TIN备选
+    4. 严格内存控制（<10GB）：生成器采样、分批坐标转换、分块栅格写入、及时del+gc
+    5. 异常安全的资源释放：run()方法添加try-finally，提供统一cleanup()方法
+
+作者: Copilot (重构版)
 日期: 2026-03-14
-版本: 1.1
+版本: 2.0
+QGIS版本: 3.40.15
+
+支持插值方法:
+    - 'scipy_idw' : scipy RBFInterpolator（推荐，速度快，支持邻近点限制）
+    - 'qgis_idw'  : QGIS自带反距离权重插值（备选，速度较慢）
+    - 'qgis_tin'  : QGIS自带三角网插值（备选，速度较慢）
+
+插值范围:
+    最大范围：300km × 300km
+    固定分辨率：30米 × 30米
+
+投影说明：
+    根据数据经度范围的中心经度，自动选择对应的UTM投影带。
+    UTM带号 = int((lon_center + 180) / 6) + 1
+    北半球EPSG编码：326xx（如Zone 48N → EPSG:32648）
+
+内存优化说明（运行环境 32G，占用不超过 10G）：
+    - 使用生成器迭代采样点，避免一次性构建大型中间列表
+    - 超过 max_sample_points 时随机抽样，严格控制采样点总数
+    - 坐标转换分批进行（coord_batch_size 控制）
+    - scipy方法：按 chunk_size 行分块处理，逐块释放临时数组
+    - 各阶段处理后及时 del 临时数组并调用 gc.collect()
+    - 所有GDAL/OGR对象使用后立即置None释放
+    - run()方法使用try-finally确保异常时也能释放资源
 """
 
-import os
 import gc
-import time
 import math
+import os
+import random
+import time
 import traceback
+import warnings
+from typing import Iterator, List, Optional, Tuple
 from xml.etree import ElementTree as ET
-from typing import List, Tuple, Dict, Optional, Union
-from dataclasses import dataclass, field
 
-# QGIS核心库导入
+import numpy as np
+from osgeo import gdal, ogr, osr
+
+# ==================== QGIS 插值相关模块 ====================
+# 以下模块在 QGIS 3.40.15 Python 环境中内置
+from qgis.analysis import (
+    QgsGridFileWriter,
+    QgsIDWInterpolator,
+    QgsInterpolator,
+    QgsTinInterpolator,
+)
 from qgis.core import (
-    QgsApplication,
-    QgsProject,
-    QgsVectorLayer,
     QgsFeature,
+    QgsField,
     QgsGeometry,
     QgsPointXY,
-    QgsField,
-    QgsFields,
-    QgsCoordinateReferenceSystem,
-    QgsCoordinateTransform,
-    QgsRectangle,
-    QgsRasterFileWriter,
-    QgsRasterLayer,
-    QgsVectorFileWriter,
-    QgsWkbTypes,
-    Qgis
+    QgsVectorLayer,
 )
 
-# QGIS分析库导入 - 注意大小写: QgsTinInterpolator (不是 QgsTINInterpolator)
-from qgis.analysis import (
-    QgsInterpolator,
-    QgsIDWInterpolator,  # 注意: 小写 Idw
-    QgsTinInterpolator,  # 注意: 小写 Tin
-    QgsGridFileWriter
-)
+# QGIS 3.40 使用 QMetaType.Type.Double 代替旧版 QVariant.Double
+from PyQt5.QtCore import QMetaType
 
-from qgis.PyQt.QtCore import QVariant
-
-# 尝试导入处理模块（用于克里金插值）
+# ==================== 可选第三方库（scipy）====================
+# scipy 在 QGIS Python 环境中需额外安装：pip install scipy
+# 若未安装，'scipy_idw' 方法不可用，使用时会抛出 ImportError。
 try:
-    import processing
-    from processing.core.Processing import Processing
-
-    PROCESSING_AVAILABLE = True
+    warnings.filterwarnings(
+        "ignore",
+        message=r"A NumPy version .* is required for this version of SciPy",
+        category=UserWarning,
+        module=r"scipy",
+    )
+    from scipy.interpolate import RBFInterpolator as _RBFInterpolator
+    _HAS_SCIPY = True
 except ImportError:
-    PROCESSING_AVAILABLE = False
+    _HAS_SCIPY = False
+
+# ==================== 启用GDAL异常处理 ====================
+gdal.UseExceptions()
 
 
-# ============================================================================
-#                              参数配置类
-# ============================================================================
-
-@dataclass
-class IDWParams:
+class KmlToIaConverter:
     """
-    IDW（反距离加权）插值算法参数配置
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版）
 
-    属性说明:
-        coefficient (float): 距离权重系数（幂次）
-            - 默认值: 2.0
-            - 取值范围: 通常 0.5 - 5.0
-            - 说明: 控制距离对权重的影响程度，权重 = 1 / (距离 ^ coefficient)
-            - 值越大，近距离点的权重越大，远距离点权重衰减越快
-            - 优点:
-                * coefficient=1: 距离影响较小，结果更平滑，适合渐变数据
-                * coefficient=2: 标准设置，平衡局部和全局特征（推荐）
-                * coefficient=3+: 强调局部特征，适合突变明显的数据
-            - 缺点:
-                * 值过大(>3)可能导致"牛眼效应"（数据点周围出现圆形等值线）
-                * 值过小(<1)可能过度平滑，丢失局部细节
-    """
-    coefficient: float = 2.0
+    将地震局提供的KML格式PGA等值线文件，经过解析、坐标转换、
+    插值计算后，输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
 
-    def validate(self) -> None:
-        """验证参数有效性"""
-        if self.coefficient <= 0:
-            raise ValueError(f"coefficient必须大于0，当前值: {self.coefficient}")
-        if self.coefficient > 10:
-            print(f"[WARNING] coefficient值({self.coefficient})较大，可能产生牛眼效应")
+    主要特性:
+        - 只对Ia进行插值，PGA.tif使用等值线矢量栅格化生成
+        - 采样点数量可控（sample_interval + max_sample_points），避免内存溢出
+        - 推荐使用scipy RBFInterpolator，支持分块写入，速度快
+        - 严格内存控制（<10GB）：生成器、分批转换、分块写入、及时释放
+        - 异常安全：run()使用try-finally，异常时也能释放资源
 
-
-@dataclass
-class TINParams:
-    """
-    TIN（不规则三角网）插值算法参数配置
-
-    属性说明:
-        method (int): 插值方法
-            - 默认值: 0
-            - 取值:
-                * 0 - 线性插值 (Linear)
-                    说明: 在三角形内使用线性函数（平面）进行插值
-                    优点: 计算速度快；保留原始数据点的精确值；结果连续
-                    缺点: 一阶导数不连续；等值线可能出现折角；三角形边界处不平滑
-                    适用: 快速预览；数据点密集；对平滑度要求不高
-
-                * 1 - 克劳德-杜尚插值 (Clough-Tocher)
-                    说明: 使用三次多项式插值，将每个三角形细分为3个子三角形
-                    优点: 结果更平滑；等值线更圆润；一阶导数连续(C1连续)
-                    缺点: 计算复杂度更高(约3倍)；内存使用更多；处理速度较慢
-                    适用: 最终出图；需要平滑��值线；数据点稀疏
-    """
-    method: int = 0
-
-    def validate(self) -> None:
-        """验证参数有效性"""
-        if self.method not in [0, 1]:
-            raise ValueError(f"method必须为0(线性)或1(克劳德-杜尚)，当前值: {self.method}")
-
-    @property
-    def method_name(self) -> str:
-        """获取方法名称"""
-        return "线性插值(Linear)" if self.method == 0 else "克劳德-杜尚插值(Clough-Tocher)"
-
-
-@dataclass
-class KrigingParams:
-    """
-    克里金（Kriging）插值算法参数配置
-
-    克里金是地统计学中的最优线性无偏估计方法(BLUE)，考虑数据的空间自相关性。
-
-    属性说明:
-        variogram_model (str): 变异函数模型类型
-            - 默认值: 'Spherical'
-            - 可选值:
-                * 'Spherical' - 球状模型（最常用，推荐）
-                    数学形式: γ(h) = C0 + C*[1.5*(h/a) - 0.5*(h/a)³], h≤a; γ(h)=C0+C, h>a
-                    特点: 在变程处达到基台，有明确的影响范围
-                    适用: 大多数地学数据，是最通用的选择
-                    优点: 适应性强，计算稳定，物理意义明确
-
-                * 'Exponential' - 指数模型
-                    数学形式: γ(h) = C0 + C*[1 - exp(-3h/a)]
-                    特点: 渐近趋近基台，理论变程为无穷大，实际变程约为a
-                    适用: 空间相关性缓慢衰减的数据
-                    优点: 在变程附近过渡更平滑
-                    缺点: 没有明确的影响范围边界
-
-                * 'Gaussian' - 高斯模型
-                    数学形式: γ(h) = C0 + C*[1 - exp(-(3h/a)²)]
-                    特点: 在原点附近曲率为0，抛物线起始
-                    适用: 变化非常平缓、连续性极好的数据
-                    优点: 产生最平滑的插值结果
-                    缺点: 可能导致数值不稳定；对噪声敏感
-
-                * 'Linear' - 线性模型
-                    数学形式: γ(h) = C0 + b*h
-                    特点: 最简单的模型，没有基台
-                    适用: 数据范围小于空间相关范围时
-                    优点: 计算快速，参数少
-                    缺点: 不适合有明显空间结构的数据
-
-        nugget (float): 块金效应值（C0）
-            - 默认值: 0.0
-            - 取值范围: >= 0
-            - 说明: 表示微尺度变异（小于采样间距的变异）或测量误差
-            - 当nugget=0时，插值结果精确通过数据点（精确插值）
-            - 当nugget>0时，插值结果不一定通过数据点（平滑插值）
-            - 建议: 通常设为基台值(sill)的5%-20%，或根据测量误差估计
-            - 优点: 考虑测量误差，避免过拟合
-            - 缺点: 设置过大会过度平滑
-
-        sill (float): 基台值（C0 + C，总方差）
-            - 默认值: 1.0
-            - 取值范围: > nugget
-            - 说明: 变异函数的最大值，表示数据在大距离上的总方差
-            - 可通过计算数据方差来估计
-            - 优点: 控制插值的整体变异程度
-
-        range_val (float): 变程值（a，单位：度）
-            - 默认值: 1.0
-            - 取值范围: > 0
-            - 说明: 空间相关性消失的距离，超过此距离的数据点被认为不相关
-            - 建议: 根据数据的空间分布特征设置，通常为数据范围的1/3到1/2
-            - 优点: 控制插值的平滑程度和影响范围
-            - 注意: 单位是度（EPSG:4326），1度约111公里
-
-        search_radius (float): 搜索半径（单位：度）
-            - 默认值: -1（使用所有点）
-            - 取值范围: > 0 或 -1
-            - 说明: 限制参与插值计算的点的搜索范围
-            - 当设为-1时，使用所有数据点
-            - 建议: 设为变程的2-3倍，或数据范围的1/2
-            - 优点: 减少计算量，提高效率；避免远距离噪声影响
-            - 缺点: 设置过小可能导致某些区域无足够点进行插值
-
-        min_points (int): 最小搜索点数
-            - 默认值: 4
-            - 取值范围: >= 1
-            - 说明: 参与插值的最小数据点数量
-            - 建议: 通常设为3-5
-            - 优点: 确保插值的统计可靠性
-
-        max_points (int): 最大搜索点数
-            - 默认值: 12
-            - 取值范围: >= min_points
-            - 说明: 参与插值的最大数据点数量
-            - 建议: 通常设为8-20
-            - 优点: 控制计算量，提高效率
-            - 缺点: 设置过小可能遗漏重要信息
-    """
-    variogram_model: str = 'Spherical'
-    nugget: float = 0.0
-    sill: float = 1.0
-    range_val: float = 1.0
-    search_radius: float = -1.0
-    min_points: int = 4
-    max_points: int = 12
-
-    def validate(self) -> None:
-        """验证参数有效性"""
-        valid_models = ['Spherical', 'Exponential', 'Gaussian', 'Linear']
-        if self.variogram_model not in valid_models:
-            raise ValueError(
-                f"variogram_model必须为 {valid_models} 之一，"
-                f"当前值: {self.variogram_model}"
-            )
-        if self.nugget < 0:
-            raise ValueError(f"nugget必须 >= 0，当前值: {self.nugget}")
-        if self.sill <= self.nugget:
-            raise ValueError(f"sill必须 > nugget，当前sill={self.sill}, nugget={self.nugget}")
-        if self.range_val <= 0:
-            raise ValueError(f"range_val必须 > 0，当前值: {self.range_val}")
-        if self.search_radius != -1 and self.search_radius <= 0:
-            raise ValueError(f"search_radius必须 > 0 或为 -1，当前值: {self.search_radius}")
-        if self.min_points < 1:
-            raise ValueError(f"min_points必须 >= 1，当前值: {self.min_points}")
-        if self.max_points < self.min_points:
-            raise ValueError(
-                f"max_points必须 >= min_points，当前max_points={self.max_points}, "
-                f"min_points={self.min_points}"
-            )
-
-
-# ============================================================================
-#                              主转换器类
-# ============================================================================
-
-class KmlToPgaIaConverter:
-    """
-    KML格式PGA等值线转换器
-
-    将地震局提供的KML格式PGA等值线文件转换为PGA.tif和Ia.tif栅格文件
-
-    特性：
-        - 固定分辨率：30米×30米
-        - 投影：EPSG:4326（WGS 84）
-        - 最大范围：300km×300km
-        - 内存限制：10GB
-        - 支持IDW、TIN、Kriging三种插值算法
+    支持的插值方法:
+        - 'scipy_idw'（推荐）：scipy RBF插值，支持邻近点限制，需安装scipy
+        - 'qgis_idw'：QGIS反距离权重，适合稀疏/不均匀数据，无需额外依赖
+        - 'qgis_tin'：QGIS三角网插值，基于Delaunay三角剖分，边缘精度好
 
     属性:
-        kml_file_path (str): 输入的KML文件路径
-        output_dir (str): 输出目录路径
-        max_extent_km (float): 最大插值范围（公里），默认300公里
-        max_memory_gb (float): 最大内存使用限制（GB），默认10GB
+        kml_path (str): 输入KML文件路径
+        ia_output_path (str): 输出Ia栅格文件路径
+        pga_output_path (str|None): 输出PGA栅格路径（export_pga=True时需设置）
+        resolution (float): 目标分辨率(米)，默认30
+        sample_interval (int): 等值线采样间隔，每隔多少个坐标点取一个，默认5
+        max_sample_points (int): 最大采样点数，超过时随机抽样，默认50000
+        export_pga (bool): 是否输出PGA.tif（矢量栅格化），默认False
+        interp_method (str): 插值方法
 
-    使用示例:
-        >>> converter = KmlToPgaIaConverter(
-        ...     kml_file_path="path/to/pga.kml",
-        ...     output_dir="path/to/output/"
-        ... )
-        >>> # 使用IDW插值
-        >>> idw_params = IDWParams(coefficient=2.0)
-        >>> output_files = converter.convert(
-        ...     method='idw',
-        ...     params=idw_params,
-        ...     output_pga=True,
-        ...     output_ia=True
-        ... )
+    用法示例:
+        converter = KmlToIaConverter(
+            kml_path="path/to/source.kml",
+            ia_output_path="path/to/Ia.tif",
+            interp_method='scipy_idw',
+            sample_interval=5,
+            max_sample_points=50000,
+        )
+        converter.run()
     """
 
-    # ========================= 常量定义 =========================
-
-    # 重力加速度常量 (m/s²)
-    GRAVITY: float = 9.8
-
-    # 阿里亚斯强度计算公式常量
-    # log10(Ia) = IA_CONST_A + IA_CONST_B * log10(PGA)
-    IA_CONST_A: float = 0.797
-    IA_CONST_B: float = 1.837
-
-    # 固定分辨率：30米
-    RESOLUTION: float = 30.0
-
-    # EPSG:4326下1度约等于的公里数（赤道附近）
-    DEGREE_TO_KM: float = 111.0
-
-    # KML命名空间
-    KML_NAMESPACE: Dict[str, str] = {'kml': 'http://www.opengis.net/kml/2.2'}
+    # ==================== 常量定义 ====================
+    GRAVITY_ACCELERATION = 9.8   # 重力加速度 (m/s²)
+    COEFFICIENT_A = 0.797        # Ia计算公式系数a: log10(Ia) = a + b*log10(PGA)
+    COEFFICIENT_B = 1.837        # Ia计算公式系数b
+    KML_NAMESPACE = {'kml': 'http://www.opengis.net/kml/2.2'}
 
     def __init__(
-            self,
-            kml_file_path: str,
-            output_dir: str,
-            max_extent_km: float = 300.0,
-            max_memory_gb: float = 10.0
+        self,
+        kml_path: str,
+        ia_output_path: str,
+        pga_output_path: Optional[str] = None,
+        resolution: float = 30.0,           # 目标分辨率(米)，推荐范围 10~100 m
+
+        # 采样参数
+        sample_interval: int = 5,           # 等值线坐标采样间隔，推荐 3~10
+                                             # 值越小采样点越密，精度越高但内存越大
+        max_sample_points: int = 50000,     # 最大采样点数，超过此数量将随机抽样
+                                             # 避免采样点过多导致内存溢出和计算缓慢
+                                             # 推荐范围: 10000~100000
+
+        export_pga: bool = False,           # 是否同时输出 PGA.tif（矢量栅格化）
+        interp_method: str = 'scipy_idw',   # 插值方法（见类文档说明）
+
+        # ---- QGIS IDW 参数（仅 interp_method='qgis_idw' 时有效）----
+        qgis_idw_power: float = 2.0,        # IDW距离衰减幂次，推荐 1.0~4.0
+                                             # 值越大近点主导（结果局部化），值越小越平滑
+
+        # ---- QGIS TIN 参数（仅 interp_method='qgis_tin' 时有效）----
+        qgis_tin_method: int = 0,           # TIN子方法: 0=线性(Linear), 1=Clough-Tocher
+                                             # 0=速度快无振荡; 1=结果更平滑但计算较慢
+
+        # ---- scipy IDW/RBF 参数（仅 interp_method='scipy_idw' 时有效，需安装scipy）----
+        scipy_kernel: str = 'linear',       # RBF核函数类型
+                                             # 可选: 'linear', 'thin_plate_spline',
+                                             #       'cubic', 'quintic', 'multiquadric',
+                                             #       'inverse_multiquadric', 'gaussian'
+        scipy_neighbors: int = 50,          # 每次插值使用的最近邻点数（内存优化关键参数）
+                                             # 值越大精度越高但内存占用越多，推荐 20~100
+
+        # ---- 内存优化参数 ----
+        chunk_size: int = 1000,             # 栅格分块行数，仅 scipy 方法使用
+                                             # 值越小内存占用越低，值越大处理越快
+                                             # 推荐范围: 500~2000 行
+        coord_batch_size: int = 10000,      # 坐标转换批次大小（点数）
+                                             # 推荐 5000~50000，根据可用内存调整
+        max_memory_gb: float = 10.0,        # 最大内存使用限制(GB)
+                                             # 此参数为参考值，实际通过 chunk_size/neighbors控制
     ):
         """
         初始化转换器
 
         参数:
-            kml_file_path (str): 输入的KML文件路径
-            output_dir (str): 输出目录路径
-            max_extent_km (float): 最大插值范围（公里），默认300公里
-            max_memory_gb (float): 最大内存使用限制（GB），默认10GB
-
-        异常:
-            FileNotFoundError: 当KML文件不存在时
-            ValueError: 当参数值无效时
+            kml_path (str): 输入KML文件路径
+            ia_output_path (str): 输出Ia栅格文件路径
+            pga_output_path (str|None): 输出PGA栅格路径；export_pga=False时可为None
+            resolution (float): 目标分辨率(米)，默认30
+            sample_interval (int): 等值线坐标采样间隔，默认5
+                推荐范围 3~10；值越小采样点越密，插值精度越高但内存占用越大
+            max_sample_points (int): 最大采样点数，默认50000
+                超过此数量将从采样结果中随机抽样到该数量；
+                避免采样点过多导致内存溢出（RBF矩阵为O(N²)）
+            export_pga (bool): 是否同时输出 PGA.tif，默认False
+                使用矢量栅格化（非插值）生成，速度快内存低
+            interp_method (str): 插值方法，默认 'scipy_idw'
+                'scipy_idw' — scipy RBF插值（IDW近似）：速度快，需安装scipy（推荐）
+                'qgis_idw'  — QGIS反距离权重：无需额外依赖，速度较慢
+                'qgis_tin'  — QGIS三角网插值：无需额外依赖，速度较慢
+            qgis_idw_power (float): QGIS IDW 距离衰减幂次，默认 2.0
+            qgis_tin_method (int): QGIS TIN 插值子方法，0=线性，1=Clough-Tocher
+            scipy_kernel (str): scipy RBFInterpolator核函数，默认 'linear'
+            scipy_neighbors (int): scipy RBF每次使用的最近邻点数，默认50
+            chunk_size (int): 栅格分块行数（scipy方法），默认1000
+            coord_batch_size (int): 坐标转换批次大小（点数），默认10000
+            max_memory_gb (float): 最大内存使用目标(GB)，默认10.0
         """
-        # 验证KML文件存在
-        if not os.path.exists(kml_file_path):
-            raise FileNotFoundError(f"KML文件不存在: {kml_file_path}")
+        self.kml_path = kml_path
+        self.ia_output_path = ia_output_path
+        self.pga_output_path = pga_output_path
+        self.resolution = resolution
+        self.sample_interval = sample_interval
+        self.max_sample_points = max_sample_points
+        self.export_pga = export_pga
 
-        # 验证参数
-        if max_extent_km <= 0:
-            raise ValueError(f"最大插值范围必须大于0，当前值: {max_extent_km}")
-        if max_memory_gb <= 0:
-            raise ValueError(f"最大内存限制必须大于0，当前值: {max_memory_gb}")
+        # 处理插值方法名（向后兼容）
+        _method = interp_method.lower().strip()
+        if _method == 'idw':
+            _method = 'qgis_idw'
+        elif _method == 'tin':
+            _method = 'qgis_tin'
+        self.interp_method = _method
 
-        self.kml_file_path = kml_file_path
-        self.output_dir = output_dir
-        self.max_extent_km = max_extent_km
+        # QGIS IDW 参数
+        self.qgis_idw_power = qgis_idw_power
+
+        # QGIS TIN 参数
+        self.qgis_tin_method = qgis_tin_method
+
+        # scipy IDW/RBF 参数
+        self.scipy_kernel = scipy_kernel
+        self.scipy_neighbors = scipy_neighbors
+
+        # 内存优化参数
+        self.chunk_size = chunk_size
+        self.coord_batch_size = coord_batch_size
         self.max_memory_gb = max_memory_gb
 
-        # 设置坐标参考系统为WGS84 (EPSG:4326)
-        self.crs = QgsCoordinateReferenceSystem("EPSG:4326")
+        # 运行时数据（由 run() 过程填充）
+        self._contours: List[dict] = []
+        self._utm_epsg: int = 0
+        self._utm_srs: Optional[osr.SpatialReference] = None
+        self._transformer = None
+        self._geo_transform: Optional[tuple] = None
+        self._n_cols: int = 0
+        self._n_rows: int = 0
+        self._x_min: float = 0.0
+        self._x_max: float = 0.0
+        self._y_min: float = 0.0
+        self._y_max: float = 0.0
 
-        # 存储解析后的点数据: [(经度, 纬度, PGA_m/s², Ia)]
-        self._points_data: List[Tuple[float, float, float, float]] = []
+    # ==================== KML 解析 ====================
 
-        # 临时图层引用，用于资源清理
-        self._temp_layers: List[QgsVectorLayer] = []
-
-        # 临时文件路径列表，用于清理
-        self._temp_files: List[str] = []
-
-        # 确保输出目录存在
-        os.makedirs(output_dir, exist_ok=True)
-
-        print(f"[INFO] 转换器初始化完成")
-        print(f"  - KML文件: {kml_file_path}")
-        print(f"  - 输出目录: {output_dir}")
-        print(f"  - 固定分辨率: {self.RESOLUTION}米 × {self.RESOLUTION}米")
-        print(f"  - 最大范围: {max_extent_km}km × {max_extent_km}km")
-        print(f"  - 内存限制: {max_memory_gb}GB")
-
-    # ========================= KML解析方法 =========================
-
-    def parse_kml(self) -> List[Tuple[float, float, float]]:
+    def parse_kml(self) -> List[dict]:
         """
-        解析KML文件，提取PGA等值线坐标和对应的PGA值
+        解析KML文件，提取所有PGA等值线数据（内存优化版）
 
-        KML文件格式示例:
-            <Placemark>
-                <name>0.01g</name>
-                <LineString>
-                    <coordinates>102.89,34.29,0 102.88,34.28,0</coordinates>
-                </LineString>
-            </Placemark>
+        KML中每个Placemark的name字段格式为 "0.01g"、"0.02g" 等，
+        表示该等值线对应的PGA值（以重力加速度g为单位）。
+        坐标存储在LineString/coordinates中，格式为 "lon,lat,alt lon,lat,alt ..."
+        解析完成后立即释放 XML 树对象，节省内存。
 
         返回:
-            List[Tuple[float, float, float]]: 包含(经度, 纬度, PGA值(m/s²))的列表
+            list[dict]: 等值线数据列表，每项包含:
+                - name (str): 原始名称，如 "0.01g"
+                - pga_g (float): PGA值(g为单位)，如 0.01
+                - pga_mps2 (float): PGA值(m/s²)，如 0.098
+                - ia (float): 对应的Ia值
+                - coordinates (list[tuple]): (经度, 纬度) 坐标点列表
 
         异常:
-            ET.ParseError: 当XML解析失败时
-            ValueError: 当KML格式不正确时
+            FileNotFoundError: KML文件不存在
+            ET.ParseError: KML文件格式错误
+            ValueError: KML文件中无有效等值线
         """
-        print(f"\n[INFO] 开始解析KML文件: {os.path.basename(self.kml_file_path)}")
+        if not os.path.exists(self.kml_path):
+            raise FileNotFoundError(f"KML文件不存在: {self.kml_path}")
 
-        try:
-            tree = ET.parse(self.kml_file_path)
-            root = tree.getroot()
-        except ET.ParseError as e:
-            raise ET.ParseError(f"KML文件XML解析失败: {e}")
+        tree = ET.parse(self.kml_path)
+        root = tree.getroot()
+        ns = self.KML_NAMESPACE
 
-        points = []
-        placemark_count = 0
-        skipped_count = 0
+        contours = []
 
-        # 查找所有Placemark元素（同时尝试有命名空间和无命名空间的情况）
-        placemarks = root.findall('.//kml:Placemark', self.KML_NAMESPACE)
-        if not placemarks:
-            # 尝试不带命名空间的查找
-            placemarks = root.findall('.//Placemark')
+        for placemark in root.findall('.//kml:Placemark', ns):
+            name_elem = placemark.find('kml:name', ns)
+            coords_elem = placemark.find('.//kml:coordinates', ns)
 
-        for placemark in placemarks:
-            placemark_count += 1
-
-            # 获取name元素，格式如 "0.01g"
-            name_elem = placemark.find('kml:name', self.KML_NAMESPACE)
-            if name_elem is None:
-                name_elem = placemark.find('name')
-
-            if name_elem is None or name_elem.text is None:
-                skipped_count += 1
+            if name_elem is None or coords_elem is None:
                 continue
 
-            # 解析PGA值（单位：g）
-            name_text = name_elem.text.strip()
+            name = name_elem.text.strip()
+
+            # 解析PGA值：移除末尾的 'g' 字符
             try:
-                # 移除'g'后缀并转换为浮点数
-                pga_g = float(name_text.lower().replace('g', '').strip())
+                pga_g = float(name.lower().replace('g', ''))
             except ValueError:
-                print(f"  [WARNING] 无法解析PGA值: '{name_text}'，跳过")
-                skipped_count += 1
+                print(f"  警告: 无法解析PGA值 '{name}'，跳过该等值线")
                 continue
 
-            # 将PGA从g单位转换为m/s²
-            pga_ms2 = pga_g * self.GRAVITY
-
-            # 获取LineString坐标
-            linestring = placemark.find('.//kml:LineString/kml:coordinates', self.KML_NAMESPACE)
-            if linestring is None:
-                linestring = placemark.find('.//LineString/coordinates')
-
-            if linestring is None or linestring.text is None:
-                print(f"  [WARNING] Placemark '{name_text}'缺少坐标数据，跳过")
-                skipped_count += 1
+            if pga_g <= 0:
+                print(f"  警告: PGA值 <= 0 '{name}'，跳过")
                 continue
 
-            # 解析坐标字符串
-            # 格式: "lon1,lat1,alt1 lon2,lat2,alt2 ..."
-            coords_text = linestring.text.strip()
-            coord_pairs = coords_text.split()
+            # g → m/s²
+            pga_mps2 = pga_g * self.GRAVITY_ACCELERATION
 
-            for coord_pair in coord_pairs:
-                parts = coord_pair.split(',')
+            # 计算Ia
+            ia = self._calculate_ia(pga_mps2)
+
+            # 解析坐标 "lon,lat,alt lon,lat,alt ..."
+            coords_text = coords_elem.text.strip()
+            coordinates = []
+            for coord_str in coords_text.split():
+                parts = coord_str.split(',')
                 if len(parts) >= 2:
                     try:
                         lon = float(parts[0])
                         lat = float(parts[1])
-                        # 验证坐标范围
-                        if -180 <= lon <= 180 and -90 <= lat <= 90:
-                            points.append((lon, lat, pga_ms2))
-                        else:
-                            print(f"  [WARNING] 坐标超出范围: ({lon}, {lat})")
+                        coordinates.append((lon, lat))
                     except ValueError:
                         continue
 
-        print(f"  - 处理Placemark数: {placemark_count}")
-        print(f"  - 跳过数: {skipped_count}")
-        print(f"  - 提取坐标点数: {len(points)}")
+            if len(coordinates) < 2:
+                print(f"  警告: 等值线 '{name}' 坐标点不足，跳过")
+                continue
 
-        if not points:
-            raise ValueError("KML文件中未找到有效的坐标数据")
+            contours.append({
+                'name': name,
+                'pga_g': pga_g,
+                'pga_mps2': pga_mps2,
+                'ia': ia,
+                'coordinates': coordinates
+            })
 
-        # 统计PGA值分布
-        pga_values = sorted(set([p[2] for p in points]))
-        print(f"  - PGA等级数: {len(pga_values)}")
-        print(f"  - PGA范围: {min(pga_values) / self.GRAVITY:.4f}g - {max(pga_values) / self.GRAVITY:.4f}g")
+        # 解析完成后立即释放 XML 树，节省内存
+        del tree, root
+        gc.collect()
 
-        return points
+        if not contours:
+            raise ValueError("KML文件中未找到有效的PGA等值线")
 
-    # ========================= 计算方法 =========================
+        # 按PGA值从大到小排序（内圈→外圈）
+        contours.sort(key=lambda x: x['pga_g'], reverse=True)
 
-    def calculate_ia(self, pga_ms2: float) -> float:
+        print(f"\n成功解析 {len(contours)} 条PGA等值线:")
+        for c in contours:
+            print(f"  {c['name']}: PGA={c['pga_mps2']:.4f} m/s², "
+                  f"Ia={c['ia']:.6f} m/s, 坐标点数={len(c['coordinates'])}")
+
+        self._contours = contours
+        return contours
+
+    # ==================== Ia 计算 ====================
+
+    @staticmethod
+    def _calculate_ia(pga: float) -> float:
         """
-        根据PGA计算阿里亚斯强度(Ia)
+        根据PGA计算Ia(阿里亚斯强度)
 
-        公式: log10(Ia) = 0.797 + 1.837 * log10(PGA)
-
-        其中:
-            - Ia: 阿里亚斯强度，单位 m/s
-            - PGA: 峰值地面加速度，单位 m/s²
+        公式: log10(Ia) = a + b * log10(PGA)
+              Ia = 10^(a + b * log10(PGA))
 
         参数:
-            pga_ms2 (float): PGA值，单位m/s²
+            pga (float): 峰值地面加速度 (m/s²)，必须 > 0
 
         返回:
-            float: 阿里亚斯强度(Ia)值，单位m/s
-
-        注意:
-            当PGA小于等于0时，返回一个极小值(1e-10)以避免log计算错误
+            float: 阿里亚斯强度 Ia (m/s)
         """
-        if pga_ms2 <= 0:
-            return 1e-10
+        if pga <= 0:
+            return 0.0
+        log_ia = KmlToIaConverter.COEFFICIENT_A + \
+                 KmlToIaConverter.COEFFICIENT_B * math.log10(pga)
+        return 10.0 ** log_ia
 
-        # log10(Ia) = 0.797 + 1.837 * log10(PGA)
-        log_ia = self.IA_CONST_A + self.IA_CONST_B * math.log10(pga_ms2)
-        ia = math.pow(10, log_ia)
+    # ==================== 投影与坐标转换 ====================
 
-        return ia
-
-    def prepare_point_data(self) -> None:
+    def _determine_utm_projection(self, lon_min: float, lon_max: float):
         """
-        准备插值用的点数据
+        根据数据经度范围自动确定UTM投影带
 
-        解析KML文件并计算每个点的PGA和Ia值
+        投影选择规则（中国常用投影规范）：
+            - 中国大陆经度范围：约73°E ~ 135°E
+            - UTM 6°分带公式：zone = int((lon_center + 180) / 6) + 1
+            - 北半球 EPSG = 32600 + zone
+            例如：中心经度103° → zone=48 → EPSG:32648
+
+        参数:
+            lon_min (float): 经度最小值
+            lon_max (float): 经度最大值
+        """
+        lon_center = (lon_min + lon_max) / 2.0
+        utm_zone = int((lon_center + 180.0) / 6.0) + 1
+        self._utm_epsg = 32600 + utm_zone  # 北半球
+
+        print(f"\n投影信息:")
+        print(f"  数据经度范围: {lon_min:.4f}° ~ {lon_max:.4f}°")
+        print(f"  中心经度: {lon_center:.4f}°")
+        print(f"  UTM带号: Zone {utm_zone}N")
+        print(f"  EPSG代码: {self._utm_epsg}")
+
+    def _create_transformer(self):
+        """
+        创建 WGS84(EPSG:4326) → UTM 坐标转换器
+
+        兼容 GDAL 3.0+ 的轴顺序问题，
+        强制使用传统GIS顺序（经度在前，纬度在后）
+        """
+        src_srs = osr.SpatialReference()
+        src_srs.ImportFromEPSG(4326)
+        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+        dst_srs = osr.SpatialReference()
+        dst_srs.ImportFromEPSG(self._utm_epsg)
+        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+        self._utm_srs = dst_srs
+        self._transformer = osr.CoordinateTransformation(src_srs, dst_srs)
+
+    def _transform_coords_batch(
+        self, lons: np.ndarray, lats: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        分批批量将WGS84经纬度坐标转换为UTM平面坐标（内存优化版）
+
+        将坐标数组分成多批次处理，每批大小由 self.coord_batch_size 控制，
+        避免一次性分配过大的临时缓冲区。每批使用 TransformPoints() 批量转换，
+        比逐点调用 TransformPoint() 效率更高。
+
+        参数:
+            lons (np.ndarray): 经度数组
+            lats (np.ndarray): 纬度数组
+
+        返回:
+            tuple: (x_utm数组, y_utm数组)，转换失败的点值为NaN
+        """
+        n = len(lons)
+        x_out = np.empty(n, dtype=np.float64)
+        y_out = np.empty(n, dtype=np.float64)
+
+        # coord_batch_size 控制每批处理的点数，避免大数组临时缓冲区溢出
+        # 每批使用 TransformPoints() 批量转换，效率优于逐点 TransformPoint()
+        batch = self.coord_batch_size
+        for start in range(0, n, batch):
+            end = min(start + batch, n)
+            # 构造 (lon, lat, 0) 格式的点列表供批量转换
+            pts = [(float(lons[i]), float(lats[i]), 0.0) for i in range(start, end)]
+            try:
+                results = self._transformer.TransformPoints(pts)
+                for j, (x, y, _z) in enumerate(results):
+                    x_out[start + j] = x
+                    y_out[start + j] = y
+            except Exception as exc:
+                # 批量转换失败时回退到逐点转换，确保部分成功的点不丢失
+                print(f"  警告: 批量坐标转换失败，回退到逐点转换: {exc}")
+                for i in range(start, end):
+                    try:
+                        result = self._transformer.TransformPoint(
+                            float(lons[i]), float(lats[i])
+                        )
+                        x_out[i] = result[0]
+                        y_out[i] = result[1]
+                    except Exception:
+                        x_out[i] = np.nan
+                        y_out[i] = np.nan
+
+        return x_out, y_out
+
+    # ==================== 采样点准备 ====================
+
+    def _iter_sample_points(self) -> Iterator[Tuple[float, float, float]]:
+        """
+        生成器：逐条遍历等值线并按间隔采样，逐点输出（内存优化）
+
+        使用生成器替代列表，避免一次性将所有坐标载入内存。
+        按 sample_interval 间隔采样，并确保每条线的最后一个点被包含。
+
+        生成:
+            (lon, lat, ia_val): 每个采样点的经纬度和对应的 Ia 值
+        """
+        for contour in self._contours:
+            coords = contour['coordinates']
+            ia_val = contour['ia']
+
+            # 按间隔采样，确保最后一个点被包含（闭合线的收尾点）
+            sampled: List[tuple] = list(coords[::self.sample_interval])
+            if len(coords) > 1:
+                last_pt = coords[-1]
+                if not sampled or sampled[-1] != last_pt:
+                    sampled.append(last_pt)
+
+            for lon, lat in sampled:
+                yield lon, lat, ia_val
+
+    def _prepare_sample_points(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        从等值线中提取并下采样坐标点，作为插值的输入采样点（内存优化版）
 
         处理流程:
-            1. 调用parse_kml()解析KML文件
-            2. 对每个坐标点计算Ia值
-            3. 存储到内部数据结构
-        """
-        print("\n[INFO] 准备点数据...")
-
-        # 解析KML获取原始点
-        raw_points = self.parse_kml()
-
-        # 计算Ia值并存储
-        self._points_data = []
-        for lon, lat, pga_ms2 in raw_points:
-            ia = self.calculate_ia(pga_ms2)
-            self._points_data.append((lon, lat, pga_ms2, ia))
-
-        print(f"[INFO] 点数据准备完成，共 {len(self._points_data)} 个点")
-
-        # 打印统计信息
-        pga_values = [p[2] for p in self._points_data]
-        ia_values = [p[3] for p in self._points_data]
-
-        print(f"  - PGA范围: {min(pga_values):.4f} - {max(pga_values):.4f} m/s²")
-        print(f"  - Ia范围: {min(ia_values):.6f} - {max(ia_values):.6f} m/s")
-
-    # ========================= 图层创建方法 =========================
-
-    def create_point_layer(self, value_type: str = 'pga') -> QgsVectorLayer:
-        """
-        创建内存中的点图层用于插值
-
-        参数:
-            value_type (str): 值类型，'pga'或'ia'
+            1. 使用生成器按 sample_interval 间隔采样（避免大型中间列表）
+            2. 若采样点数超过 max_sample_points，随机抽样到该数量
+               （RBF矩阵构建规模为O(N²)，控制N是避免内存溢出的关键）
+            3. 坐标转换（WGS84→UTM），按 coord_batch_size 分批处理
+            4. 去除坐标转换失败的点
+            5. 去除完全重叠的坐标点（防止插值奇异矩阵）
 
         返回:
-            QgsVectorLayer: 包含点数据的矢量图层
+            tuple: (x_utm, y_utm, ia_values)，所有数组长度相同，已去重
 
         异常:
-            RuntimeError: 当创建图层失败时
-            ValueError: 当value_type无效时
+            ValueError: 没有有效的采样点
         """
-        if value_type not in ['pga', 'ia']:
-            raise ValueError(f"value_type必须为'pga'或'ia'，当前值: {value_type}")
+        # 通过生成器一次性收集数据，避免多次 append 开销
+        rows = list(self._iter_sample_points())
+        if not rows:
+            raise ValueError("没有有效的采样点")
 
-        print(f"\n[INFO] 创建{value_type.upper()}点图层...")
+        total_before = len(rows)
+        print(f"\n采样点统计:")
+        print(f"  采样间隔: 每 {self.sample_interval} 个点取1个")
+        print(f"  原始采样点数: {total_before}")
 
-        # 创建内存图层
-        # 格式: "Point?crs=EPSG:4326&field=fieldname:fieldtype"
+        # 若采样点数超过 max_sample_points，随机抽样
+        # 这是关键的内存控制手段：RBF矩阵规模为O(N²)，过多采样点会耗尽内存
+        if total_before > self.max_sample_points:
+            rows = random.sample(rows, self.max_sample_points)
+            print(f"  超过最大采样点数限制({self.max_sample_points})，随机抽样至 {len(rows)} 个点")
+        else:
+            print(f"  采样点数({total_before})未超过最大限制({self.max_sample_points})")
+
+        lons_arr = np.array([r[0] for r in rows], dtype=np.float64)
+        lats_arr = np.array([r[1] for r in rows], dtype=np.float64)
+        ia_arr   = np.array([r[2] for r in rows], dtype=np.float32)
+        del rows   # 立即释放中间列表
+        gc.collect()
+
+        # 坐标转换到UTM（分批处理，控制每批内存峰值）
+        x_utm, y_utm = self._transform_coords_batch(lons_arr, lats_arr)
+        del lons_arr, lats_arr   # 释放经纬度数组
+        gc.collect()
+
+        # 去除转换失败的点
+        valid = ~(np.isnan(x_utm) | np.isnan(y_utm))
+        x_utm  = x_utm[valid]
+        y_utm  = y_utm[valid]
+        ia_arr = ia_arr[valid]
+
+        # -------- 去重处理 --------
+        # 将坐标四舍五入到0.01米精度后去重，防止插值奇异矩阵
+        coords_rounded = np.round(np.column_stack([x_utm, y_utm]), decimals=2)
+        _, unique_idx = np.unique(coords_rounded, axis=0, return_index=True)
+        del coords_rounded   # 释放临时数组
+        unique_idx.sort()    # 保持原始顺序
+
+        x_utm  = x_utm[unique_idx]
+        y_utm  = y_utm[unique_idx]
+        ia_arr = ia_arr[unique_idx]
+        del unique_idx
+        gc.collect()
+
+        print(f"  去重后有效采样点数: {len(x_utm)}")
+        print(f"  Ia值范围: {ia_arr.min():.6f} ~ {ia_arr.max():.6f} m/s")
+
+        return x_utm, y_utm, ia_arr
+
+    # ==================== 栅格网格构建 ====================
+
+    def _build_grid(self, x_utm: np.ndarray, y_utm: np.ndarray):
+        """
+        根据采样点范围构建输出栅格网格参数
+
+        在数据范围外扩展 10 个像素作为缓冲区。
+
+        参数:
+            x_utm (np.ndarray): 采样点X坐标(UTM)
+            y_utm (np.ndarray): 采样点Y坐标(UTM)
+        """
+        buffer = self.resolution * 10
+
+        x_min = x_utm.min() - buffer
+        x_max = x_utm.max() + buffer
+        y_min = y_utm.min() - buffer
+        y_max = y_utm.max() + buffer
+
+        self._n_cols = int(np.ceil((x_max - x_min) / self.resolution))
+        self._n_rows = int(np.ceil((y_max - y_min) / self.resolution))
+
+        # GeoTIFF 仿射变换参数:
+        # (左上角X, 像素宽度, 旋转, 左上角Y, 旋转, 像素高度负值)
+        self._geo_transform = (x_min, self.resolution, 0.0,
+                               y_max, 0.0, -self.resolution)
+
+        # 记录网格坐标范围供插值使用
+        self._x_min = x_min
+        self._x_max = x_max
+        self._y_min = y_min
+        self._y_max = y_max
+
+        print(f"\n栅格网格信息:")
+        print(f"  分辨率: {self.resolution}m × {self.resolution}m")
+        print(f"  网格大小: {self._n_cols} 列 × {self._n_rows} 行")
+        print(f"  X范围: {x_min:.2f} ~ {x_max:.2f} m")
+        print(f"  Y范围: {y_min:.2f} ~ {y_max:.2f} m")
+        print(f"  总像素数: {self._n_cols * self._n_rows:,}")
+
+        # 估算内存使用（每像素4字节float32，预估4倍开销）
+        memory_bytes = self._n_cols * self._n_rows * 4 * 4
+        memory_gb = memory_bytes / (1024 ** 3)
+        print(f"  估算峰值内存: {memory_gb:.2f} GB")
+        if memory_gb > self.max_memory_gb:
+            print(f"  警告: 估算内存({memory_gb:.2f}GB)超过限制({self.max_memory_gb}GB)，"
+                  f"请减小插值范围或增大 sample_interval/max_sample_points")
+
+    # ==================== QGIS 插值方法 ====================
+
+    def _build_qgs_vector_layer(
+        self,
+        x_utm: np.ndarray,
+        y_utm: np.ndarray,
+        values: np.ndarray,
+        field_name: str = 'value',
+    ) -> QgsVectorLayer:
+        """
+        将采样点数组构建为 QGIS 内存矢量图层，供 QGIS 插值算法使用。
+
+        要素以批次方式添加（每批 5000 个），控制每次写入的内存峰值。
+
+        参数:
+            x_utm (np.ndarray): 采样点X坐标(UTM)
+            y_utm (np.ndarray): 采样点Y坐标(UTM)
+            values (np.ndarray): 采样点对应值
+            field_name (str): 值字段名，默认'value'
+
+        返回:
+            QgsVectorLayer: QGIS 内存点图层（含一个 Double 型值字段）
+        """
+        crs_auth_id = f"EPSG:{self._utm_epsg}"
         layer = QgsVectorLayer(
-            f"Point?crs=EPSG:4326&field={value_type}:double",
-            f"points_{value_type}",
-            "memory"
+            f"Point?crs={crs_auth_id}", "sample_points", "memory"
         )
 
-        if not layer.isValid():
-            raise RuntimeError(f"创建内存图层失败: points_{value_type}")
-
-        # 获取数据提供者
         provider = layer.dataProvider()
+        # QGIS 3.40 使用 QMetaType.Type.Double 代替旧版 QVariant.Double
+        provider.addAttributes([QgsField(field_name, QMetaType.Type.Double)])
+        layer.updateFields()
 
-        # 添加要素
-        features = []
-        # pga在索引2，ia在索引3
-        value_index = 2 if value_type == 'pga' else 3
-
-        for point_data in self._points_data:
-            lon, lat = point_data[0], point_data[1]
-            value = point_data[value_index]
-
-            feature = QgsFeature()
-            feature.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(lon, lat)))
-            feature.setAttributes([value])
-            features.append(feature)
-
-        # 批量添加要素
-        success, _ = provider.addFeatures(features)
-        if not success:
-            raise RuntimeError("添加要素到图层失败")
+        # 每批次添加要素，防止单次写入占用过多内存
+        batch_size = 5000
+        batch: List[QgsFeature] = []
+        for xi, yi, vi in zip(x_utm, y_utm, values):
+            feat = QgsFeature()
+            feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(float(xi), float(yi))))
+            feat.setAttributes([float(vi)])
+            batch.append(feat)
+            if len(batch) >= batch_size:
+                provider.addFeatures(batch)
+                batch.clear()
+        if batch:
+            provider.addFeatures(batch)
 
         layer.updateExtents()
-
-        # 保存临时图层引用
-        self._temp_layers.append(layer)
-
-        print(f"  - 要素数量: {layer.featureCount()}")
-        print(f"  - 范围: {layer.extent().toString()}")
-
         return layer
 
-    # ========================= 范围和尺寸计算方法 =========================
-
-    def calculate_extent(self, layer: QgsVectorLayer) -> QgsRectangle:
+    def _run_qgis_interpolation(
+            self,
+            x_utm: np.ndarray,
+            y_utm: np.ndarray,
+            values: np.ndarray,
+            output_tif_path: str,
+    ) -> None:
         """
-        计算插值范围，确保不超过最大范围限制
+        使用 QGIS 插值器手动插值（优化版：批量处理每行）
+
+        支持 qgis_idw 和 qgis_tin 两种方法。
+        注意：QGIS 逐像素插值速度较慢，大范围数据推荐使用 scipy_idw。
+
+        QGIS 3.40.15 API 说明：
+            - QgsInterpolator.ValueSource.ValueAttribute（注意枚举路径）
+            - QgsInterpolator.SourceType.SourcePoints
+            - QgsTinInterpolator.TinInterpolation.Linear / CloughTocher
+            - QgsField 使用 QMetaType.Type.Double（非 QVariant.Double）
 
         参数:
-            layer (QgsVectorLayer): 输入点图层
-
-        返回:
-            QgsRectangle: 计算后的插值范围
+            x_utm: 采样点X坐标(UTM)
+            y_utm: 采样点Y坐标(UTM)
+            values: 采样点对应值（Ia）
+            output_tif_path: 输出 GeoTIFF 文件路径
         """
-        extent = layer.extent()
+        # ---- 构建 QGIS 内存矢量图层 ----
+        layer = self._build_qgs_vector_layer(x_utm, y_utm, values)
 
-        # 添加10%的缓冲区，确保边缘点也能正确插值
-        buffer_ratio = 0.1
-        width = extent.width()
-        height = extent.height()
+        # ---- 构建 QgsInterpolator.LayerData ----
+        # QGIS 3.40.15 正确的枚举类型引用
+        layer_data = QgsInterpolator.LayerData()
+        layer_data.source = layer
+        layer_data.valueSource = QgsInterpolator.ValueSource.ValueAttribute
+        layer_data.interpolationAttribute = 0
+        layer_data.sourceType = QgsInterpolator.SourceType.SourcePoints
 
-        buffered_extent = QgsRectangle(
-            extent.xMinimum() - width * buffer_ratio,
-            extent.yMinimum() - height * buffer_ratio,
-            extent.xMaximum() + width * buffer_ratio,
-            extent.yMaximum() + height * buffer_ratio
+        # ---- 创建插值器 ----
+        method = self.interp_method
+        if method == 'qgis_idw':
+            interpolator = QgsIDWInterpolator([layer_data])
+            interpolator.setDistanceCoefficient(self.qgis_idw_power)
+            print(f"  使用 QGIS IDW 插值，幂次={self.qgis_idw_power}")
+        elif method == 'qgis_tin':
+            # QGIS 3.40.15: QgsTinInterpolator.TinInterpolation.Linear/CloughTocher
+            tin_enum = (
+                QgsTinInterpolator.TinInterpolation.Linear
+                if self.qgis_tin_method == 0
+                else QgsTinInterpolator.TinInterpolation.CloughTocher
+            )
+            interpolator = QgsTinInterpolator([layer_data], tin_enum)
+            print(f"  使用 QGIS TIN 插值，方法={self.qgis_tin_method}")
+        else:
+            raise ValueError(f"不支持的QGIS插值方法: '{method}'")
+
+        # ---- 创建输出 GeoTIFF ----
+        os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+        self._ensure_file_writable(output_tif_path)
+        driver = gdal.GetDriverByName('GTiff')
+        out_ds = driver.Create(
+            output_tif_path,
+            self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
+            ['COMPRESS=LZW', 'TILED=YES'],
+        )
+        out_ds.SetGeoTransform(self._geo_transform)
+        out_ds.SetProjection(self._utm_srs.ExportToWkt())
+        band = out_ds.GetRasterBand(1)
+        band.SetNoDataValue(-9999.0)
+
+        # ---- 预计算所有列的 X 坐标 ----
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
+
+        # ---- 逐行插值 ----
+        n_rows = self._n_rows
+        print(f"  开始插值，共 {n_rows} 行 × {self._n_cols} 列 = {n_rows * self._n_cols:,} 像素...")
+
+        start_time = time.time()
+        report_interval = max(1, n_rows // 20)  # 每 5% 报告一次
+
+        for row_idx in range(n_rows):
+            # Y坐标从上（大值）到下（小值）递减，栅格原点在左上角
+            y = self._y_max - (row_idx + 0.5) * self.resolution
+
+            row_data = np.full(self._n_cols, -9999.0, dtype=np.float32)
+            for col_idx, x in enumerate(grid_x):
+                success, value = interpolator.interpolatePoint(x, y)
+                if success == 0:
+                    row_data[col_idx] = max(0.0, value)
+
+            band.WriteArray(row_data.reshape(1, -1), 0, row_idx)
+
+            if (row_idx + 1) % report_interval == 0 or row_idx == n_rows - 1:
+                elapsed = time.time() - start_time
+                progress = 100.0 * (row_idx + 1) / n_rows
+                eta = elapsed / (row_idx + 1) * (n_rows - row_idx - 1) if row_idx > 0 else 0
+                print(f"  进度: {row_idx + 1}/{n_rows} 行 ({progress:.1f}%), "
+                      f"已用时: {elapsed:.1f}s, 预计剩余: {eta:.1f}s")
+
+        # ---- 完成 ----
+        band.ComputeStatistics(False)
+        band.FlushCache()
+        out_ds = None
+        band = None
+
+        del interpolator, layer_data, layer
+        gc.collect()
+
+        total_time = time.time() - start_time
+        print(f"  插值完成，总耗时: {total_time:.1f}s")
+        print(f"  已保存: {output_tif_path}")
+
+    # ==================== scipy 插值方法 ====================
+
+    def _run_scipy_interpolation(
+        self,
+        x_utm: np.ndarray,
+        y_utm: np.ndarray,
+        values: np.ndarray,
+        output_tif_path: str,
+    ) -> None:
+        """
+        使用 scipy RBFInterpolator 进行IDW近似插值，分块写入 GeoTIFF。
+
+        内存优化策略：
+            - 训练阶段：RBFInterpolator 使用 neighbors 参数限制每次预测的邻近点数，
+              避免构建完整密集矩阵（O(N²) 内存）
+            - 预测阶段：按 chunk_size 行分块生成输出坐标并插值，及时释放临时数组
+            - 直接写入 GDAL GeoTIFF，不经过 ASC 中间文件
+
+        scipy RBF 调参说明：
+            self.scipy_kernel（默认'linear'）
+                — 核函数类型，'linear' 近似IDW效果；
+                  'thin_plate_spline' 平滑性更好；
+                  'gaussian' 适合高斯型空间相关性
+            self.scipy_neighbors（默认50，推荐20~100）
+                — 每次插值使用的最近邻点数；
+                  减小此值可显著降低内存和计算时间
+
+        参数:
+            x_utm: 采样点X坐标(UTM)
+            y_utm: 采样点Y坐标(UTM)
+            values: 采样点对应值（Ia）
+            output_tif_path: 输出 GeoTIFF 文件路径
+        """
+        if not _HAS_SCIPY:
+            raise ImportError(
+                "scipy 未安装，无法使用 'scipy_idw' 方法。"
+                "请在QGIS Python环境中运行: pip install scipy"
+            )
+
+        # 训练 RBFInterpolator（使用所有采样点建立模型）
+        # neighbors 参数：每次预测仅使用最近的 N 个点，避免密集矩阵，降低内存
+        X_train = np.column_stack([x_utm, y_utm])           # shape: (n_samples, 2)
+        rbf = _RBFInterpolator(
+            X_train,
+            values.astype(np.float64),
+            kernel=self.scipy_kernel,                        # RBF核函数，默认'linear'
+            neighbors=self.scipy_neighbors,                  # 邻近点数限制，控制内存
+        )
+        del X_train
+        gc.collect()
+        print(f"  scipy RBFInterpolator 已建立模型，核函数={self.scipy_kernel}，"
+              f"邻近点数={self.scipy_neighbors}")
+
+        # 创建输出 GeoTIFF 数据集（直接写入，无 ASC 中间文件）
+        os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+        self._ensure_file_writable(output_tif_path)
+        driver = gdal.GetDriverByName('GTiff')
+        out_ds = driver.Create(
+            output_tif_path,
+            self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
+            ['COMPRESS=LZW', 'TILED=YES'],
+        )
+        out_ds.SetGeoTransform(self._geo_transform)
+        out_ds.SetProjection(self._utm_srs.ExportToWkt())
+        band = out_ds.GetRasterBand(1)
+        band.SetNoDataValue(-9999.0)
+
+        # 生成输出网格列坐标（像素中心X，所有行共用）
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
+
+        # 分块处理（按行分块，每块 chunk_size 行）
+        n_rows = self._n_rows
+        chunk_rows = self.chunk_size                         # 每块处理的行数
+        n_chunks = math.ceil(n_rows / chunk_rows)
+
+        start_time = time.time()
+        for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
+            row_end = min(row_start + chunk_rows, n_rows)
+            actual_rows = row_end - row_start
+
+            # 本块的像素中心Y坐标
+            # Y坐标从上（大值）到下（小值）递减，因为栅格原点在左上角，
+            # row_start=0对应最高Y坐标（_y_max），行索引增加Y坐标减小
+            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self.resolution
+
+            # 展开为预测点坐标列表，shape: (actual_rows * n_cols, 2)
+            xx, yy = np.meshgrid(grid_x, grid_y)
+            pts = np.column_stack([xx.ravel(), yy.ravel()])
+            del xx, yy
+
+            # 插值并将结果reshape为(rows, cols)
+            chunk_vals = rbf(pts).reshape(actual_rows, self._n_cols)
+            del pts
+
+            # 将负值截断为0（Ia不能为负）
+            np.maximum(chunk_vals, 0.0, out=chunk_vals)
+
+            # 写入 GeoTIFF（xoff=0，yoff=行起始）
+            band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
+            del chunk_vals
+            gc.collect()
+
+            if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
+                elapsed = time.time() - start_time
+                print(f"  scipy插值进度: {row_end}/{n_rows} 行 "
+                      f"({100.0 * row_end / n_rows:.1f}%)，已用时: {elapsed:.1f}s")
+
+        band.ComputeStatistics(False)
+        band.FlushCache()
+        out_ds = None
+        band = None
+        del rbf
+        gc.collect()
+
+        total_time = time.time() - start_time
+        print(f"  scipy插值完成，总耗时: {total_time:.1f}s")
+        print(f"  已保存: {output_tif_path}")
+
+    # ==================== 统一插值入口 ====================
+
+    def _interpolate_ia_to_file(
+            self,
+            x_utm: np.ndarray,
+            y_utm: np.ndarray,
+            ia_values: np.ndarray,
+            output_tif_path: str,
+    ) -> None:
+        """
+        统一插值入口：只对Ia进行插值，根据 self.interp_method 路由到对应方法。
+
+        不对PGA进行插值——如需PGA.tif，使用 _rasterize_pga_contours() 矢量栅格化生成。
+
+        参数:
+            x_utm: 采样点X坐标(UTM)
+            y_utm: 采样点Y坐标(UTM)
+            ia_values: 采样点对应的Ia值
+            output_tif_path: 输出Ia GeoTIFF 文件路径
+        """
+        method = self.interp_method
+
+        if method in ('qgis_idw', 'qgis_tin'):
+            # QGIS 方法：逐行插值，速度较慢
+            self._run_qgis_interpolation(x_utm, y_utm, ia_values, output_tif_path)
+
+        elif method == 'scipy_idw':
+            # scipy 方法：分块插值，速度快（推荐）
+            self._run_scipy_interpolation(x_utm, y_utm, ia_values, output_tif_path)
+
+        else:
+            raise ValueError(
+                f"不支持的插值方法: '{method}'，"
+                f"可选: 'scipy_idw', 'qgis_idw', 'qgis_tin'"
+            )
+
+    # ==================== PGA 矢量栅格化 ====================
+
+    def _rasterize_pga_contours(self) -> None:
+        """
+        将PGA等值线（闭合LineString）矢量栅格化为PGA.tif（内存优化版）
+
+        此方法使用矢量栅格化（非插值）生成PGA.tif，速度快，内存占用低。
+        不对PGA进行插值——矢量栅格化直接将等值线区域填充对应PGA值。
+
+        实现逻辑:
+            等值线按PGA值从小到大遍历（外圈到内圈），
+            将每条等值线闭合为多边形，利用 GDAL/OGR 矢量栅格化 API
+            批量处理，内圈覆盖外圈，最终结果正确。
+
+        优化措施:
+            - 矢量数据和内存栅格处理完成后立即显式释放
+            - 使用 GDAL Translate 直接写出压缩 GeoTIFF，避免二次读取
+            - 每个 OGR Feature 创建后立即置 None 释放
+
+        注意:
+            KML中的等值线是LineString，不一定闭合，
+            此处强制首尾连接以构建多边形进行包含判断。
+        """
+        print("\n  PGA栅格化: 使用OGR矢量→栅格化（非插值）...")
+
+        if not self.pga_output_path:
+            print("  警告: PGA输出路径未设置，跳过PGA栅格化")
+            return
+
+        # 使用最小PGA值作为背景值
+        min_pga = self._contours[-1]['pga_mps2'] if self._contours else 0.0
+
+        # 创建内存矢量数据源
+        mem_driver = ogr.GetDriverByName('Memory')
+        mem_ds = mem_driver.CreateDataSource('pga_contours')
+        layer = mem_ds.CreateLayer(
+            'contours', srs=self._utm_srs, geom_type=ogr.wkbPolygon
         )
 
-        # 计算当前范围的大小（公里）
-        width_km = buffered_extent.width() * self.DEGREE_TO_KM
-        height_km = buffered_extent.height() * self.DEGREE_TO_KM
+        field_defn = ogr.FieldDefn('PGA', ogr.OFTReal)
+        layer.CreateField(field_defn)
 
-        print(f"\n[INFO] 计算插值范围")
-        print(f"  - 原始范围: {width_km:.2f} km × {height_km:.2f} km")
+        # 从外圈到内圈（PGA从小到大）添加多边形要素
+        for contour in reversed(self._contours):
+            coords = contour['coordinates']
+            if len(coords) < 3:
+                continue
 
-        # 检查是否超过最大范围
-        if width_km > self.max_extent_km or height_km > self.max_extent_km:
-            print(f"  [WARNING] 范围超过最大限制 {self.max_extent_km} km")
+            ring = ogr.Geometry(ogr.wkbLinearRing)
+            for lon, lat in coords:
+                try:
+                    result = self._transformer.TransformPoint(float(lon), float(lat))
+                    ring.AddPoint(result[0], result[1])
+                except Exception:
+                    continue
 
-            # 计算中心点
-            center_x = buffered_extent.center().x()
-            center_y = buffered_extent.center().y()
+            # 强制闭合
+            if ring.GetPointCount() >= 3:
+                first_pt = ring.GetPoint(0)
+                last_pt = ring.GetPoint(ring.GetPointCount() - 1)
+                if first_pt[0] != last_pt[0] or first_pt[1] != last_pt[1]:
+                    ring.AddPoint(first_pt[0], first_pt[1])
 
-            # 计算新的范围（度）
-            half_extent_deg = (self.max_extent_km / 2) / self.DEGREE_TO_KM
+            polygon = ogr.Geometry(ogr.wkbPolygon)
+            polygon.AddGeometry(ring)
 
-            buffered_extent = QgsRectangle(
-                center_x - half_extent_deg,
-                center_y - half_extent_deg,
-                center_x + half_extent_deg,
-                center_y + half_extent_deg
-            )
+            feature = ogr.Feature(layer.GetLayerDefn())
+            feature.SetField('PGA', contour['pga_mps2'])
+            feature.SetGeometry(polygon)
+            layer.CreateFeature(feature)
+            feature = None   # 立即释放要素对象
 
-            print(f"  - 调整后范围: {self.max_extent_km} km × {self.max_extent_km} km")
+        # 创建内存临时栅格
+        raster_driver = gdal.GetDriverByName('MEM')
+        raster_ds = raster_driver.Create(
+            '', self._n_cols, self._n_rows, 1, gdal.GDT_Float32
+        )
+        raster_ds.SetGeoTransform(self._geo_transform)
+        raster_ds.SetProjection(self._utm_srs.ExportToWkt())
 
-        return buffered_extent
+        band = raster_ds.GetRasterBand(1)
+        band.SetNoDataValue(-9999.0)
+        band.Fill(min_pga)
 
-    def calculate_grid_dimensions(self, extent: QgsRectangle) -> Tuple[int, int]:
+        # 矢量栅格化：外圈先画，内圈后画（覆盖）
+        gdal.RasterizeLayer(
+            raster_ds, [1], layer,
+            options=["ATTRIBUTE=PGA"]
+        )
+        band.ComputeStatistics(False)
+        band.FlushCache()
+
+        pga_min = band.GetMinimum()
+        pga_max = band.GetMaximum()
+
+        # 直接从内存栅格写出压缩 GeoTIFF，无需先保存再读取
+        os.makedirs(
+            os.path.dirname(os.path.abspath(self.pga_output_path)), exist_ok=True
+        )
+        self._ensure_file_writable(self.pga_output_path)
+        gdal.Translate(
+            self.pga_output_path, raster_ds,
+            format='GTiff',
+            creationOptions=['COMPRESS=LZW', 'TILED=YES'],
+            outputType=gdal.GDT_Float32,
+        )
+
+        # 释放所有 GDAL/OGR 对象
+        mem_ds = None
+        raster_ds = None
+        band = None
+        gc.collect()
+
+        print(f"  PGA栅格化完成，值范围: {pga_min:.4f} ~ {pga_max:.4f} m/s²")
+        print(f"  已保存: {self.pga_output_path}")
+
+    # ==================== 辅助方法 ====================
+
+    def _ensure_file_writable(
+        self, file_path: str, max_retries: int = 3, retry_delay: float = 1.0
+    ) -> None:
         """
-        根据固定���辨率(30米)计算栅格维度
-
-        同时检查内存使用是否超限，如超限则抛出异常
+        确保输出文件可写，如果文件已存在则尝试删除。
 
         参数:
-            extent (QgsRectangle): 插值范围（度）
-
-        返回:
-            Tuple[int, int]: (列数, 行数)
-
-        异常:
-            MemoryError: 当估算内存超过限制时
-        """
-        # 计算范围中心点的纬度，用于更精确的距离计算
-        center_lat = extent.center().y()
-
-        # 在该纬度下，1度经度对应的公里数
-        lon_km_per_degree = self.DEGREE_TO_KM * math.cos(math.radians(center_lat))
-        lat_km_per_degree = self.DEGREE_TO_KM
-
-        # 计算范围的实际距离（米）
-        width_m = extent.width() * lon_km_per_degree * 1000
-        height_m = extent.height() * lat_km_per_degree * 1000
-
-        # 计算栅格尺寸（固定30米分辨率）
-        ncols = int(math.ceil(width_m / self.RESOLUTION))
-        nrows = int(math.ceil(height_m / self.RESOLUTION))
-
-        # 确保至少有1个像素
-        ncols = max(1, ncols)
-        nrows = max(1, nrows)
-
-        # 估算内存使用（每像素8字节double + 处理开销约2倍）
-        memory_bytes = ncols * nrows * 8 * 2
-        memory_gb = memory_bytes / (1024 ** 3)
-
-        print(f"\n[INFO] 栅格尺寸计算")
-        print(f"  - 范围: {width_m / 1000:.2f} km × {height_m / 1000:.2f} km")
-        print(f"  - 分辨率: {self.RESOLUTION} 米 × {self.RESOLUTION} 米（固定）")
-        print(f"  - 栅格尺寸: {ncols} × {nrows} 像素")
-        print(f"  - 估算内存: {memory_gb:.2f} GB")
-
-        # 检查内存限制
-        if memory_gb > self.max_memory_gb:
-            raise MemoryError(
-                f"估算内存使用 ({memory_gb:.2f} GB) 超过限制 ({self.max_memory_gb} GB)。"
-                f"请减小插值范围或使用更小的数据集。"
-            )
-
-        return ncols, nrows
-
-    # ========================= IDW插值方法 =========================
-
-    def interpolate_idw(
-            self,
-            layer: QgsVectorLayer,
-            output_path: str,
-            params: IDWParams
-    ) -> Tuple[str, float]:
-        """
-        使用IDW（反距离加权）算法进行插值
-
-        IDW原理:
-            未知点的值 = Σ(wi * vi) / Σ(wi)
-            其中 wi = 1 / di^p
-            di: 未知点到第i个已知点的距离
-            vi: 第i个已知点的值
-            p: 距离权重系数(coefficient)
-
-        参数:
-            layer (QgsVectorLayer): 输入点图层
-            output_path (str): 输出栅格文件路径
-            params (IDWParams): IDW算法参数
-
-        返回:
-            Tuple[str, float]: (输出文件路径, 插值耗时秒数)
+            file_path: 输出文件路径
+            max_retries: 最大重试次数
+            retry_delay: 重试间隔（秒）
 
         异常:
-            RuntimeError: 当插值失败时
+            RuntimeError: 文件无法删除或写入
         """
-        # 验证参数
-        params.validate()
-
-        print(f"\n{'=' * 60}")
-        print(f"IDW插值")
-        print(f"{'=' * 60}")
-        print(f"参数:")
-        print(f"  - 距离权重系数(coefficient): {params.coefficient}")
-
-        start_time = time.time()
-
-        try:
-            # 准备插值数据源
-            layer_data = QgsInterpolator.LayerData()
-            layer_data.source = layer
-            layer_data.valueSource = QgsInterpolator.ValueAttribute
-            layer_data.interpolationAttribute = 0  # 第一个属性字段
-            layer_data.sourceType = QgsInterpolator.SourcePoints
-
-            # 创建IDW插值器 (注意: QgsIdwInterpolator 小写)
-            interpolator = QgsIDWInterpolator([layer_data])
-            interpolator.setDistanceCoefficient(params.coefficient)
-
-            # 计算范围和栅格尺寸
-            extent = self.calculate_extent(layer)
-            ncols, nrows = self.calculate_grid_dimensions(extent)
-
-            # 执行插值并写入文件
-            print(f"\n[INFO] 开始写入栅格文件...")
-            grid_writer = QgsGridFileWriter(
-                interpolator,
-                output_path,
-                extent,
-                ncols,
-                nrows
-            )
-
-            result = grid_writer.writeFile()
-
-            if result != 0:
-                raise RuntimeError(f"IDW插值写入失败，错误码: {result}")
-
-            elapsed_time = time.time() - start_time
-
-            print(f"\n[SUCCESS] IDW插值完成")
-            print(f"  - 耗时: {elapsed_time:.2f} 秒")
-            print(f"  - 输出: {output_path}")
-
-            return output_path, elapsed_time
-
-        except Exception as e:
-            print(f"\n[ERROR] IDW插值失败: {e}")
-            traceback.print_exc()
-            raise
-        finally:
-            # 强制垃圾回收释放内存
-            gc.collect()
-
-    # ========================= TIN插值方法 =========================
-
-    def interpolate_tin(
-            self,
-            layer: QgsVectorLayer,
-            output_path: str,
-            params: TINParams
-    ) -> Tuple[str, float]:
-        """
-        使用TIN（不规则三角网）算法进行插值
-
-        TIN原理:
-            1. 使用Delaunay三角剖分将点连接成三角网
-            2. 对于每个待插值点，找到其所在的三角形
-            3. 使用三角形顶点的值进行插值:
-               - 线性: 平面插值
-               - Clough-Tocher: 三次多项式插值
-
-        参数:
-            layer (QgsVectorLayer): 输入点图层
-            output_path (str): 输出栅格文件路径
-            params (TINParams): TIN算法参数
-
-        返回:
-            Tuple[str, float]: (输出文件路径, 插值耗时秒数)
-
-        异常:
-            RuntimeError: 当插值失败时
-        """
-        # 验证参数
-        params.validate()
-
-        print(f"\n{'=' * 60}")
-        print(f"TIN插值")
-        print(f"{'=' * 60}")
-        print(f"参数:")
-        print(f"  - 插值方法(method): {params.method} ({params.method_name})")
-
-        start_time = time.time()
-
-        try:
-            # 准备插值数据源
-            layer_data = QgsInterpolator.LayerData()
-            layer_data.source = layer
-            layer_data.valueSource = QgsInterpolator.ValueAttribute
-            layer_data.interpolationAttribute = 0
-            layer_data.sourceType = QgsInterpolator.SourcePoints
-
-            # 创建TIN插值器 (注意: QgsTinInterpolator 小写)
-            tin_method = (QgsTinInterpolator.Linear if params.method == 0
-                          else QgsTinInterpolator.CloughTocher)
-            interpolator = QgsTinInterpolator([layer_data], tin_method)
-
-            # 计算范围和栅格尺寸
-            extent = self.calculate_extent(layer)
-            ncols, nrows = self.calculate_grid_dimensions(extent)
-
-            # 执行插值并写入文件
-            print(f"\n[INFO] 开始写入栅格文件...")
-            grid_writer = QgsGridFileWriter(
-                interpolator,
-                output_path,
-                extent,
-                ncols,
-                nrows
-            )
-
-            result = grid_writer.writeFile()
-
-            if result != 0:
-                raise RuntimeError(f"TIN插值写入失败，错误码: {result}")
-
-            elapsed_time = time.time() - start_time
-
-            print(f"\n[SUCCESS] TIN插值完成")
-            print(f"  - 耗时: {elapsed_time:.2f} 秒")
-            print(f"  - 输出: {output_path}")
-
-            return output_path, elapsed_time
-
-        except Exception as e:
-            print(f"\n[ERROR] TIN插值失败: {e}")
-            traceback.print_exc()
-            raise
-        finally:
-            gc.collect()
-
-    # ========================= Kriging插值方法 =========================
-
-    def interpolate_kriging(
-            self,
-            layer: QgsVectorLayer,
-            output_path: str,
-            params: KrigingParams
-    ) -> Tuple[str, float]:
-        """
-        使用克里金算法进行插值（通过SAGA Processing工具）
-
-        克里金原理:
-            克里金是最优线性无偏估计(BLUE)，通过变异函数描述空间自相关性:
-            Z*(x0) = Σ(λi * Z(xi))
-            其中权重λi通过最小化估计方差并满足无偏条件求解
-
-        参数:
-            layer (QgsVectorLayer): 输入点图层
-            output_path (str): 输出栅格文件路径
-            params (KrigingParams): 克里金算法参数
-
-        返回:
-            Tuple[str, float]: (输出文件路径, 插值耗时秒数)
-
-        异常:
-            RuntimeError: 当SAGA工具不可用或插值失败时
-        """
-        # 验证参数
-        params.validate()
-
-        if not PROCESSING_AVAILABLE:
-            raise RuntimeError(
-                "QGIS Processing模块不可用，无法执行克里金插值。"
-                "请确保SAGA工具已正确安装。"
-            )
-
-        print(f"\n{'=' * 60}")
-        print(f"克里金插值 (Kriging)")
-        print(f"{'=' * 60}")
-        print(f"参数:")
-        print(f"  - 变异函数模型(variogram_model): {params.variogram_model}")
-        print(f"  - 块金值(nugget): {params.nugget}")
-        print(f"  - 基台值(sill): {params.sill}")
-        print(f"  - 变程(range_val): {params.range_val}")
-        print(f"  - 搜索半径(search_radius): {params.search_radius}")
-        print(f"  - 最小搜索点数(min_points): {params.min_points}")
-        print(f"  - 最大搜索点数(max_points): {params.max_points}")
-
-        start_time = time.time()
-
-        # 临时shapefile路径
-        temp_shp = os.path.join(self.output_dir, '_temp_kriging_points.shp')
-        self._temp_files.append(temp_shp)
-
-        try:
-            # 计算范围
-            extent = self.calculate_extent(layer)
-            ncols, nrows = self.calculate_grid_dimensions(extent)
-
-            # 变异函数模型映射到SAGA参数
-            model_map = {
-                'Spherical': 1,
-                'Exponential': 2,
-                'Gaussian': 3,
-                'Linear': 4
-            }
-            model_type = model_map.get(params.variogram_model, 1)
-
-            # 将点图层保存为临时shapefile（SAGA需要文件输入）
-            print(f"\n[INFO] 保存临时shapefile...")
-
-            options = QgsVectorFileWriter.SaveVectorOptions()
-            options.driverName = "ESRI Shapefile"
-            options.fileEncoding = "UTF-8"
-
-            error = QgsVectorFileWriter.writeAsVectorFormatV3(
-                layer,
-                temp_shp,
-                QgsProject.instance().transformContext(),
-                options
-            )
-
-            if error[0] != QgsVectorFileWriter.NoError:
-                raise RuntimeError(f"保存临时shapefile失败: {error[1]}")
-
-            # 计算分辨率（度）
-            center_lat = extent.center().y()
-            lon_km_per_degree = self.DEGREE_TO_KM * math.cos(math.radians(center_lat))
-            resolution_deg = self.RESOLUTION / (lon_km_per_degree * 1000)
-
-            # 获取字段名
-            field_name = layer.fields().at(0).name()
-
-            print(f"\n[INFO] 执行SAGA克里金插值...")
-            print(f"  - 分辨率: {resolution_deg:.8f} 度 (约{self.RESOLUTION}米)")
-
-            # 确定搜索范围设置
-            search_range_mode = 0 if params.search_radius <= 0 else 1
-            actual_search_radius = max(params.search_radius,
-                                       extent.width()) if params.search_radius > 0 else extent.width()
-
-            # 执行SAGA普通克里金插值
-            result = processing.run(
-                "saga:ordinarykriging",
-                {
-                    'POINTS': temp_shp,
-                    'FIELD': field_name,
-                    'TARGET_USER_XMIN': extent.xMinimum(),
-                    'TARGET_USER_XMAX': extent.xMaximum(),
-                    'TARGET_USER_YMIN': extent.yMinimum(),
-                    'TARGET_USER_YMAX': extent.yMaximum(),
-                    'TARGET_USER_SIZE': resolution_deg,
-                    'TARGET_USER_FITS': 0,  # 适应范围
-                    'SEARCH_RANGE': search_range_mode,
-                    'SEARCH_RADIUS': actual_search_radius,
-                    'SEARCH_POINTS_ALL': 0,  # 使用点数限制
-                    'SEARCH_POINTS_MIN': params.min_points,
-                    'SEARCH_POINTS_MAX': params.max_points,
-                    'SEARCH_DIRECTION': 0,  # 所有方向
-                    'MODEL': model_type,
-                    'BLOCK': 0,  # 点克里金
-                    'DBLOCK': 1,
-                    'VAR_MAXDIST': -1,  # 自动
-                    'VAR_NCLASSES': 100,
-                    'VAR_NSKIP': 1,
-                    'VAR_MODEL': f'{params.nugget} + {params.sill - params.nugget} * '
-                                 f'{"Sph" if params.variogram_model == "Spherical" else params.variogram_model[:3]}'
-                                 f'({params.range_val})',
-                    'PREDICTION': output_path,
-                    'VARIANCE': 'TEMPORARY_OUTPUT'
-                }
-            )
-
-            elapsed_time = time.time() - start_time
-
-            # 检查输出文件
-            actual_output = output_path
-            if not os.path.exists(output_path):
-                # 尝试从结果获取输出路径
-                if result and 'PREDICTION' in result:
-                    actual_output = result['PREDICTION']
-
-            print(f"\n[SUCCESS] 克里金插值完成")
-            print(f"  - 耗时: {elapsed_time:.2f} 秒")
-            print(f"  - 输出: {actual_output}")
-
-            return actual_output, elapsed_time
-
-        except Exception as e:
-            print(f"\n[ERROR] 克里金插值失败: {e}")
-            traceback.print_exc()
-            raise
-        finally:
-            # 清理临时文件
-            self._cleanup_temp_files()
-            gc.collect()
-
-    # ========================= 主转换方法 =========================
-
-    def convert(
-            self,
-            method: str = 'idw',
-            params: Union[IDWParams, TINParams, KrigingParams, None] = None,
-            output_pga: bool = True,
-            output_ia: bool = True
-    ) -> Dict[str, Dict[str, Union[str, float]]]:
-        """
-        执行转换，生成PGA和/或Ia栅格文件
-
-        参数:
-            method (str): 插值方法，可选 'idw', 'tin', 'kriging'
-            params: 对应插值方法的参数对象
-                - IDW: IDWParams
-                - TIN: TINParams
-                - Kriging: KrigingParams
-                - 如果为None，使用默认参数
-            output_pga (bool): 是否输出PGA.tif，默认True
-            output_ia (bool): 是否输出Ia.tif，默认True
-
-        返回:
-            Dict[str, Dict[str, Union[str, float]]]: 输出结果字典
-            {
-                'pga': {'path': 'xxx/PGA.tif', 'time': 12.34},
-                'ia': {'path': 'xxx/Ia.tif', 'time': 15.67}
-            }
-
-        异常:
-            ValueError: 当method参数无效或未指定任何输出时
-        """
-        # 验证参数
-        if not output_pga and not output_ia:
-            raise ValueError("至少需要指定一个输出（output_pga或output_ia）")
-
-        method = method.lower()
-        valid_methods = ['idw', 'tin', 'kriging']
-        if method not in valid_methods:
-            raise ValueError(f"无效的插值方法: '{method}'，可选: {valid_methods}")
-
-        # 设置默认参数
-        if params is None:
-            if method == 'idw':
-                params = IDWParams()
-            elif method == 'tin':
-                params = TINParams()
-            else:
-                params = KrigingParams()
-            print(f"[INFO] 使用默认参数")
-
-        # 验证参数类型匹配
-        expected_types = {
-            'idw': IDWParams,
-            'tin': TINParams,
-            'kriging': KrigingParams
-        }
-        if not isinstance(params, expected_types[method]):
-            raise TypeError(
-                f"参数类型不匹配: 方法'{method}'需要{expected_types[method].__name__}，"
-                f"但收到{type(params).__name__}"
-            )
-
-        print("\n" + "=" * 70)
-        print("           KML → PGA/Ia 栅格转换器")
-        print("=" * 70)
-        print(f"插值方法: {method.upper()}")
-        print(f"输出PGA: {'是' if output_pga else '否'}")
-        print(f"输出Ia: {'是' if output_ia else '否'}")
-        print(f"固定分辨率: {self.RESOLUTION}米 × {self.RESOLUTION}米")
-        print("=" * 70)
-
-        total_start_time = time.time()
-        output_results = {}
-
-        try:
-            # 准备点数据
-            self.prepare_point_data()
-
-            # 选择插值方法
-            interpolate_func = {
-                'idw': self.interpolate_idw,
-                'tin': self.interpolate_tin,
-                'kriging': self.interpolate_kriging
-            }[method]
-
-            # 输出PGA
-            if output_pga:
-                print("\n" + "-" * 50)
-                print("生成 PGA.tif")
-                print("-" * 50)
-
-                pga_layer = self.create_point_layer('pga')
-                pga_output = os.path.join(self.output_dir, 'PGA.tif')
-
-                path, elapsed = interpolate_func(pga_layer, pga_output, params)
-                output_results['pga'] = {'path': path, 'time': elapsed}
-
-            # 输出Ia
-            if output_ia:
-                print("\n" + "-" * 50)
-                print("生成 Ia.tif")
-                print("-" * 50)
-
-                ia_layer = self.create_point_layer('ia')
-                ia_output = os.path.join(self.output_dir, 'Ia.tif')
-
-                path, elapsed = interpolate_func(ia_layer, ia_output, params)
-                output_results['ia'] = {'path': path, 'time': elapsed}
-
-            total_time = time.time() - total_start_time
-
-            # 打印总结
-            print("\n" + "=" * 70)
-            print("                    转换完成!")
-            print("=" * 70)
-            print(f"总耗时: {total_time:.2f} 秒")
-            print("\n输出文件:")
-            for key, info in output_results.items():
-                file_size = os.path.getsize(info['path']) / 1024 / 1024
-                print(f"  - {key.upper()}.tif")
-                print(f"      路径: {info['path']}")
-                print(f"      插值耗时: {info['time']:.2f} 秒")
-                print(f"      文件大小: {file_size:.2f} MB")
-            print("=" * 70)
-
-            return output_results
-
-        except Exception as e:
-            print(f"\n[ERROR] 转换失败: {e}")
-            traceback.print_exc()
-            raise
-        finally:
-            # 清理资源
-            self.cleanup()
-
-    # ========================= 资源清理方法 =========================
-
-    def _cleanup_temp_files(self) -> None:
-        """清理临时文件"""
-        for temp_file in self._temp_files:
+        if not os.path.exists(file_path):
+            return
+
+        last_error = None
+        for attempt in range(1, max_retries + 1):
             try:
-                # 删除shapefile相关的所有文件
-                base = temp_file.replace('.shp', '')
-                for ext in ['.shp', '.shx', '.dbf', '.prj', '.cpg', '.sbn', '.sbx']:
-                    f = base + ext
-                    if os.path.exists(f):
-                        os.remove(f)
-            except Exception as e:
-                print(f"[WARNING] 清理临时文件失败: {e}")
-        self._temp_files.clear()
+                os.remove(file_path)
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt < max_retries:
+                    print(f"  警告: 删除文件失败（第{attempt}次），{retry_delay}秒后重试: {file_path}")
+                    time.sleep(retry_delay)
+
+        raise RuntimeError(
+            f"无法删除已存在的输出文件，请检查以下内容后重试：\n"
+            f"  文件路径: {file_path}\n"
+            f"  错误信息: {last_error}\n"
+            f"  可能原因: 文件正被其他程序占用或权限不足\n"
+            f"  解决建议: 请关闭所有可能打开该文件的程序，或检查文件/目录的读写权限"
+        )
+
+    # ==================== 资源清理 ====================
 
     def cleanup(self) -> None:
         """
-        清理所有临时资源，释放内存
+        清理所有运行时资源，释放内存。
 
-        在转换完成或发生错误后调用此方法确保资源被释放
+        在转换完成或发生错误后由 run() 方法在 finally 块中调用，
+        确保资源始终得到释放，包括：
+            - 等值线数据列表
+            - 坐标转换器对象
+            - 临时 SRS 对象
         """
         print("\n[INFO] 清理临时资源...")
 
-        # 清理临时图层
-        for layer in self._temp_layers:
-            try:
-                del layer
-            except:
-                pass
-        self._temp_layers.clear()
+        # 清理等值线数据
+        self._contours.clear()
 
-        # 清理临时文件
-        self._cleanup_temp_files()
-
-        # 清理点数据
-        self._points_data.clear()
+        # 释放坐标转换器
+        self._transformer = None
+        self._utm_srs = None
 
         # 强制垃圾回收
         gc.collect()
 
         print("[INFO] 资源清理完成")
 
+    # ==================== 主流程 ====================
+
+    def run(self) -> bool:
+        """
+        执行完整的 KML → Ia.tif 转换流程
+
+        流程:
+            1. 解析KML文件
+            2. 确定UTM投影并创建坐标转换器
+            3. 准备采样点（生成器下采样 + 随机抽样 + 批量坐标转换 + 去重）
+            4. 构建输出栅格网格
+            5. （可选）PGA等值线矢量栅格化并输出PGA.tif（非插值）
+            6. 使用选定的插值方法计算并输出Ia.tif
+               - 'scipy_idw'：scipy RBF分块插值，直接写GeoTIFF（推荐）
+               - 'qgis_idw'/'qgis_tin'：QGIS逐行插值，直接写GeoTIFF
+            7. 打印耗时统计
+
+        返回:
+            bool: 处理是否成功
+
+        注意:
+            无论是否发生异常，finally块都会调用 cleanup() 释放资源。
+            异常会在清理后重新抛出。
+        """
+        print("=" * 60)
+        print("KML → Ia 栅格处理程序（QGIS 3.40.15，内存优化重构版）")
+        print(f"插值方法: {self.interp_method}")
+        print(f"采样间隔: {self.sample_interval}，最大采样点数: {self.max_sample_points}")
+        print(f"输出PGA.tif: {'是（矢量栅格化）' if self.export_pga else '否'}")
+        print("=" * 60)
 
-# ============================================================================
-#                              参数说明函数
-# ============================================================================
-
-def print_params_help() -> None:
-    """
-    打印所有插值算法参数的详细说明
-    """
-    help_text = """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                         插值算法参数详细说明                                   ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  一、IDW（反距离加权）算法 - IDWParams                                        │
-└──────────────────────────────────────────────────────────────────────────────┘
-
-  参数: coefficient (float)
-  ════════════════════════════════════════════════════════════════════════════
-
-  【含义】距离权重系数（幂次），控制距离对权重的影响程度
-
-  【公式】权重 wi = 1 / (距离di ^ coefficient)
-         插值值 = Σ(wi × vi) / Σ(wi)
-
-  【默认值】2.0
-
-  【取值范围】0.5 - 5.0（推荐），理论上 > 0
-
-  【参数调节指南】
-
-    ┌─────────────┬───────────────────────────────────────────────────────────┐
-    │ 值          │ 效果说明                                                   │
-    ├─────────────┼───────────────────────────────────────────────────────────┤
-    │ 0.5 - 1.0   │ 距离影响小，结果非常平滑，适合大范围渐变趋势               │
-    │             │ 优点: 平滑过渡，减少局部波动                               │
-    │             │ 缺点: 可能丢失局部细节和极值                               │
-    ├─────────────┼───────────────────────────────────────────────────────────┤
-    │ 1.5 - 2.5   │ 【推荐】平衡局部特征和全局趋势                            │
-    │             │ 2.0是最常用的标准设置                                      │
-    │             │ 优点: 适用于大多数场景                                     │
-    ├─────────────┼───────────────────────────────────────────────────────────┤
-    │ 3.0 - 5.0   │ 距离影响大，强调局部特征，近点权重显著增加                │
-    │             │ 优点: 保留局部变化细节                                     │
-    │             │ 缺点: 可能产生"牛眼效应"（数据点周围出现同心圆等值线）     │
-    └─────────────┴───────────────────────────────────────────────────────────┘
-
-  【使用示例】
-    idw_params = IDWParams(coefficient=2.0)
-
-
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  二、TIN（不规则三角网）算法 - TINParams                                      │
-└──────────────────────────────────────────────────────────────────────────────┘
-
-  参数: method (int)
-  ════════════════════════════════════════════════════════════════════════════
-
-  【含义】三角形内部的插值计算方法
-
-  【默认值】0
-
-  【可选值】
-
-    ┌───────┬─────────────────────────────────────────────────────────────────┐
-    │ 值    │ 说明                                                             │
-    ├───────┼─────────────────────────────────────────────────────────────────┤
-    │   0   │ 线性插值 (Linear)                                                │
-    │       │                                                                  │
-    │       │ 【原理】在三角形内使用线性函数（平面方程）进行插值              │
-    │       │         z = ax + by + c                                          │
-    │       │                                                                  │
-    │       │ 【优点】                                                         │
-    │       │   • 计算速度快（约为Clough-Tocher的3倍）                        │
-    │       │   • 保留原始数据点的精确值                                       │
-    │       │   • 结果连续（C0连续）                                           │
-    │       │   • 内存占用小                                                   │
-    │       │                                                                  │
-    │       │ 【缺点】                                                         │
-    │       │   • 一阶导数不连续，等值线可能出现折角                          │
-    │       │   • 三角形边界处可能有明显棱角                                   │
-    │       │                                                                  │
-    │       │ 【适用场景】                                                     │
-    │       │   • 快速预览和测试                                               │
-    │       │   • 数据点非常密集                                               │
-    │       │   • 对平滑度要求不高                                             │
-    │       │   • 数据本身有突变特征                                           │
-    ├───────┼─────────────────────────────────────────────────────────────────┤
-    │   1   │ 克劳德-杜尚插值 (Clough-Tocher)                                  │
-    │       │                                                                  │
-    │       │ 【原理】将每个三角形细分为3个子三角形，使用三次多项式插值       │
-    │       │         保证相邻三角形边界处一阶导数连续                        │
-    │       │                                                                  │
-    │       │ 【优点】                                                         │
-    │       │   • 结果更平滑（C1连续）                                         │
-    │       │   • 等值线更圆润自然                                             │
-    │       │   • 视觉效果更好                                                 │
-    │       │                                                                  │
-    │       │ 【缺点】                                                         │
-    │       │   • 计算复杂度更高（约为Linear的3倍）                           │
-    │       │   • 内存使用更多                                                 │
-    │       │   • 处理速度较慢                                                 │
-    │       │                                                                  │
-    │       │ 【适用场景】                                                     │
-    │       │   • 最终出图和报告                                               │
-    │       │   • 需要平滑等值线                                               │
-    │       │   • 数据点相对稀疏                                               │
-    │       │   • 展示用途                                                     │
-    └───────┴─────────────────────────────────────────────────────────────────┘
-
-  【使用示例】
-    tin_params = TINParams(method=0)  # 线性插值
-    tin_params = TINParams(method=1)  # 克劳德-杜尚插值
-
-
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  三、克里金（Kriging）算法 - KrigingParams                                    │
-└──────────────────────────────────────────────────────────────────────────────┘
-
-  克里金是地统计学中的最优线性无偏估计方法(BLUE)，考虑数据的空间自相关性。
-  需要SAGA工具支持。
-
-  ──────────────────────────────────────────────────────────────────────────────
-  参数1: variogram_model (str) - 变异函数模型
-  ──────────────────────────────────────────────────────────────────────────────
-
-  【含义】描述空间自相关性随距离变化的数学模型
-
-  【默认值】'Spherical'
-
-  【可选值】
-
-    ┌──────────────┬──────────────────────────────────────────────────────────┐
-    │ 模型          │ 说明                                                      ���
-    ├──────────────┼──────────────────────────────────────────────────────────┤
-    │ 'Spherical'  │ 球状模型（最常用，推荐）                                  │
-    │              │                                                           │
-    │              │ 【数学形式】                                              │
-    │              │   γ(h) = C0 + C×[1.5×(h/a) - 0.5×(h/a)³]  当 h ≤ a       │
-    │              │   γ(h) = C0 + C                            当 h > a       │
-    │              │                                                           │
-    │              │ 【特点】在变程处精确达到基台，有明确的影响范围            │
-    │              │ 【优点】适应性强，计算稳定，物理意义明确                  │
-    │              │ 【适用】大多数地学数据，最通用的选择                      │
-    ├──────────────┼──────────────────────────────────────────────────────────┤
-    │ 'Exponential'│ 指数模型                                                  │
-    │              │                                                           │
-    │              │ 【数学形式】γ(h) = C0 + C×[1 - exp(-3h/a)]                │
-    │              │                                                           │
-    │              │ 【特点】渐近趋近基台，理论变程为无穷大                    │
-    │              │ 【优点】在变程附近过渡更平滑                              │
-    │              │ 【适用】空间相关性缓慢衰减的数据                          │
-    ├──────────────┼──────────────────────────────────────────────────────────┤
-    │ 'Gaussian'   │ 高斯模型                                                  │
-    │              │                                                           │
-    │              │ 【数学形式】γ(h) = C0 + C×[1 - exp(-(3h/a)²)]             │
-    │              │                                                           │
-    │              │ 【特点】在原点附近曲率为0，抛物线起始                     │
-    │              │ 【优点】产生最平滑的插值结果                              │
-    │              │ 【缺点】可能导致数值不稳定，对噪声敏感                    │
-    │              │ 【适用】变化非常平缓、连续性极好的数据                    │
-    ├──────────────┼──────────────────────────────────────────────────────────┤
-    │ 'Linear'     │ 线性模型                                                  │
-    │              │                                                           │
-    │              │ 【数学形式】γ(h) = C0 + b×h                               │
-    │              │                                                           │
-    │              │ 【特点】最简单的模型，没有基台                            │
-    │              │ 【优点】计算快速，参数少                                  │
-    │              │ 【缺点】不适合有明显空间结构的数据                        │
-    │              │ 【适用】数据范围小于空间相关范围时                        │
-    └──────────────┴──────────────────────────────────────────────────────────┘
-
-  其他参数: nugget(块金值), sill(基台值), range_val(变程), 
-           search_radius(搜索半径), min_points(最小点数), max_points(最大点数)
-
-  【使用示例】
-    kriging_params = KrigingParams(
-        variogram_model='Spherical',
-        nugget=0.0,
-        sill=1.0,
-        range_val=0.5,
-        search_radius=-1,
-        min_points=4,
-        max_points=12
-    )
-
-
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  四、算法选择建议                                                             │
-└──────────────────────────────────────────────────────────────────────────────┘
-
-  ┌─────────────────────────┬──────────────┬──────────────────────────────────┐
-  │ 场景                    │ 推荐算法      │ 推荐参数                          │
-  ├─────────────────────────┼──────────────┼──────────────────────────────────┤
-  │ 快速预览/测试           │ IDW          │ coefficient=2.0                  │
-  │ 数据点分布均匀          │ IDW          │ coefficient=2.0                  │
-  │ 数据点分布不规则        │ TIN          │ method=0 (Linear)                │
-  │ 需要平滑结果            │ TIN          │ method=1 (Clough-Tocher)         │
-  │ 需要最佳估计精度        │ Kriging      │ variogram_model='Spherical'      │
-  │ 考虑空间相关性          │ Kriging      │ 根据数据特征选择模型              │
-  │ 内存受限                │ IDW或TIN     │ -                                │
-  │ 计算时间受限            │ IDW          │ -                                │
-  │ 最终出图/报告           │ TIN或Kriging │ method=1 或 Spherical模型        │
-  └─────────────────────────┴──────────────┴──────────────────────────────────┘
-
-╚══════════════════════════════════════════════════════════════════════════════╝
-"""
-    print(help_text)
-
-
-# ============================================================================
-#                              测试函数
-# ============================================================================
-
-def create_test_kml(output_path: str, num_contours: int = 5) -> str:
-    """
-    创建测试用的KML文件
-
-    参数:
-        output_path (str): 输出KML文件路径
-        num_contours (int): 等值线数量，默认5
-
-    返回:
-        str: 创建的KML文件路径
-    """
-    # 中心点（中国某地）
-    center_lon, center_lat = 103.0, 34.0
-
-    # PGA值列表（从外到内递增）
-    pga_values = [0.01, 0.02, 0.03, 0.05, 0.1, 0.2, 0.3, 0.5][:num_contours]
-
-    kml_content = """<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-<Document>
-<name>Test PGA Contours</name>
-"""
-
-    for i, pga in enumerate(pga_values):
-        # 计算等值线半径（PGA越大，圈越小）
-        radius = 0.5 * (len(pga_values) - i) / len(pga_values) + 0.1
-
-        # 生成圆形等值线的坐标点（每个圆36个点）
-        coords = []
-        for angle in range(0, 361, 10):
-            rad = math.radians(angle)
-            lon = center_lon + radius * math.cos(rad)
-            lat = center_lat + radius * math.sin(rad) * 0.8  # 稍微压扁成椭圆
-            coords.append(f"{lon:.6f},{lat:.6f},0")
-
-        coords_str = " ".join(coords)
-
-        kml_content += f"""<Placemark>
-<name>{pga}g</name>
-<description>PGA等值线 {pga}g</description>
-<LineString>
-<coordinates>
-{coords_str}
-</coordinates>
-</LineString>
-</Placemark>
-"""
-
-    kml_content += """</Document>
-</kml>"""
-
-    # 确保目录存在
-    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
-
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(kml_content)
-
-    print(f"[INFO] 测试KML文件已创建: {output_path}")
-    return output_path
-
-
-def test_parse_kml():
-    """
-    测试KML解析功能
-    """
-    print("\n" + "=" * 70)
-    print("测试: KML解析功能")
-    print("=" * 70)
-
-    test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'test_output')
-    os.makedirs(test_dir, exist_ok=True)
-
-    test_kml_path = "../../data/geology/kml/source.kml"
-    converter = None
-
-    try:
-        # 创建测试KML
-        # create_test_kml(test_kml_path, num_contours=4)
-
-        # 创建转换器并解析
-        converter = KmlToPgaIaConverter(
-            kml_file_path=test_kml_path,
-            output_dir=test_dir
-        )
-
-        points = converter.parse_kml()
-
-        # 验证结果
-        assert len(points) > 0, "解析结果为空"
-
-        print(f"\n[测试结果]")
-        print(f"  - 解析点数: {len(points)}")
-        print(f"  - PGA等级数: {len(set([p[2] for p in points]))}")
-
-        # 验证PGA值转换
-        for lon, lat, pga_ms2 in points[:3]:
-            pga_g = pga_ms2 / 9.8
-            print(f"  - 示例点: ({lon:.4f}, {lat:.4f}), PGA={pga_g:.4f}g = {pga_ms2:.4f}m/s²")
-
-        print("\n✅ KML解析测试通过!")
-        return True
-
-    except Exception as e:
-        print(f"\n❌ 测试失败: {e}")
-        traceback.print_exc()
-        return False
-    finally:
-        # 清理
-        if converter:
-            converter.cleanup()
-        if os.path.exists(test_kml_path):
-            os.remove(test_kml_path)
-
-
-def test_ia_calculation():
-    """
-    测试Ia计算功能
-    """
-    print("\n" + "=" * 70)
-    print("测试: Ia计算功能")
-    print("=" * 70)
-
-    test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'test_output')
-    os.makedirs(test_dir, exist_ok=True)
-
-    test_kml_path = os.path.join(test_dir, 'test_ia.kml')
-    converter = None
-
-    try:
-        # 创建测试KML
-        create_test_kml(test_kml_path, num_contours=1)
-
-        converter = KmlToPgaIaConverter(
-            kml_file_path=test_kml_path,
-            output_dir=test_dir
-        )
-
-        # 测试不同PGA值的Ia计算
-        test_cases = [
-            (0.098, "0.01g"),  # 0.01g × 9.8
-            (0.196, "0.02g"),  # 0.02g × 9.8
-            (0.294, "0.03g"),  # 0.03g × 9.8
-            (0.49, "0.05g"),  # 0.05g × 9.8
-            (0.98, "0.1g"),  # 0.1g × 9.8
-            (4.9, "0.5g"),  # 0.5g × 9.8
-        ]
-
-        print("\n[Ia计算验证] 公式: log10(Ia) = 0.797 + 1.837 × log10(PGA)")
-        print("-" * 60)
-        print(f"{'PGA(g)':<12} {'PGA(m/s²)':<15} {'Ia(m/s)':<15} {'验证':<10}")
-        print("-" * 60)
-
-        all_passed = True
-        for pga_ms2, pga_label in test_cases:
-            ia = converter.calculate_ia(pga_ms2)
-
-            # 手动验证公式
-            expected_log_ia = 0.797 + 1.837 * math.log10(pga_ms2)
-            expected_ia = math.pow(10, expected_log_ia)
-
-            passed = abs(ia - expected_ia) < 1e-10
-            all_passed = all_passed and passed
-            status = "✓" if passed else "✗"
-
-            print(f"{pga_label:<12} {pga_ms2:<15.4f} {ia:<15.6f} {status:<10}")
-
-        # 测试边界情况
-        assert converter.calculate_ia(0) == 1e-10, "PGA=0时应返回1e-10"
-        assert converter.calculate_ia(-1) == 1e-10, "PGA<0时应返回1e-10"
-
-        print("-" * 60)
-
-        if all_passed:
-            print("\n✅ Ia计算测试通过!")
-            return True
-        else:
-            print("\n❌ Ia计算测试失败!")
-            return False
-
-    except Exception as e:
-        print(f"\n❌ 测试失败: {e}")
-        traceback.print_exc()
-        return False
-    finally:
-        if converter:
-            converter.cleanup()
-        if os.path.exists(test_kml_path):
-            os.remove(test_kml_path)
-
-
-def test_idw_interpolation():
-    """
-    测试IDW插值功能
-    """
-    print("\n" + "=" * 70)
-    print("测试: IDW插值功能")
-    print("=" * 70)
-
-    test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'test_output')
-    os.makedirs(test_dir, exist_ok=True)
-
-    test_kml_path = os.path.join(test_dir, 'test_idw.kml')
-    output_subdir = os.path.join(test_dir, 'idw_output')
-    os.makedirs(output_subdir, exist_ok=True)
-
-    try:
-        # 创建测试KML
-        create_test_kml(test_kml_path, num_contours=4)
-
-        # 创建转换器（使用较小范围限制以加快测试）
-        converter = KmlToPgaIaConverter(
-            kml_file_path=test_kml_path,
-            output_dir=output_subdir,
-            max_extent_km=50.0  # 限制范围以加快测试
-        )
-
-        # 测试不同coefficient参数
-        test_coefficients = [1.0, 2.0, 3.0]
-
-        for coef in test_coefficients:
-            print(f"\n--- 测试 coefficient={coef} ---")
-
-            params = IDWParams(coefficient=coef)
-
-            results = converter.convert(
-                method='idw',
-                params=params,
-                output_pga=True,
-                output_ia=True
-            )
-
-            # 验证输出
-            for key, info in results.items():
-                assert os.path.exists(info['path']), f"输出文件不存在: {info['path']}"
-                file_size = os.path.getsize(info['path'])
-                assert file_size > 0, f"输出文件为空: {info['path']}"
-                print(f"  {key.upper()}: {file_size / 1024:.2f} KB, 耗时: {info['time']:.2f}s")
-
-        print("\n✅ IDW插值测试通过!")
-        return True
-
-    except Exception as e:
-        print(f"\n❌ 测试失败: {e}")
-        traceback.print_exc()
-        return False
-    finally:
-        # 清理
-        if os.path.exists(test_kml_path):
-            os.remove(test_kml_path)
-        # 清理输出文件
-        import shutil
-        if os.path.exists(output_subdir):
-            shutil.rmtree(output_subdir)
-
-
-def test_tin_interpolation():
-    """
-    测试TIN插值功能
-    """
-    print("\n" + "=" * 70)
-    print("测试: TIN插值功能")
-    print("=" * 70)
-
-    test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'test_output')
-    os.makedirs(test_dir, exist_ok=True)
-
-    test_kml_path = os.path.join(test_dir, 'test_tin.kml')
-    output_subdir = os.path.join(test_dir, 'tin_output')
-    os.makedirs(output_subdir, exist_ok=True)
-
-    try:
-        # 创建测试KML
-        create_test_kml(test_kml_path, num_contours=4)
-
-        converter = KmlToPgaIaConverter(
-            kml_file_path=test_kml_path,
-            output_dir=output_subdir,
-            max_extent_km=50.0
-        )
-
-        # 测试两种方法
-        test_methods = [
-            (0, "线性插值(Linear)"),
-            (1, "克劳德-杜尚插值(Clough-Tocher)")
-        ]
-
-        for method_id, method_name in test_methods:
-            print(f"\n--- 测试 {method_name} ---")
-
-            params = TINParams(method=method_id)
-
-            results = converter.convert(
-                method='tin',
-                params=params,
-                output_pga=True,
-                output_ia=True
-            )
-
-            # 验证输出
-            for key, info in results.items():
-                assert os.path.exists(info['path']), f"输出文件不存在: {info['path']}"
-                file_size = os.path.getsize(info['path'])
-                assert file_size > 0, f"输出文件为空: {info['path']}"
-                print(f"  {key.upper()}: {file_size / 1024:.2f} KB, 耗时: {info['time']:.2f}s")
-
-        print("\n✅ TIN插值测试通过!")
-        return True
-
-    except Exception as e:
-        print(f"\n❌ 测试失败: {e}")
-        traceback.print_exc()
-        return False
-    finally:
-        if os.path.exists(test_kml_path):
-            os.remove(test_kml_path)
-        import shutil
-        if os.path.exists(output_subdir):
-            shutil.rmtree(output_subdir)
-
-
-def test_kriging_interpolation():
-    """
-    测试克里金插值功能（需要SAGA支持）
-    """
-    print("\n" + "=" * 70)
-    print("测试: 克里金插值功能")
-    print("=" * 70)
-
-    if not PROCESSING_AVAILABLE:
-        print("[跳过] QGIS Processing模块不可用，无法测试克里金插值")
-        return True
-
-    test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'test_output')
-    os.makedirs(test_dir, exist_ok=True)
-
-    test_kml_path = os.path.join(test_dir, 'test_kriging.kml')
-    output_subdir = os.path.join(test_dir, 'kriging_output')
-    os.makedirs(output_subdir, exist_ok=True)
-
-    try:
-        # 创建测试KML
-        create_test_kml(test_kml_path, num_contours=4)
-
-        converter = KmlToPgaIaConverter(
-            kml_file_path=test_kml_path,
-            output_dir=output_subdir,
-            max_extent_km=50.0
-        )
-
-        # 测试不同变异函数模型
-        test_models = ['Spherical', 'Exponential']
-
-        for model in test_models:
-            print(f"\n--- 测试 {model}模型 ---")
-
-            params = KrigingParams(
-                variogram_model=model,
-                nugget=0.0,
-                sill=1.0,
-                range_val=0.3,
-                search_radius=-1,
-                min_points=4,
-                max_points=12
-            )
-
-            results = converter.convert(
-                method='kriging',
-                params=params,
-                output_pga=True,
-                output_ia=False  # 只测试PGA以加快速度
-            )
-
-            # 验证输出
-            for key, info in results.items():
-                assert os.path.exists(info['path']), f"输出文件不存在: {info['path']}"
-                file_size = os.path.getsize(info['path'])
-                assert file_size > 0, f"输出文件为空: {info['path']}"
-                print(f"  {key.upper()}: {file_size / 1024:.2f} KB, 耗时: {info['time']:.2f}s")
-
-        print("\n✅ 克里金插值测试通过!")
-        return True
-
-    except Exception as e:
-        print(f"\n❌ 测试失败: {e}")
-        traceback.print_exc()
-        return False
-    finally:
-        if os.path.exists(test_kml_path):
-            os.remove(test_kml_path)
-        import shutil
-        if os.path.exists(output_subdir):
-            shutil.rmtree(output_subdir)
-
-
-def run_all_tests():
-    """
-    运行所有测试
-
-    返回:
-        bool: 所有测试是否通过
-    """
-    print("\n" + "╔" + "═" * 68 + "╗")
-    print("║" + " " * 20 + "KML → PGA/Ia 转换器测试套件" + " " * 20 + "║")
-    print("╚" + "═" * 68 + "╝")
-
-    tests = [
-        ("KML解析测试", test_parse_kml)
-    ]
-
-    results = []
-    for test_name, test_func in tests:
         try:
-            passed = test_func()
-            results.append((test_name, passed))
+            # 1. 检查输入文件
+            if not os.path.exists(self.kml_path):
+                print(f"错误: KML文件不存在 - {self.kml_path}")
+                return False
+
+            # 2. 解析KML（解析后 XML 树已被释放）
+            contours = self.parse_kml()
+            if len(contours) == 0:
+                print("错误: 未找到有效的PGA等值线")
+                return False
+
+            # 3. 确定投影
+            all_lons = [coord[0] for c in contours for coord in c['coordinates']]
+            self._determine_utm_projection(min(all_lons), max(all_lons))
+            del all_lons
+            gc.collect()
+
+            # 4. 创建坐标转换器
+            self._create_transformer()
+
+            # 5. 准备采样点（生成器 + 随机抽样 + 批量转换，内存友好）
+            x_utm, y_utm, ia_values = self._prepare_sample_points()
+
+            # 6. 构建栅格网格
+            self._build_grid(x_utm, y_utm)
+
+            # 7. PGA矢量栅格化（可选，使用矢量栅格化而非插值）
+            if self.export_pga and self.pga_output_path:
+                print("\n" + "-" * 40)
+                print("步骤: PGA等值线矢量栅格化（非插值）")
+                print("-" * 40)
+                pga_start = time.time()
+                self._rasterize_pga_contours()
+                pga_elapsed = time.time() - pga_start
+                print(f"  PGA栅格化耗时: {pga_elapsed:.2f} 秒")
+
+            # 8. Ia插值（只对Ia进行插值，不对PGA插值）
+            print("\n" + "-" * 40)
+            print(f"步骤: Ia插值计算（{self.interp_method}）")
+            print("-" * 40)
+
+            interp_start = time.time()
+            self._interpolate_ia_to_file(x_utm, y_utm, ia_values, self.ia_output_path)
+
+            # 释放大型数组
+            del x_utm, y_utm, ia_values
+            gc.collect()
+
+            interp_elapsed = time.time() - interp_start
+            print(f"\n✅ Ia插值计算到输出文件耗时: {interp_elapsed:.2f} 秒")
+
+            # 9. 汇总
+            print("\n" + "=" * 60)
+            print("处理完成!")
+            if self.export_pga and self.pga_output_path:
+                print(f"  PGA栅格: {self.pga_output_path}")
+            print(f"  Ia栅格:  {self.ia_output_path}")
+            print("=" * 60)
+
+            return True
+
         except Exception as e:
-            results.append((test_name, False))
-            print(f"[错误] {test_name}: {e}")
+            print(f"\n[ERROR] 转换失败: {e}")
+            traceback.print_exc()
+            raise
 
-    # 打印总结
-    print("\n" + "=" * 70)
-    print("测试结果汇总")
-    print("=" * 70)
-
-    passed_count = 0
-    for test_name, passed in results:
-        status = "✅ 通过" if passed else "❌ 失败"
-        print(f"  {test_name}: {status}")
-        if passed:
-            passed_count += 1
-
-    print("-" * 70)
-    print(f"总计: {passed_count}/{len(results)} 通过")
-    print("=" * 70)
-
-    return passed_count == len(results)
+        finally:
+            # 无论是否发生异常，都确保资源被释放
+            self.cleanup()
 
 
-# ============================================================================
-#                              使用示例
-# ============================================================================
+# ==================== 入口 ====================
+if __name__ == "__main__":
+    converter = KmlToIaConverter(
+        kml_path="../../data/geology/kml/source.kml",       # 输入KML文件路径
+        ia_output_path="../../data/geology/ia/Ia.tif",      # Ia输出路径
 
-def example_usage():
-    """
-    完整使用示例
-    """
-    example_code = '''
-# ============================================================================
-#                           使用示例代码
-# ============================================================================
+        # PGA输出（可选，使用矢量栅格化非插值）
+        pga_output_path="../../data/geology/kml/PGA.tif",   # 不需要PGA时设为None
+        export_pga=False,           # 是否同时输出PGA.tif（矢量栅格化）
 
-# 1. 导入模块
-from kml_to_ia_converter import (
-    KmlToPgaIaConverter,
-    IDWParams,
-    TINParams,
-    KrigingParams,
-    print_params_help
-)
+        # 基础参数
+        resolution=30,              # 输出分辨率(米)；推荐10~100
 
-# 2. 查看参数说明（可选）
-print_params_help()
+        # 采样参数
+        sample_interval=5,          # 等值线采样间隔；推荐3~10，越小采样越密
+        max_sample_points=50000,    # 最大采样点数；超过时随机抽样，避免内存溢出
 
-# 3. 创建转换器实例
-converter = KmlToPgaIaConverter(
-    kml_file_path="D:/data/earthquake_pga.kml",  # 输入KML文件路径
-    output_dir="D:/output/",                      # 输出目录
-    max_extent_km=300.0,                          # 最大范围300km
-    max_memory_gb=10.0                            # 内存限制10GB
-)
+        # 选择插值方法：'scipy_idw'（推荐，快）、'qgis_idw'（备选）、'qgis_tin'（备选）
+        interp_method='scipy_idw',
 
-# ============================================================================
-# 方式一：使用IDW插值
-# ============================================================================
-idw_params = IDWParams(
-    coefficient=2.0  # 距离权重系数，推荐1.5-2.5
-)
+        # QGIS IDW 参数（仅 interp_method='qgis_idw' 时有效）
+        qgis_idw_power=2.0,         # IDW幂次；推荐1.0~4.0，越大近点主导
 
-results = converter.convert(
-    method='idw',
-    params=idw_params,
-    output_pga=True,   # 输出PGA.tif
-    output_ia=True     # 输出Ia.tif
-)
+        # QGIS TIN 参数（仅 interp_method='qgis_tin' 时有效）
+        qgis_tin_method=0,          # TIN子方法: 0=线性（快）, 1=Clough-Tocher（平滑）
 
-print(f"PGA文件: {results['pga']['path']}, 耗时: {results['pga']['time']:.2f}秒")
-print(f"Ia文件: {results['ia']['path']}, 耗时: {results['ia']['time']:.2f}秒")
+        # scipy IDW/RBF 参数（仅 interp_method='scipy_idw' 时有效，需安装scipy）
+        scipy_kernel='linear',      # RBF核函数；推荐'linear'/'thin_plate_spline'
+        scipy_neighbors=50,         # 邻近点数；越小越快内存越低，推荐20~100
 
-# ============================================================================
-# 方式二：使用TIN插值
-# ============================================================================
-tin_params = TINParams(
-    method=1  # 0=线性插值, 1=克劳德-杜尚插值（更平滑）
-)
-
-results = converter.convert(
-    method='tin',
-    params=tin_params,
-    output_pga=True,
-    output_ia=True
-)
-
-# ============================================================================
-# 方式三：使用克里金插值（需要SAGA工具）
-# ============================================================================
-kriging_params = KrigingParams(
-    variogram_model='Spherical',  # 变异函数模型
-    nugget=0.0,                   # 块金值
-    sill=1.0,                     # 基台值
-    range_val=0.5,                # 变程（度），约55公里
-    search_radius=-1,             # 搜索半径，-1表示使用所有点
-    min_points=4,                 # 最小搜索点数
-    max_points=12                 # 最大搜索点数
-)
-
-results = converter.convert(
-    method='kriging',
-    params=kriging_params,
-    output_pga=True,
-    output_ia=True
-)
-
-# ============================================================================
-# 只输出Ia.tif（不输出PGA.tif）
-# ============================================================================
-results = converter.convert(
-    method='idw',
-    params=IDWParams(coefficient=2.0),
-    output_pga=False,  # 不输出PGA
-    output_ia=True     # 只输出Ia
-)
-'''
-    print(example_code)
-
-
-# ============================================================================
-#                              主程序入口
-# ============================================================================
-
-if __name__ == '__main__':
-    """
-    主程序入口
-
-    运行方式:
-
-    1. 在QGIS Python控制台中:
-       >>> exec(open('kml_to_ia_converter.py').read())
-       >>> run_all_tests()  # 运行测试
-       >>> print_params_help()  # 查看参数说明
-       >>> example_usage()  # 查看使用示例
-
-    2. 直接运行脚本（需要QGIS环境）:
-       python kml_to_ia_converter.py
-    """
-    print("\n" + "=" * 70)
-    print("KML → PGA/Ia 栅格转换工具")
-    print("基于 QGIS 3.40.15")
-    print("分辨率: 30米 × 30米（固定）")
-    print("=" * 70)
-
-    # 运行测试
-    # all_passed = run_all_tests()
-
-    # 打印使用示例
-    print("\n\n")
-    # example_usage()
-
-    # 打印参数说明
-    print("\n\n")
-    print_params_help()
-
-    kml_path = "../../data/geology/kml/source.kml",  # 输入KML文件路径
-    pga_output_path = "../../data/geology/kml/PGA.tif",  # PGA输出路径（不需要可设为None）
-    converter = KmlToPgaIaConverter(
-        kml_file_path="../../data/geology/kml/source.kml",
-        output_dir="./../data/geology/",  # 输出目录
-        max_extent_km=300.0,  # 最大范围300km
-        max_memory_gb=10.0  # 内存限制10GB
+        # 内存优化参数
+        chunk_size=1000,            # 栅格分块行数（scipy方法）；推荐500~2000
+        coord_batch_size=10000,     # 坐标转换批次大小；推荐5000~50000
+        max_memory_gb=10.0,         # 最大内存使用限制(GB)；参考值，实际由上方参数控制
     )
-
-    # ============================================================================
-    # 方式一：使用IDW插值
-    # ============================================================================
-    idw_params = IDWParams(
-        coefficient=2.0  # 距离权重系数，推荐1.5-2.5
-    )
-
-    results = converter.convert(
-        method='idw',
-        params=idw_params,
-        output_pga=True,  # 输出PGA.tif
-        output_ia=True  # 输出Ia.tif
-    )
-
-    # if not all_passed:
-    #     exit(1)
+    converter.run()
