@@ -8,12 +8,12 @@ KML转Ia(阿里亚斯强度)栅格文件处理模块
     1. 解析KML文件获取PGA等值线（LineString）
     2. 将PGA值(g单位)转换为实际加速度值(m/s²)
     3. 根据公式 log10(Ia) = a + b * log10(PGA) 计算Ia值
-    4. 使用克里金/RBF/IDW插值生成栅格
+    4. 使用QGIS自带IDW/TIN插值算法生成栅格（替换第三方pykrige/scipy）
     5. 可选输出PGA.tif和Ia.tif
     6. 打印插值计算到输出文件的耗时
 
 作者：Copilot
-日期：2026-02-09
+日期：2026-03-14
 QGIS版本：3.40.15
 
 投影说明：
@@ -22,18 +22,41 @@ QGIS版本：3.40.15
     计算方式：utm_zone = int((lon_center + 180) / 6) + 1
     北半球EPSG编码：326xx（如Zone 48N → EPSG:32648）
     例如：经度中心103°时，utm_zone = int((103+180)/6)+1 = 48 → EPSG:32648
+
+内存优化说明（运行环境 32G）：
+    - 使用生成器迭代采样点，避免一次性构建大型中间列表
+    - 坐标转换分批进行（默认每批 10 000 个点）
+    - QgsGridFileWriter 逐行流式写入 ASC 文件，不在内存中保留完整栅格
+    - 各阶段处理后及时 del 临时数组并调用 gc.collect()
 """
 
+import gc
 import os
 import time
 import math
+import tempfile
 import numpy as np
-from typing import Tuple, List, Optional, Literal
+from typing import Iterator, List, Literal, Optional, Tuple
 from xml.etree import ElementTree as ET
 from osgeo import gdal, osr, ogr
-from pykrige.ok import OrdinaryKriging
-from scipy.interpolate import RBFInterpolator
-from scipy.spatial import cKDTree
+
+# ==================== QGIS 插值相关模块 ====================
+# 以下模块在 QGIS 3.40.15 Python 环境中内置，无需安装第三方库
+from qgis.core import (
+    QgsFeature,
+    QgsField,
+    QgsGeometry,
+    QgsPointXY,
+    QgsRectangle,
+    QgsVectorLayer,
+)
+from qgis.analysis import (
+    QgsGridFileWriter,
+    QgsIDWInterpolator,
+    QgsInterpolator,
+    QgsTINInterpolator,
+)
+from PyQt5.QtCore import QVariant
 
 # ==================== 启用GDAL异常处理 ====================
 gdal.UseExceptions()
@@ -41,23 +64,35 @@ gdal.UseExceptions()
 
 class KmlToIaConverter:
     """
-    KML文件转Ia(阿里亚斯强度)栅格文件转换器
+    KML文件转Ia(阿里亚斯强度)栅格文件转换器（QGIS 3.40.15 优化版）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、坐标转换、
     插值计算后，输出Ia.tif栅格文件（可选输出PGA.tif）。
 
+    本版本使用 QGIS 3.40.15 自带的 IDW / TIN 插值算法，替换了
+    原有的第三方库 pykrige（克里金）和 scipy（RBF/IDW），并针对
+    32G 内存运行环境进行了全面的内存优化。
+
+    支持的插值方法对比：
+        - 'idw'（反距离权重）：
+            速度快，适合稀疏/不均匀数据；
+            idw_power 值越大，近点影响越强，结果越局部化；
+            idw_power 值越小，远点影响增大，结果越平滑。
+        - 'tin'（三角网线性插值）：
+            基于 Delaunay 三角剖分的保值插值，不外推超出采样值范围；
+            适合分布较均匀的数据，边缘精度优于 IDW；
+            tin_method=1（Clough-Tocher）可得到更平滑的曲面，但计算较慢。
+
     属性:
         kml_path (str): 输入KML文件路径
-        pga_output_path (str): 输出PGA栅格文件路径
+        pga_output_path (str): 输出PGA栅格文件路径（export_pga=False 时可为 None）
         ia_output_path (str): 输出Ia栅格文件路径
         resolution (float): 目标分辨率(米)，默认30
         sample_interval (int): 等值线采样间隔，每隔多少个坐标点取一个，默认5
-        n_closest_points (int): 克里金局部插值使用的最近点数，默认80
-        export_pga (bool): 是否���出PGA.tif文件，默认True
-        interp_method (str): 插值方法，可选 'kriging'、'rbf'、'idw'，默认'kriging'
-        idw_power (float): IDW插值的幂次参数，默认2.0
-        variogram_model (str): 克里金变异函数模型，默认'spherical'
-        nlags (int): 克里金变异函数计算的滞后数，默认6
+        export_pga (bool): 是否输出PGA.tif文件，默认True
+        interp_method (str): 插值方法，可选 'idw'、'tin'，默认'idw'
+        idw_power (float): IDW距离衰减幂次，默认2.0（仅 idw 方法有效）
+        tin_method (int): TIN子方法，0=线性(Linear)，1=Clough-Tocher，默认0（仅 tin 方法有效）
 
     用法示例:
         converter = KmlToIaConverter(
@@ -66,7 +101,8 @@ class KmlToIaConverter:
             ia_output_path="../../data/geology/ia/Ia.tif",
             resolution=30,
             export_pga=True,
-            interp_method='kriging'
+            interp_method='idw',
+            idw_power=2.0,
         )
         converter.run()
     """
@@ -80,44 +116,52 @@ class KmlToIaConverter:
     def __init__(
         self,
         kml_path: str,
-        pga_output_path: str,
+        pga_output_path: Optional[str],
         ia_output_path: str,
         resolution: float = 30.0,
         sample_interval: int = 5,
-        n_closest_points: int = 80,
         export_pga: bool = True,
-        interp_method: Literal['kriging', 'rbf', 'idw'] = 'kriging',
+        interp_method: Literal['idw', 'tin'] = 'idw',
         idw_power: float = 2.0,
-        variogram_model: str = 'spherical',
-        nlags: int = 6
+        tin_method: int = 0,
     ):
         """
         初始化转换器
 
         参数:
             kml_path (str): 输入KML文件路径
-            pga_output_path (str): 输出PGA栅格文件路径
+            pga_output_path (str | None): 输出PGA栅格文件路径；
+                export_pga=False 时可传 None
             ia_output_path (str): 输出Ia栅格文件路径
             resolution (float): 目标分辨率(米)，默认30
+                调参建议：分辨率越小精度越高但计算量越大；
+                         推荐范围 10~100 m，地震烈度图通常用 30~90 m
             sample_interval (int): 等值线坐标采样间隔，默认5
-            n_closest_points (int): 克里金/IDW局部最近点数，默认80
-            export_pga (bool): 是否输出PGA.tif，默认True
-            interp_method (str): 插值方法 'kriging'|'rbf'|'idw'，默认'kriging'
-            idw_power (float): IDW幂次参数，默认2.0
-            variogram_model (str): 克里金变异函数模型，默认'spherical'
-            nlags (int): 克里金滞后数，默认6
+                调参建议：值越小采样点越密，插值精度越高但内存占用越大；
+                         推荐范围 3~10；数据点稀少时可设为 1
+            export_pga (bool): 是否同时输出 PGA.tif，默认 True
+            interp_method (str): 插值方法，'idw' 或 'tin'，默认 'idw'
+                'idw' — 反距离权重：适合稀疏/不均匀数据，速度快
+                'tin' — 三角网线性插值：适合均匀分布数据，边缘精度好
+            idw_power (float): IDW 距离衰减幂次，默认 2.0
+                调参建议：推荐范围 1.0~4.0；
+                         值越大近点主导，结果越局部化；
+                         值越小远点影响增大，结果越平滑；
+                         仅在 interp_method='idw' 时有效
+            tin_method (int): TIN 插值子方法，默认 0
+                0 = Linear（线性）：在三角形内线性插值，速度快，无振荡
+                1 = Clough-Tocher：曲线插值，结果更平滑，计算量较大
+                仅在 interp_method='tin' 时有效
         """
         self.kml_path = kml_path
         self.pga_output_path = pga_output_path
         self.ia_output_path = ia_output_path
         self.resolution = resolution
         self.sample_interval = sample_interval
-        self.n_closest_points = n_closest_points
         self.export_pga = export_pga
         self.interp_method = interp_method
         self.idw_power = idw_power
-        self.variogram_model = variogram_model
-        self.nlags = nlags
+        self.tin_method = tin_method
 
         # 运行时数据（由 run() 过程填充）
         self._contours: List[dict] = []
@@ -132,11 +176,12 @@ class KmlToIaConverter:
 
     def parse_kml(self) -> List[dict]:
         """
-        解析KML文件，提取所有PGA等值线数据
+        解析KML文件，提取所有PGA等值线数据（内存优化版）
 
         KML中每个Placemark的name字段格式为 "0.01g"、"0.02g" 等，
         表示该等值线对应的PGA值（以重力加速度g为单位）。
         坐标存储在LineString/coordinates中，格式为 "lon,lat,alt lon,lat,alt ..."
+        解析完成后立即释放 XML 树对象，节省内存。
 
         返回:
             list[dict]: 等值线数据列表，每项包含:
@@ -188,9 +233,12 @@ class KmlToIaConverter:
             for coord_str in coords_text.split():
                 parts = coord_str.split(',')
                 if len(parts) >= 2:
-                    lon = float(parts[0])
-                    lat = float(parts[1])
-                    coordinates.append((lon, lat))
+                    try:
+                        lon = float(parts[0])
+                        lat = float(parts[1])
+                        coordinates.append((lon, lat))
+                    except ValueError:
+                        continue
 
             if len(coordinates) < 2:
                 print(f"  警告: 等值线 '{name}' 坐标点不足，跳过")
@@ -203,6 +251,10 @@ class KmlToIaConverter:
                 'ia': ia,
                 'coordinates': coordinates
             })
+
+        # 解析完成后立即释放 XML 树，节省内存
+        del tree, root
+        gc.collect()
 
         # 按PGA值从大到小排序（内圈→外圈）
         contours.sort(key=lambda x: x['pga_g'], reverse=True)
@@ -282,93 +334,117 @@ class KmlToIaConverter:
         self._utm_srs = dst_srs
         self._transformer = osr.CoordinateTransformation(src_srs, dst_srs)
 
-    def _transform_coords(
-        self, lons: np.ndarray, lats: np.ndarray
+    def _transform_coords_batch(
+        self, lons: np.ndarray, lats: np.ndarray, chunk_size: int = 10000
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        批量将WGS84经纬度坐标转换为UTM平面坐标
+        分批批量将WGS84经纬度坐标转换为UTM平面坐标（内存优化版）
+
+        将坐标数组分成多批次处理，避免一次性分配过大的临时缓冲区。
 
         参数:
             lons (np.ndarray): 经度数组
             lats (np.ndarray): 纬度数组
+            chunk_size (int): 每批处理的点数，默认10000
 
         返回:
             tuple: (x_utm数组, y_utm数组)，转换失败的点值为NaN
         """
-        x_out = np.empty(len(lons), dtype=np.float64)
-        y_out = np.empty(len(lats), dtype=np.float64)
+        n = len(lons)
+        x_out = np.empty(n, dtype=np.float64)
+        y_out = np.empty(n, dtype=np.float64)
 
-        for i, (lon, lat) in enumerate(zip(lons, lats)):
-            try:
-                result = self._transformer.TransformPoint(float(lon), float(lat))
-                x_out[i] = result[0]
-                y_out[i] = result[1]
-            except Exception:
-                x_out[i] = np.nan
-                y_out[i] = np.nan
+        for start in range(0, n, chunk_size):
+            end = min(start + chunk_size, n)
+            for i in range(start, end):
+                try:
+                    result = self._transformer.TransformPoint(
+                        float(lons[i]), float(lats[i])
+                    )
+                    x_out[i] = result[0]
+                    y_out[i] = result[1]
+                except Exception:
+                    x_out[i] = np.nan
+                    y_out[i] = np.nan
 
         return x_out, y_out
 
     # ==================== 采样点准备 ====================
 
-    def _prepare_sample_points(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _iter_sample_points(self) -> Iterator[Tuple[float, float, float, float]]:
         """
-        从等值线中提取并下采样坐标点，作为插值的输入采样点。
-        同时对完全重叠的坐标点进行去重（保留首次出现的值），
-        避免克里金插值出现奇异矩阵。
+        生成器：逐条遍历等值线并按间隔采样，逐点输出（内存优化）
 
-        返回:
-            tuple: (x_utm, y_utm, ia_values, pga_values)
-                所有数组长度相同，已去重
+        使用生成器替代列表，避免一次性将所有坐标载入内存。
+
+        生成:
+            (lon, lat, ia_val, pga_val): 每个采样点的经纬度和对应的 Ia/PGA 值
         """
-        lons_all, lats_all = [], []
-        ia_all, pga_all = [], []
-
         for contour in self._contours:
             coords = contour['coordinates']
             ia_val = contour['ia']
             pga_val = contour['pga_mps2']
 
-            # 按间隔采样
-            sampled = coords[::self.sample_interval]
+            # 按间隔采样，构建可变列表以便追加末尾点
+            sampled: List[tuple] = list(coords[::self.sample_interval])
             # 确保最后一个点被包含（闭合线的收尾点）
             if len(coords) > 1:
                 last_pt = coords[-1]
-                # 只有当最后一个点确实不在采样集中时才添加
-                if len(sampled) == 0 or sampled[-1] != last_pt:
+                if not sampled or sampled[-1] != last_pt:
                     sampled.append(last_pt)
 
             for lon, lat in sampled:
-                lons_all.append(lon)
-                lats_all.append(lat)
-                ia_all.append(ia_val)
-                pga_all.append(pga_val)
+                yield lon, lat, ia_val, pga_val
 
-        lons_arr = np.array(lons_all)
-        lats_arr = np.array(lats_all)
-        ia_arr = np.array(ia_all)
-        pga_arr = np.array(pga_all)
+    def _prepare_sample_points(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        从等值线中提取并下采样坐标点，作为插值的输入采样点（内存优化版）
 
-        # 坐标转换到UTM
-        x_utm, y_utm = self._transform_coords(lons_arr, lats_arr)
+        使用生成器迭代采样点，避免大量中间列表占用内存。
+        对完全重叠的坐标点进行去重，避免插值出现奇异矩阵。
+        各阶段处理完成后立即释放临时数组。
+
+        返回:
+            tuple: (x_utm, y_utm, ia_values, pga_values)
+                所有数组长度相同，已去重
+        """
+        # 通过生成器一次性收集数据，避免多次 append 开销
+        rows = list(self._iter_sample_points())
+        if not rows:
+            raise ValueError("没有有效的采样点")
+
+        lons_arr = np.array([r[0] for r in rows], dtype=np.float64)
+        lats_arr = np.array([r[1] for r in rows], dtype=np.float64)
+        ia_arr   = np.array([r[2] for r in rows], dtype=np.float32)
+        pga_arr  = np.array([r[3] for r in rows], dtype=np.float32)
+        del rows   # 立即释放中间列表
+        gc.collect()
+
+        # 坐标转换到UTM（分批处理，控制每批内存峰值）
+        x_utm, y_utm = self._transform_coords_batch(lons_arr, lats_arr)
+        del lons_arr, lats_arr   # 释放经纬度数组
+        gc.collect()
 
         # 去除转换失败的点
         valid = ~(np.isnan(x_utm) | np.isnan(y_utm))
-        x_utm = x_utm[valid]
-        y_utm = y_utm[valid]
-        ia_arr = ia_arr[valid]
+        x_utm   = x_utm[valid]
+        y_utm   = y_utm[valid]
+        ia_arr  = ia_arr[valid]
         pga_arr = pga_arr[valid]
 
         # -------- 去重处理 --------
-        # 将坐标四舍五入到0.01米精度后去重，防止克里金奇异矩阵
+        # 将坐标四舍五入到0.01米精度后去重，防止插值奇异矩阵
         coords_rounded = np.round(np.column_stack([x_utm, y_utm]), decimals=2)
         _, unique_idx = np.unique(coords_rounded, axis=0, return_index=True)
-        unique_idx.sort()  # 保持原始顺序
+        del coords_rounded   # 释放临时数组
+        unique_idx.sort()    # 保持原始顺序
 
-        x_utm = x_utm[unique_idx]
-        y_utm = y_utm[unique_idx]
-        ia_arr = ia_arr[unique_idx]
+        x_utm   = x_utm[unique_idx]
+        y_utm   = y_utm[unique_idx]
+        ia_arr  = ia_arr[unique_idx]
         pga_arr = pga_arr[unique_idx]
+        del unique_idx
+        gc.collect()
 
         print(f"\n采样点统计:")
         print(f"  采样间隔: 每 {self.sample_interval} 个点取1个")
@@ -418,241 +494,252 @@ class KmlToIaConverter:
         print(f"  Y范围: {y_min:.2f} ~ {y_max:.2f} m")
         print(f"  总像素数: {self._n_cols * self._n_rows:,}")
 
-    # ==================== 插值方法 ====================
+    # ==================== QGIS 插值方法 ====================
 
-    def _interpolate_kriging(
-        self, x: np.ndarray, y: np.ndarray, values: np.ndarray
-    ) -> np.ndarray:
+    def _build_qgs_vector_layer(
+        self,
+        x_utm: np.ndarray,
+        y_utm: np.ndarray,
+        values: np.ndarray,
+        field_name: str = 'value',
+    ) -> QgsVectorLayer:
         """
-        普通克里金插值（Ordinary Kriging）
+        将采样点数组构建为 QGIS 内存矢量图层，供 QGIS 插值算法使用。
 
-        优化策略:
-            - 使用 vectorized 后端 + n_closest_points 进行局部插值，
-              相比 loop 后端大幅提升速度
-            - 采样点已去重，避免奇异矩阵
+        要素以批次方式添加（每批 5000 个），控制每次写入的内存峰值。
 
         参数:
-            x (np.ndarray): 采样点X坐标(UTM)
-            y (np.ndarray): 采样点Y坐标(UTM)
-            values (np.ndarray): 采样点对应的值
+            x_utm (np.ndarray): 采样点X坐标(UTM)
+            y_utm (np.ndarray): 采样点Y坐标(UTM)
+            values (np.ndarray): 采样点对应值（Ia 或 PGA）
+            field_name (str): 值字段名，默认'value'
 
         返回:
-            np.ndarray: 插值结果栅格 (n_rows, n_cols)，行顺序为从上到下
+            QgsVectorLayer: QGIS 内存点图层（含一个 Double 型值字段）
         """
-        ok = OrdinaryKriging(
-            x.astype(np.float64),
-            y.astype(np.float64),
-            values.astype(np.float64),
-            variogram_model=self.variogram_model,
-            nlags=self.nlags,
-            verbose=False,
-            enable_plotting=False
+        crs_auth_id = f"EPSG:{self._utm_epsg}"
+        layer = QgsVectorLayer(
+            f"Point?crs={crs_auth_id}", "sample_points", "memory"
         )
 
-        # 构建网格坐标轴（从小到大）
-        gridx = np.linspace(
-            self._x_min + self.resolution / 2.0,
-            self._x_min + (self._n_cols - 0.5) * self.resolution,
-            self._n_cols
-        )
-        gridy = np.linspace(
-            self._y_min + self.resolution / 2.0,
-            self._y_min + (self._n_rows - 0.5) * self.resolution,
-            self._n_rows
-        )
+        provider = layer.dataProvider()
+        provider.addAttributes([QgsField(field_name, QVariant.Double)])
+        layer.updateFields()
 
-        # 使用 vectorized 后端 + n_closest_points 局部搜索，比 loop 快很多
-        z_grid, _ = ok.execute(
-            'grid', gridx, gridy,
-            n_closest_points=self.n_closest_points,
-            backend='vectorized'
-        )
+        # 每批次添加要素，防止单次写入占用过多内存
+        batch_size = 5000
+        batch: List[QgsFeature] = []
+        for xi, yi, vi in zip(x_utm, y_utm, values):
+            feat = QgsFeature()
+            feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(float(xi), float(yi))))
+            feat.setAttributes([float(vi)])
+            batch.append(feat)
+            if len(batch) >= batch_size:
+                provider.addFeatures(batch)
+                batch.clear()
+        if batch:
+            provider.addFeatures(batch)
 
-        # PyKrige grid模式输出：z_grid[i,j] 中 i 对应 gridy（从小到大），
-        # j 对应 gridx。GeoTIFF 第一行对应最大Y，所以需要翻转行顺序。
-        z_grid = np.flipud(z_grid).astype(np.float32)
+        layer.updateExtents()
+        return layer
 
-        return z_grid
-
-    def _interpolate_rbf(
-        self, x: np.ndarray, y: np.ndarray, values: np.ndarray
-    ) -> np.ndarray:
+    def _run_qgis_interpolation(
+        self,
+        x_utm: np.ndarray,
+        y_utm: np.ndarray,
+        values: np.ndarray,
+        tmp_asc_path: str,
+    ) -> None:
         """
-        径向基函数插值（RBF - Radial Basis Function）
+        使用 QGIS 3.40.15 自带的插值算法将采样点插值到 ASC 栅格文件。
 
-        使用 scipy.interpolate.RBFInterpolator，默认核函数为 thin_plate_spline。
-        该方法对大数据量较为友好，支持向量化计算。
+        根据 self.interp_method 选择 IDW 或 TIN 插值器，
+        通过 QgsGridFileWriter 逐行流式写入 ASC 文件，
+        不在内存中构建完整的栅格数组，内存占用低。
+
+        IDW（反距离权重）调参说明：
+            self.idw_power（默认2.0，推荐1.0~4.0）
+                — 距离衰减幂次，值越大近点主导，结果越局部化；
+                  值越小远点影响增大，结果越平滑；
+                  QGIS IDW 使用所有采样点，通过空间索引加速
+
+        TIN（三角网线性插值）调参说明：
+            self.tin_method（默认0）
+                — 0=Linear（线性插值，速度快，无振荡）
+                — 1=Clough-Tocher（曲线插值，更平滑，计算量较大）
 
         参数:
-            x (np.ndarray): 采样点X坐标(UTM)
-            y (np.ndarray): 采样点Y坐标(UTM)
-            values (np.ndarray): 采样点对应的值
-
-        返回:
-            np.ndarray: 插值结果栅格 (n_rows, n_cols)
+            x_utm: 采样点X坐标(UTM)
+            y_utm: 采样点Y坐标(UTM)
+            values: 采样点对应值
+            tmp_asc_path: 输出临时 ASC 文件路径
         """
-        # 构建采样点矩阵 (N, 2)
-        points = np.column_stack([x, y])
+        # ---- 构建 QGIS 内存矢量图层 ----
+        layer = self._build_qgs_vector_layer(x_utm, y_utm, values)
 
-        # 创建RBF插值器，使用薄板样条核函数
-        rbf = RBFInterpolator(
-            points, values,
-            kernel='thin_plate_spline',
-            smoothing=0.0
-        )
+        # ---- 构建 QgsInterpolator.LayerData ----
+        layer_data = QgsInterpolator.LayerData()
+        layer_data.source = layer                                         # 数据源（矢量图层）
+        layer_data.valueSource = QgsInterpolator.ValueSource.ValueAttribute  # 使用属性字段中的值
+        layer_data.interpolationAttribute = 0                             # 第0个字段（'value'）
+        layer_data.sourceType = QgsInterpolator.SourceType.SourcePoints   # 点要素类型
 
-        # 构建网格查询点
-        gridx = np.linspace(
-            self._x_min + self.resolution / 2.0,
-            self._x_min + (self._n_cols - 0.5) * self.resolution,
-            self._n_cols
-        )
-        gridy = np.linspace(
-            self._y_min + self.resolution / 2.0,
-            self._y_min + (self._n_rows - 0.5) * self.resolution,
-            self._n_rows
-        )
-
-        # 从大Y到小Y（GeoTIFF行序：第一行=最大Y）
-        gridy_desc = gridy[::-1]
-
-        gx, gy = np.meshgrid(gridx, gridy_desc)
-        query_points = np.column_stack([gx.ravel(), gy.ravel()])
-
-        # 批量插值
-        z_flat = rbf(query_points)
-        z_grid = z_flat.reshape(self._n_rows, self._n_cols).astype(np.float32)
-
-        return z_grid
-
-    def _interpolate_idw(
-        self, x: np.ndarray, y: np.ndarray, values: np.ndarray
-    ) -> np.ndarray:
-        """
-        反距离权重插值（IDW - Inverse Distance Weighting）
-
-        使用 scipy.spatial.cKDTree 进行最近邻搜索以加速计算。
-        对每个栅格点，取最近的 n_closest_points 个采样点，
-        按距离的 idw_power 次方倒数进行加权平均。
-
-        参数:
-            x (np.ndarray): 采样点X坐标(UTM)
-            y (np.ndarray): 采样点Y坐标(UTM)
-            values (np.ndarray): 采样点对应的值
-
-        返回:
-            np.ndarray: 插值结果栅格 (n_rows, n_cols)
-        """
-        points = np.column_stack([x, y])
-        tree = cKDTree(points)
-
-        # 构建网格（GeoTIFF行序）
-        gridx = np.linspace(
-            self._x_min + self.resolution / 2.0,
-            self._x_min + (self._n_cols - 0.5) * self.resolution,
-            self._n_cols
-        )
-        gridy = np.linspace(
-            self._y_min + self.resolution / 2.0,
-            self._y_min + (self._n_rows - 0.5) * self.resolution,
-            self._n_rows
-        )
-        gridy_desc = gridy[::-1]
-
-        gx, gy = np.meshgrid(gridx, gridy_desc)
-        query_points = np.column_stack([gx.ravel(), gy.ravel()])
-
-        # KDTree 查询最近 k 个点
-        k = min(self.n_closest_points, len(values))
-        distances, indices = tree.query(query_points, k=k)
-
-        # 处理距离为0的情况（查询点恰好在采样点上）
-        # distances 和 indices 形状: (n_query, k)
-        if k == 1:
-            distances = distances.reshape(-1, 1)
-            indices = indices.reshape(-1, 1)
-
-        # 避免除以零：距离为0时权重设为极大值
-        eps = 1e-12
-        weights = 1.0 / np.power(np.maximum(distances, eps), self.idw_power)
-
-        # 加权平均
-        neighbor_values = values[indices]  # (n_query, k)
-        z_flat = np.sum(weights * neighbor_values, axis=1) / np.sum(weights, axis=1)
-
-        z_grid = z_flat.reshape(self._n_rows, self._n_cols).astype(np.float32)
-
-        return z_grid
-
-    def _interpolate(
-        self, x: np.ndarray, y: np.ndarray, values: np.ndarray,
-        method: str
-    ) -> np.ndarray:
-        """
-        统一插值调度方法
-
-        参数:
-            x (np.ndarray): 采样点X坐标
-            y (np.ndarray): 采样点Y坐标
-            values (np.ndarray): 采样点值
-            method (str): 插值方法名称 'kriging'|'rbf'|'idw'
-
-        返回:
-            np.ndarray: 插值结果栅格 (n_rows, n_cols)
-
-        异常:
-            ValueError: 不支持的插值方法
-        """
-        method = method.lower()
-        if method == 'kriging':
-            return self._interpolate_kriging(x, y, values)
-        elif method == 'rbf':
-            return self._interpolate_rbf(x, y, values)
-        elif method == 'idw':
-            return self._interpolate_idw(x, y, values)
+        # ---- 创建插值器 ----
+        method = self.interp_method.lower()
+        if method == 'idw':
+            # IDW：反距离权重插值
+            # setDistanceCoefficient 设置距离衰减幂次；
+            # QGIS IDW 使用全部采样点（通过空间索引加速），不限制搜索半径
+            interpolator = QgsIDWInterpolator([layer_data])
+            interpolator.setDistanceCoefficient(self.idw_power)
+        elif method == 'tin':
+            # TIN：三角网线性插值 / Clough-Tocher 曲线插值
+            # tin_method=0 → Linear；tin_method=1 → CloughTocher
+            tin_enum = (
+                QgsTINInterpolator.TinInterpolation.Linear
+                if self.tin_method == 0
+                else QgsTINInterpolator.TinInterpolation.CloughTocher
+            )
+            interpolator = QgsTINInterpolator([layer_data], tin_enum)
         else:
             raise ValueError(
-                f"不支持的插值方法: '{method}'，可选: 'kriging', 'rbf', 'idw'"
+                f"不支持的插值方法: '{method}'，可选: 'idw', 'tin'"
             )
+
+        # ---- 构建栅格空间范围 ----
+        extent = QgsRectangle(
+            self._x_min, self._y_min,
+            self._x_max, self._y_max
+        )
+
+        # ---- 流式写入 ASC 文件（逐行，内存友好）----
+        # QgsGridFileWriter 不在内存中保留完整栅格，直接按行写入文件
+        writer = QgsGridFileWriter(
+            interpolator,
+            tmp_asc_path,
+            extent,
+            self._n_cols,
+            self._n_rows,
+        )
+        error_code = writer.writeFile()
+        if error_code != 0:
+            raise RuntimeError(
+                f"QgsGridFileWriter 写入失败，错误码: {error_code}"
+            )
+
+        # 显式释放 QGIS 对象，加快内存回收
+        del writer, interpolator, layer_data, layer
+        gc.collect()
+
+    def _asc_to_geotiff(self, asc_path: str, tif_path: str) -> None:
+        """
+        将 ESRI ASCII 栅格文件转换为带投影信息的压缩 GeoTIFF 文件。
+
+        使用 GDAL Translate 完成格式转换，同时写入 UTM 投影信息、
+        LZW 压缩和 Tiled 存储，减小输出文件体积。
+
+        参数:
+            asc_path (str): 输入 ASC 文件路径
+            tif_path (str): 输出 GeoTIFF 文件路径
+        """
+        os.makedirs(os.path.dirname(os.path.abspath(tif_path)), exist_ok=True)
+
+        src_ds = gdal.Open(asc_path, gdal.GA_ReadOnly)
+        if src_ds is None:
+            raise RuntimeError(f"无法读取ASC插值结果: {asc_path}")
+
+        translate_options = gdal.TranslateOptions(
+            format='GTiff',
+            outputType=gdal.GDT_Float32,
+            creationOptions=['COMPRESS=LZW', 'TILED=YES'],
+            outputSRS=self._utm_srs.ExportToWkt(),
+            noData=-9999.0,
+        )
+        dst_ds = gdal.Translate(tif_path, src_ds, options=translate_options)
+        if dst_ds is None:
+            src_ds = None
+            raise RuntimeError(f"无法创建GeoTIFF文件: {tif_path}")
+
+        band = dst_ds.GetRasterBand(1)
+        band.ComputeStatistics(False)
+        band.FlushCache()
+
+        # 显式关闭数据集，释放文件句柄
+        src_ds = None
+        dst_ds = None
+        band = None
+        gc.collect()
+
+        print(f"  已保存: {tif_path}")
+
+    def _interpolate_to_file(
+        self,
+        x_utm: np.ndarray,
+        y_utm: np.ndarray,
+        values: np.ndarray,
+        output_tif_path: str,
+    ) -> None:
+        """
+        统一插值入口：调用 QGIS 插值算法写入临时 ASC 文件，
+        再转换为最终 GeoTIFF 格式，处理完成后清理临时文件。
+
+        参数:
+            x_utm: 采样点X坐标(UTM)
+            y_utm: 采样点Y坐标(UTM)
+            values: 采样点值
+            output_tif_path: 输出 GeoTIFF 文件路径
+        """
+        # 临时 ASC 文件：QGIS GridFileWriter 的中间输出格式
+        with tempfile.NamedTemporaryFile(suffix='.asc', delete=False) as tmp:
+            tmp_asc_path = tmp.name
+
+        try:
+            self._run_qgis_interpolation(x_utm, y_utm, values, tmp_asc_path)
+            self._asc_to_geotiff(tmp_asc_path, output_tif_path)
+        finally:
+            # 使用 os.path.splitext 安全地替换扩展名，避免路径中含多个 '.asc' 时误替换
+            base, _ = os.path.splitext(tmp_asc_path)
+            for ext in ('.asc', '.prj'):
+                candidate = base + ext
+                if os.path.exists(candidate):
+                    os.remove(candidate)
 
     # ==================== PGA 栅格化 ====================
 
-    def _rasterize_pga_contours(
-        self, pga_values: np.ndarray, x_utm: np.ndarray, y_utm: np.ndarray
-    ) -> np.ndarray:
+    def _rasterize_pga_contours(self) -> None:
         """
-        将PGA等值线（闭合LineString）栅格化为PGA.tif
+        将PGA等值线（闭合LineString）矢量栅格化为PGA.tif（内存优化版）
 
         实现逻辑:
             等值线按PGA值从小到大遍历（外圈到内圈），
-            将每条等值线闭合为多边形，判断栅格像素中心是否在多边形内，
-            若在则覆盖为该等值线的PGA值。
-            这样内圈的值会覆盖外圈的值，最终结果正确。
+            将每条等值线闭合为多边形，利用 GDAL/OGR 矢量栅格化 API
+            批量处理，内圈覆盖外圈，最终结果正确。
+
+        优化措施:
+            - 矢量数据和内存栅格处理完成后立即显式释放
+            - 使用 GDAL Translate 直接写出压缩 GeoTIFF，避免二次读取
+            - 每个 OGR Feature 创建后立即置 None 释放
 
         注意:
-            KML中的等值线是LineString，不一定闭合。
-            此处将首尾连接强制闭合，以构建多边形进行包含判断。
-            使用GDAL/OGR矢量栅格化API代替逐像素判断以提升速度。
-
-        参数:
-            pga_values (np.ndarray): 采样点PGA值（未使用，仅用于统一接口）
-            x_utm (np.ndarray): 采样点X坐标（未使用）
-            y_utm (np.ndarray): 采样点Y坐标（未使用）
-
-        返回:
-            np.ndarray: PGA栅格数据 (n_rows, n_cols)
+            KML中的等值线是LineString，不一定闭合，
+            此处强制首尾连接以构建多边形进行包含判断。
         """
         print("\n  PGA栅格化: 使用OGR矢量→栅格化...")
+
+        if not self.pga_output_path:
+            print("  警告: PGA输出路径未设置，跳过PGA栅格化")
+            return
 
         # 使用最小PGA值作为背景值
         min_pga = self._contours[-1]['pga_mps2'] if self._contours else 0.0
 
-        # 创建内存中的矢量数据源
+        # 创建内存矢量数据源
         mem_driver = ogr.GetDriverByName('Memory')
         mem_ds = mem_driver.CreateDataSource('pga_contours')
-        layer = mem_ds.CreateLayer('contours', srs=self._utm_srs, geom_type=ogr.wkbPolygon)
+        layer = mem_ds.CreateLayer(
+            'contours', srs=self._utm_srs, geom_type=ogr.wkbPolygon
+        )
 
-        # 添加 PGA 字段
         field_defn = ogr.FieldDefn('PGA', ogr.OFTReal)
         layer.CreateField(field_defn)
 
@@ -684,79 +771,50 @@ class KmlToIaConverter:
             feature.SetField('PGA', contour['pga_mps2'])
             feature.SetGeometry(polygon)
             layer.CreateFeature(feature)
-            feature = None
+            feature = None   # 立即释放要素对象
 
-        # 创建输出栅格（内存）
+        # 创建内存临时栅格
         raster_driver = gdal.GetDriverByName('MEM')
-        raster_ds = raster_driver.Create('', self._n_cols, self._n_rows, 1, gdal.GDT_Float32)
+        raster_ds = raster_driver.Create(
+            '', self._n_cols, self._n_rows, 1, gdal.GDT_Float32
+        )
         raster_ds.SetGeoTransform(self._geo_transform)
         raster_ds.SetProjection(self._utm_srs.ExportToWkt())
 
         band = raster_ds.GetRasterBand(1)
         band.SetNoDataValue(-9999.0)
-        # 初始化为最小PGA值
         band.Fill(min_pga)
 
-        # 矢量栅格化：按添加顺序渲染（外圈先画，内圈后画覆盖）
+        # 矢量栅格化：外圈先画，内圈后画（覆盖）
         gdal.RasterizeLayer(
             raster_ds, [1], layer,
-            options=[f"ATTRIBUTE=PGA"]
+            options=["ATTRIBUTE=PGA"]
+        )
+        band.ComputeStatistics(False)
+        band.FlushCache()
+
+        pga_min = band.GetMinimum()
+        pga_max = band.GetMaximum()
+
+        # 直接从内存栅格写出压缩 GeoTIFF，无需先保存再读取
+        os.makedirs(
+            os.path.dirname(os.path.abspath(self.pga_output_path)), exist_ok=True
+        )
+        gdal.Translate(
+            self.pga_output_path, raster_ds,
+            format='GTiff',
+            creationOptions=['COMPRESS=LZW', 'TILED=YES'],
+            outputType=gdal.GDT_Float32,
         )
 
-        pga_grid = band.ReadAsArray().astype(np.float32)
-
+        # 释放所有 GDAL/OGR 对象
         mem_ds = None
         raster_ds = None
+        band = None
+        gc.collect()
 
-        print(f"  PGA栅格化完成，值范围: {np.nanmin(pga_grid):.4f} ~ "
-              f"{np.nanmax(pga_grid):.4f} m/s²")
-
-        return pga_grid
-
-    # ==================== GeoTIFF 输出 ====================
-
-    @staticmethod
-    def _save_geotiff(
-        data: np.ndarray, output_path: str,
-        geo_transform: tuple, projection_wkt: str,
-        nodata_value: float = -9999.0
-    ):
-        """
-        将二维数组保存为GeoTIFF栅格文件
-
-        参数:
-            data (np.ndarray): 栅格数据，形状 (rows, cols)
-            output_path (str): 输出文件路径
-            geo_transform (tuple): GDAL仿射变换6参数
-                (左上角X, 像素宽X, 旋转, 左上角Y, 旋转, 像素宽Y负值)
-            projection_wkt (str): 坐标系WKT字符串
-            nodata_value (float): 无数据标识值，默认-9999.0
-        """
-        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-
-        rows, cols = data.shape
-        data_clean = np.where(np.isnan(data), nodata_value, data)
-
-        driver = gdal.GetDriverByName('GTiff')
-        dataset = driver.Create(
-            output_path, cols, rows, 1, gdal.GDT_Float32,
-            options=['COMPRESS=LZW', 'TILED=YES']
-        )
-
-        if dataset is None:
-            raise RuntimeError(f"无法创建GeoTIFF文件: {output_path}")
-
-        dataset.SetGeoTransform(geo_transform)
-        dataset.SetProjection(projection_wkt)
-
-        band = dataset.GetRasterBand(1)
-        band.SetNoDataValue(nodata_value)
-        band.WriteArray(data_clean)
-        band.FlushCache()
-        band.ComputeStatistics(False)
-
-        dataset = None
-        print(f"  已保存: {output_path}")
+        print(f"  PGA栅格化完成，值范围: {pga_min:.4f} ~ {pga_max:.4f} m/s²")
+        print(f"  已保存: {self.pga_output_path}")
 
     # ==================== 主流程 ====================
 
@@ -767,17 +825,17 @@ class KmlToIaConverter:
         流程:
             1. 解析KML文件
             2. 确定UTM投影并创建坐标转换器
-            3. 准备采样点（下采样+去重+坐标转换）
+            3. 准备采样点（生成器下采样 + 去重 + 批量坐标转换）
             4. 构建输出栅格网格
-            5. （可选）PGA等值线栅格化并输出PGA.tif
-            6. Ia插值计算并输出Ia.tif
+            5. （可选）PGA等值线矢量栅格化并输出PGA.tif
+            6. 使用 QGIS IDW/TIN 插值计算并输出Ia.tif
             7. 打印耗时统计
 
         返回:
             bool: 处理是否成功
         """
         print("=" * 60)
-        print("KML → Ia 栅格处理程序")
+        print("KML → Ia 栅格处理程序（QGIS 3.40.15 插值）")
         print(f"插值方法: {self.interp_method.upper()}")
         print(f"输出PGA.tif: {'是' if self.export_pga else '否'}")
         print("=" * 60)
@@ -787,58 +845,48 @@ class KmlToIaConverter:
             print(f"错误: KML文件不存在 - {self.kml_path}")
             return False
 
-        # 2. 解析KML
+        # 2. 解析KML（解析后 XML 树已被释放）
         contours = self.parse_kml()
         if len(contours) == 0:
             print("错误: 未找到有效的PGA等值线")
             return False
 
         # 3. 确定投影
-        all_lons = []
-        for c in contours:
-            all_lons.extend([coord[0] for coord in c['coordinates']])
+        all_lons = [coord[0] for c in contours for coord in c['coordinates']]
         self._determine_utm_projection(min(all_lons), max(all_lons))
+        del all_lons
+        gc.collect()
 
         # 4. 创建坐标转换器
         self._create_transformer()
 
-        # 5. 准备采样点
+        # 5. 准备采样点（生成器 + 批量转换，内存友好）
         x_utm, y_utm, ia_values, pga_values = self._prepare_sample_points()
 
         # 6. 构建栅格网格
         self._build_grid(x_utm, y_utm)
 
-        projection_wkt = self._utm_srs.ExportToWkt()
-
         # 7. PGA栅格化（可选）
-        if self.export_pga:
+        if self.export_pga and self.pga_output_path:
             print("\n" + "-" * 40)
             print("步骤: PGA等值线栅格化")
             print("-" * 40)
             pga_start = time.time()
-
-            pga_grid = self._rasterize_pga_contours(pga_values, x_utm, y_utm)
-            self._save_geotiff(
-                pga_grid, self.pga_output_path,
-                self._geo_transform, projection_wkt
-            )
-
+            self._rasterize_pga_contours()
             pga_elapsed = time.time() - pga_start
             print(f"  PGA栅格化耗时: {pga_elapsed:.2f} 秒")
 
-        # 8. Ia插值
+        # 8. Ia插值（QGIS IDW/TIN，流式写入文件）
         print("\n" + "-" * 40)
-        print(f"步骤: Ia插值计算（{self.interp_method.upper()}）")
+        print(f"步骤: Ia插值计算（QGIS {self.interp_method.upper()}）")
         print("-" * 40)
 
         interp_start = time.time()
+        self._interpolate_to_file(x_utm, y_utm, ia_values, self.ia_output_path)
 
-        ia_grid = self._interpolate(x_utm, y_utm, ia_values, self.interp_method)
-
-        self._save_geotiff(
-            ia_grid, self.ia_output_path,
-            self._geo_transform, projection_wkt
-        )
+        # 释放大型数组
+        del x_utm, y_utm, ia_values, pga_values
+        gc.collect()
 
         interp_elapsed = time.time() - interp_start
         print(f"\n✅ Ia插值计算到输出文件耗时: {interp_elapsed:.2f} 秒")
@@ -846,7 +894,7 @@ class KmlToIaConverter:
         # 9. 汇总
         print("\n" + "=" * 60)
         print("处理完成!")
-        if self.export_pga:
+        if self.export_pga and self.pga_output_path:
             print(f"  PGA栅格: {self.pga_output_path}")
         print(f"  Ia栅格:  {self.ia_output_path}")
         print("=" * 60)
@@ -857,16 +905,14 @@ class KmlToIaConverter:
 # ==================== 入口 ====================
 if __name__ == "__main__":
     converter = KmlToIaConverter(
-        kml_path="../../data/geology/kml/source.kml",       # 输入KML文件路径
-        pga_output_path=None,     # PGA输出路径
-        ia_output_path="../../data/geology/ia/Ia.tif",       # Ia输出路径
-        resolution=30,                                        # 30m × 30m 分辨率
-        sample_interval=5,                                    # 每5个点取1个
-        n_closest_points=80,                                  # 局部搜索最近80个点
-        export_pga=False,                                      # 输出PGA.tif
-        interp_method='kriging',                              # 插值方法: kriging/rbf/idw
-        idw_power=2.0,                                        # IDW幂次（仅idw时有效）
-        variogram_model='spherical',                          # 克里金变异函数模型
-        nlags=6                                               # 克里金滞后数
+        kml_path="../../data/geology/kml/source.kml",        # 输入KML文件路径
+        pga_output_path=None,                                 # PGA输出路径（不需要可设为None）
+        ia_output_path="../../data/geology/ia/Ia.tif",        # Ia输出路径
+        resolution=30,          # 输出分辨率(米)；推荐10~100，越小精度越高但越慢
+        sample_interval=5,      # 等值线采样间隔；推荐3~10，越小采样越密
+        export_pga=False,       # 是否同时输出PGA.tif
+        interp_method='idw',    # 插值方法: 'idw'(反距离权重) 或 'tin'(三角网)
+        idw_power=2.0,          # IDW幂次；推荐1.0~4.0，越大近点主导（仅idw有效）
+        tin_method=0,           # TIN子方法: 0=线性, 1=Clough-Tocher（仅tin有效）
     )
     converter.run()
