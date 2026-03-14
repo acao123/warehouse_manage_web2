@@ -710,6 +710,7 @@ class KmlToIaConverter:
 
         # ---- 创建输出 GeoTIFF ----
         os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+        self._ensure_file_writable(output_tif_path)
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
             output_tif_path,
@@ -767,6 +768,40 @@ class KmlToIaConverter:
         print(f"  插值完成，总耗时: {total_time:.1f}s")
         print(f"  已保存: {output_tif_path}")
 
+    def _ensure_file_writable(self, file_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> None:
+        """
+        确保输出文件可写，如果文件已存在则尝试删除。
+
+        参数:
+            file_path: 输出文件路径
+            max_retries: 最大重试次数
+            retry_delay: 重试间隔（秒）
+
+        异常:
+            RuntimeError: 文件无法删除或写入
+        """
+        if not os.path.exists(file_path):
+            return
+
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                os.remove(file_path)
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt < max_retries:
+                    print(f"  警告: 删除文件失败（第{attempt}次），{retry_delay}秒后重试: {file_path}")
+                    time.sleep(retry_delay)
+
+        raise RuntimeError(
+            f"无法删除已存在的输出文件，请检查以下内容后重试：\n"
+            f"  文件路径: {file_path}\n"
+            f"  错误信息: {last_error}\n"
+            f"  可能原因: 文件正被其他程序占用（如 QGIS、资源管理器、Excel 等）或权限不足\n"
+            f"  解决建议: 请关闭所有可能打开该文件的程序，或检查文件/目录的读写权限"
+        )
+
     def _asc_to_geotiff(self, asc_path: str, tif_path: str) -> None:
         """
         将 ESRI ASCII 栅格文件转换为带投影信息的压缩 GeoTIFF 文件。
@@ -779,6 +814,7 @@ class KmlToIaConverter:
             tif_path (str): 输出 GeoTIFF 文件路径
         """
         os.makedirs(os.path.dirname(os.path.abspath(tif_path)), exist_ok=True)
+        self._ensure_file_writable(tif_path)
 
         src_ds = gdal.Open(asc_path, gdal.GA_ReadOnly)
         if src_ds is None:
@@ -861,6 +897,7 @@ class KmlToIaConverter:
 
         # 创建输出 GeoTIFF 数据集（直接写入，无 ASC 中间文件）
         os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+        self._ensure_file_writable(output_tif_path)
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
             output_tif_path,
@@ -972,6 +1009,7 @@ class KmlToIaConverter:
 
         # 创建输出 GeoTIFF 数据集
         os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+        self._ensure_file_writable(output_tif_path)
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
             output_tif_path,
@@ -1153,6 +1191,7 @@ class KmlToIaConverter:
         os.makedirs(
             os.path.dirname(os.path.abspath(self.pga_output_path)), exist_ok=True
         )
+        self._ensure_file_writable(self.pga_output_path)
         gdal.Translate(
             self.pga_output_path, raster_ds,
             format='GTiff',
