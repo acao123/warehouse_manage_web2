@@ -8,13 +8,26 @@ KML转Ia(阿里亚斯强度)栅格文件处理模块
     1. 解析KML文件获取PGA等值线（LineString）
     2. 将PGA值(g单位)转换为实际加速度值(m/s²)
     3. 根据公式 log10(Ia) = a + b * log10(PGA) 计算Ia值
-    4. 使用QGIS自带IDW/TIN插值算法生成栅格（替换第三方pykrige/scipy）
+    4. 支持多种插值算法生成栅格：
+       - QGIS 3.40.15 自带 IDW / TIN 插值
+       - scipy RBFInterpolator（IDW近似）
+       - pykrige 普通克里金插值
     5. 可选输出PGA.tif和Ia.tif
-    6. 打印插值计算到输出文件的耗时
+    6. 打印各阶段耗时统计
 
 作者：Copilot
 日期：2026-03-14
 QGIS版本：3.40.15
+
+支持插值方法:
+    - 'qgis_idw' : QGIS自带反距离权重插值，速度快，适合稀疏/不均匀数据
+    - 'qgis_tin' : QGIS自带三角网插值，基于Delaunay三角剖分，边缘精度好
+    - 'scipy_idw': 基于scipy RBFInterpolator的IDW近似，支持限制邻近点数量
+    - 'kriging'  : 基于pykrige的普通克里金插值，地质统计学方法，精度高
+
+插值范围说明:
+    最小范围: 15km × 15km
+    最大范围: 300km × 300km
 
 投影说明：
     根据数据经度范围的中心经度，自动选择对应的UTM投影带。
@@ -23,10 +36,11 @@ QGIS版本：3.40.15
     北半球EPSG编码：326xx（如Zone 48N → EPSG:32648）
     例如：经度中心103°时，utm_zone = int((103+180)/6)+1 = 48 → EPSG:32648
 
-内存优化说明（运行环境 32G）：
+内存优化说明（运行环境 32G，占用不超过 10G）：
     - 使用生成器迭代采样点，避免一次性构建大型中间列表
-    - 坐标转换分批进行（默认每批 10 000 个点）
-    - QgsGridFileWriter 逐行流式写入 ASC 文件，不在内存中保留完整栅格
+    - 坐标转换分批进行（coord_batch_size 控制，默认每批 10000 个点）
+    - QGIS方法：QgsGridFileWriter 逐行流式写入 ASC 文件，不保留完整栅格
+    - scipy/kriging 方法：按 chunk_size 行分块处理，逐块释放临时数组
     - 各阶段处理后及时 del 临时数组并调用 gc.collect()
 """
 
@@ -36,7 +50,7 @@ import time
 import math
 import tempfile
 import numpy as np
-from typing import Iterator, List, Literal, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 from xml.etree import ElementTree as ET
 from osgeo import gdal, osr, ogr
 
@@ -58,30 +72,50 @@ from qgis.analysis import (
 )
 from PyQt5.QtCore import QMetaType
 
+# ==================== 可选第三方库（scipy / pykrige）====================
+# scipy 和 pykrige 在 QGIS Python 环境中需额外安装：
+#   pip install scipy pykrige
+# 若未安装，'scipy_idw' 和 'kriging' 方法不可用，使用时会抛出 ImportError。
+try:
+    from scipy.interpolate import RBFInterpolator as _RBFInterpolator
+    _HAS_SCIPY = True
+except ImportError:
+    _HAS_SCIPY = False
+
+try:
+    from pykrige.ok import OrdinaryKriging as _OrdinaryKriging
+    _HAS_PYKRIGE = True
+except ImportError:
+    _HAS_PYKRIGE = False
+
 # ==================== 启用GDAL异常处理 ====================
 gdal.UseExceptions()
 
 
 class KmlToIaConverter:
     """
-    KML文件转Ia(阿里亚斯强度)栅格文件转换器（QGIS 3.40.15 优化版）
+    KML文件转Ia(阿里亚斯强度)栅格文件转换器（QGIS 3.40.15 多插值方法版）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、坐标转换、
     插值计算后，输出Ia.tif栅格文件（可选输出PGA.tif）。
 
-    本版本使用 QGIS 3.40.15 自带的 IDW / TIN 插值算法，替换了
-    原有的第三方库 pykrige（克里金）和 scipy（RBF/IDW），并针对
-    32G 内存运行环境进行了全面的内存优化。
-
-    支持的插值方法对比：
-        - 'idw'（反距离权重）：
+    支持的插值方法:
+        - 'qgis_idw'（QGIS反距离权重）：
             速度快，适合稀疏/不均匀数据；
-            idw_power 值越大，近点影响越强，结果越局部化；
-            idw_power 值越小，远点影响增大，结果越平滑。
-        - 'tin'（三角网线性插值）：
-            基于 Delaunay 三角剖分的保值插值，不外推超出采样值范围；
+            qgis_idw_power 值越大，近点影响越强，结果越局部化；
+            qgis_idw_power 值越小，远点影响增大，结果越平滑。
+        - 'qgis_tin'（QGIS三角网插值）：
+            基于 Delaunay 三角剖分的保值插值；
             适合分布较均匀的数据，边缘精度优于 IDW；
-            tin_method=1（Clough-Tocher）可得到更平滑的曲面，但计算较慢。
+            qgis_tin_method=1（Clough-Tocher）可得到更平滑的曲面。
+        - 'scipy_idw'（scipy RBF近似IDW，需安装scipy）：
+            使用 scipy RBFInterpolator 实现，支持限制邻近点数量；
+            scipy_neighbors 参数控制每次使用的邻近点数，有效降低内存。
+        - 'kriging'（普通克里金插值，需安装pykrige）：
+            地质统计学插值方法，精度最高但计算量最大；
+            kriging_neighbors 参数限制邻近点数，kriging_variogram 选择变差函数。
+
+    插值范围: 最小 15km × 15km，最大 300km × 300km
 
     属性:
         kml_path (str): 输入KML文件路径
@@ -90,9 +124,7 @@ class KmlToIaConverter:
         resolution (float): 目标分辨率(米)，默认30
         sample_interval (int): 等值线采样间隔，每隔多少个坐标点取一个，默认5
         export_pga (bool): 是否输出PGA.tif文件，默认True
-        interp_method (str): 插值方法，可选 'idw'、'tin'，默认'idw'
-        idw_power (float): IDW距离衰减幂次，默认2.0（仅 idw 方法有效）
-        tin_method (int): TIN子方法，0=线性(Linear)，1=Clough-Tocher，默认0（仅 tin 方法有效）
+        interp_method (str): 插值方法，可选 'qgis_idw'、'qgis_tin'、'scipy_idw'、'kriging'
 
     用法示例:
         converter = KmlToIaConverter(
@@ -101,8 +133,8 @@ class KmlToIaConverter:
             ia_output_path="../../data/geology/ia/Ia.tif",
             resolution=30,
             export_pga=True,
-            interp_method='idw',
-            idw_power=2.0,
+            interp_method='qgis_idw',
+            qgis_idw_power=2.0,
         )
         converter.run()
     """
@@ -118,12 +150,48 @@ class KmlToIaConverter:
         kml_path: str,
         pga_output_path: Optional[str],
         ia_output_path: str,
-        resolution: float = 30.0,
-        sample_interval: int = 5,
-        export_pga: bool = True,
-        interp_method: Literal['idw', 'tin'] = 'idw',
-        idw_power: float = 2.0,
-        tin_method: int = 0,
+        resolution: float = 30.0,           # 目标分辨率(米)，推荐范围 10~100 m
+        sample_interval: int = 5,           # 等值线坐标采样间隔，推荐 3~10
+        export_pga: bool = True,            # 是否同时输出 PGA.tif
+        interp_method: str = 'qgis_idw',   # 插值方法（见类文档说明）
+
+        # ---- QGIS IDW 参数 ----
+        qgis_idw_power: float = 2.0,        # IDW距离衰减幂次，推荐 1.0~4.0
+                                             # 值越大近点主导（结果局部化），值越小结果越平滑
+
+        # ---- QGIS TIN 参数 ----
+        qgis_tin_method: int = 0,           # TIN子方法: 0=线性(Linear), 1=Clough-Tocher
+                                             # 0=速度快无振荡; 1=结果更平滑但计算较慢
+
+        # ---- scipy IDW/RBF 参数（需安装: pip install scipy）----
+        scipy_kernel: str = 'linear',       # RBF核函数类型
+                                             # 可选: 'linear', 'thin_plate_spline',
+                                             #       'cubic', 'quintic', 'multiquadric',
+                                             #       'inverse_multiquadric', 'gaussian'
+        scipy_neighbors: int = 50,          # 每次插值使用的最近邻点数（内存优化关键参数）
+                                             # 值越大精度越高但内存占用越多，推荐 20~100
+
+        # ---- 克里金插值参数（需安装: pip install pykrige）----
+        kriging_variogram: str = 'linear',  # 变差函数模型
+                                             # 可选: 'linear', 'power', 'gaussian',
+                                             #       'spherical', 'exponential', 'hole-effect'
+        kriging_nlags: int = 6,             # 变差函数分析的滞后数，推荐 6~20
+                                             # 值越大变差函数拟合越精细，但计算量增加
+        kriging_neighbors: int = 50,        # 每次插值使用的最近邻点数（内存优化关键参数）
+                                             # 值越大精度越高但内存占用越多，推荐 20~100
+
+        # ---- 内存优化参数 ----
+        chunk_size: int = 1000,             # 栅格分块行数，仅 scipy/kriging 方法使用
+                                             # 值越小内存占用越低，值越大处理越快
+                                             # 推荐范围: 500~2000 行
+        coord_batch_size: int = 10000,      # 坐标转换批次大小（点数）
+                                             # 推荐 5000~50000，根据可用内存调整
+        max_memory_gb: float = 8.0,         # 最大内存使用目标(GB)，预留 2G 给系统
+                                             # 实际通过 chunk_size 和 neighbors 参数控制
+
+        # ---- 向后兼容旧参数名（优先使用上方新参数名）----
+        idw_power: Optional[float] = None,  # 旧参数名，已改为 qgis_idw_power
+        tin_method: Optional[int] = None,   # 旧参数名，已改为 qgis_tin_method
     ):
         """
         初始化转换器
@@ -140,18 +208,41 @@ class KmlToIaConverter:
                 调参建议：值越小采样点越密，插值精度越高但内存占用越大；
                          推荐范围 3~10；数据点稀少时可设为 1
             export_pga (bool): 是否同时输出 PGA.tif，默认 True
-            interp_method (str): 插值方法，'idw' 或 'tin'，默认 'idw'
-                'idw' — 反距离权重：适合稀疏/不均匀数据，速度快
-                'tin' — 三角网线性插值：适合均匀分布数据，边缘精度好
-            idw_power (float): IDW 距离衰减幂次，默认 2.0
+            interp_method (str): 插值方法，默认 'qgis_idw'
+                'qgis_idw'  — QGIS反距离权重：适合稀疏/不均匀数据，速度快
+                'qgis_tin'  — QGIS三角网插值：适合均匀分布数据，边缘精度好
+                'scipy_idw' — scipy RBF插值（IDW近似）：支持邻近点限制，需安装scipy
+                'kriging'   — 普通克里金插值：精度最高，需安装pykrige，计算量最大
+            qgis_idw_power (float): QGIS IDW 距离衰减幂次，默认 2.0
                 调参建议：推荐范围 1.0~4.0；
                          值越大近点主导，结果越局部化；
                          值越小远点影响增大，结果越平滑；
-                         仅在 interp_method='idw' 时有效
-            tin_method (int): TIN 插值子方法，默认 0
+                         仅在 interp_method='qgis_idw' 时有效
+            qgis_tin_method (int): QGIS TIN 插值子方法，默认 0
                 0 = Linear（线性）：在三角形内线性插值，速度快，无振荡
                 1 = Clough-Tocher：曲线插值，结果更平滑，计算量较大
-                仅在 interp_method='tin' 时有效
+                仅在 interp_method='qgis_tin' 时有效
+            scipy_kernel (str): scipy RBFInterpolator核函数，默认 'linear'
+                常用选项：'linear'（线性RBF，类IDW）, 'thin_plate_spline', 'gaussian'
+                仅在 interp_method='scipy_idw' 时有效
+            scipy_neighbors (int): scipy RBF每次使用的最近邻点数，默认50
+                减小此值可显著降低内存占用，推荐 20~100
+                仅在 interp_method='scipy_idw' 时有效
+            kriging_variogram (str): 克里金变差函数模型，默认 'linear'
+                常用选项：'linear', 'power', 'gaussian', 'spherical', 'exponential'
+                仅在 interp_method='kriging' 时有效
+            kriging_nlags (int): 变差函数分析的滞后数，默认6
+                值越大变差函数拟合越精细，推荐 6~20
+                仅在 interp_method='kriging' 时有效
+            kriging_neighbors (int): 克里金每次使用的最近邻点数，默认50
+                减小此值可显著降低内存占用，推荐 20~100
+                仅在 interp_method='kriging' 时有效
+            chunk_size (int): 栅格分块行数（仅scipy/kriging方法使用），默认1000
+                值越小内存占用越低但I/O次数越多，推荐 500~2000
+            coord_batch_size (int): 坐标转换批次大小（点数），默认10000
+                推荐 5000~50000，根据可用内存适当调整
+            max_memory_gb (float): 最大内存使用目标(GB)，默认8.0
+                此参数为参考值，实际内存通过 chunk_size、neighbors 等参数控制
         """
         self.kml_path = kml_path
         self.pga_output_path = pga_output_path
@@ -159,9 +250,34 @@ class KmlToIaConverter:
         self.resolution = resolution
         self.sample_interval = sample_interval
         self.export_pga = export_pga
-        self.interp_method = interp_method
-        self.idw_power = idw_power
-        self.tin_method = tin_method
+
+        # 处理插值方法名（向后兼容旧方法名 'idw'→'qgis_idw', 'tin'→'qgis_tin'）
+        _method = interp_method.lower().strip()
+        if _method == 'idw':
+            _method = 'qgis_idw'
+        elif _method == 'tin':
+            _method = 'qgis_tin'
+        self.interp_method = _method
+
+        # QGIS IDW 参数（向后兼容旧参数名 idw_power）
+        self.qgis_idw_power = idw_power if idw_power is not None else qgis_idw_power
+
+        # QGIS TIN 参数（向后兼容旧参数名 tin_method）
+        self.qgis_tin_method = tin_method if tin_method is not None else qgis_tin_method
+
+        # scipy IDW/RBF 参数
+        self.scipy_kernel = scipy_kernel
+        self.scipy_neighbors = scipy_neighbors
+
+        # 克里金插值参数
+        self.kriging_variogram = kriging_variogram
+        self.kriging_nlags = kriging_nlags
+        self.kriging_neighbors = kriging_neighbors
+
+        # 内存优化参数
+        self.chunk_size = chunk_size
+        self.coord_batch_size = coord_batch_size
+        self.max_memory_gb = max_memory_gb
 
         # 运行时数据（由 run() 过程填充）
         self._contours: List[dict] = []
@@ -335,17 +451,17 @@ class KmlToIaConverter:
         self._transformer = osr.CoordinateTransformation(src_srs, dst_srs)
 
     def _transform_coords_batch(
-        self, lons: np.ndarray, lats: np.ndarray, chunk_size: int = 10000
+        self, lons: np.ndarray, lats: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         分批批量将WGS84经纬度坐标转换为UTM平面坐标（内存优化版）
 
-        将坐标数组分成多批次处理，避免一次性分配过大的临时缓冲区。
+        将坐标数组分成多批次处理，每批大小由 self.coord_batch_size 控制，
+        避免一次性分配过大的临时缓冲区。
 
         参数:
             lons (np.ndarray): 经度数组
             lats (np.ndarray): 纬度数组
-            chunk_size (int): 每批处理的点数，默认10000
 
         返回:
             tuple: (x_utm数组, y_utm数组)，转换失败的点值为NaN
@@ -354,8 +470,10 @@ class KmlToIaConverter:
         x_out = np.empty(n, dtype=np.float64)
         y_out = np.empty(n, dtype=np.float64)
 
-        for start in range(0, n, chunk_size):
-            end = min(start + chunk_size, n)
+        # coord_batch_size 控制每批处理的点数，避免大数组临时缓冲区溢出
+        batch = self.coord_batch_size
+        for start in range(0, n, batch):
+            end = min(start + batch, n)
             for i in range(start, end):
                 try:
                     result = self._transformer.TransformPoint(
@@ -553,18 +671,18 @@ class KmlToIaConverter:
         """
         使用 QGIS 3.40.15 自带的插值算法将采样点插值到 ASC 栅格文件。
 
-        根据 self.interp_method 选择 IDW 或 TIN 插值器，
+        根据 self.interp_method 选择 'qgis_idw' 或 'qgis_tin' 插值器，
         通过 QgsGridFileWriter 逐行流式写入 ASC 文件，
         不在内存中构建完整的栅格数组，内存占用低。
 
-        IDW（反距离权重）调参说明：
-            self.idw_power（默认2.0，推荐1.0~4.0）
+        QGIS IDW（反距离权重）调参说明：
+            self.qgis_idw_power（默认2.0，推荐1.0~4.0）
                 — 距离衰减幂次，值越大近点主导，结果越局部化；
                   值越小远点影响增大，结果越平滑；
-                  QGIS IDW 使用所有采样点，通过空间索引加速
+                  QGIS IDW 使用全部采样点，通过空间索引加速
 
-        TIN（三角网线性插值）调参说明：
-            self.tin_method（默认0）
+        QGIS TIN（三角网线性插值）调参说明：
+            self.qgis_tin_method（默认0）
                 — 0=Linear（线性插值，速度快，无振荡）
                 — 1=Clough-Tocher（曲线插值，更平滑，计算量较大）
 
@@ -579,31 +697,31 @@ class KmlToIaConverter:
 
         # ---- 构建 QgsInterpolator.LayerData ----
         layer_data = QgsInterpolator.LayerData()
-        layer_data.source = layer                                         # 数据源（矢量图层）
-        layer_data.valueSource = QgsInterpolator.ValueSource.ValueAttribute  # 使用属性字段中的值
-        layer_data.interpolationAttribute = 0                             # 第0个字段（'value'）
-        layer_data.sourceType = QgsInterpolator.SourceType.SourcePoints   # 点要素类型
+        layer_data.source = layer                                          # 数据源（矢量图层）
+        layer_data.valueSource = QgsInterpolator.ValueSource.ValueAttribute   # 使用属性字段中的值
+        layer_data.interpolationAttribute = 0                              # 第0个字段（'value'）
+        layer_data.sourceType = QgsInterpolator.SourceType.SourcePoints    # 点要素类型
 
         # ---- 创建插值器 ----
-        method = self.interp_method.lower()
-        if method == 'idw':
+        method = self.interp_method
+        if method == 'qgis_idw':
             # IDW：反距离权重插值
             # setDistanceCoefficient 设置距离衰减幂次；
             # QGIS IDW 使用全部采样点（通过空间索引加速），不限制搜索半径
             interpolator = QgsIDWInterpolator([layer_data])
-            interpolator.setDistanceCoefficient(self.idw_power)
-        elif method == 'tin':
+            interpolator.setDistanceCoefficient(self.qgis_idw_power)
+        elif method == 'qgis_tin':
             # TIN：三角网线性插值 / Clough-Tocher 曲线插值
-            # tin_method=0 → Linear；tin_method=1 → CloughTocher
+            # qgis_tin_method=0 → Linear；qgis_tin_method=1 → CloughTocher
             tin_enum = (
                 QgsTinInterpolator.TinInterpolation.Linear
-                if self.tin_method == 0
+                if self.qgis_tin_method == 0
                 else QgsTinInterpolator.TinInterpolation.CloughTocher
             )
             interpolator = QgsTinInterpolator([layer_data], tin_enum)
         else:
             raise ValueError(
-                f"不支持的插值方法: '{method}'，可选: 'idw', 'tin'"
+                f"不支持的QGIS插值方法: '{method}'，可选: 'qgis_idw', 'qgis_tin'"
             )
 
         # ---- 构建栅格空间范围 ----
@@ -674,6 +792,227 @@ class KmlToIaConverter:
 
         print(f"  已保存: {tif_path}")
 
+    def _run_scipy_interpolation(
+        self,
+        x_utm: np.ndarray,
+        y_utm: np.ndarray,
+        values: np.ndarray,
+        output_tif_path: str,
+    ) -> None:
+        """
+        使用 scipy RBFInterpolator 进行IDW近似插值，分块写入 GeoTIFF。
+
+        内存优化策略：
+            - 训练阶段：RBFInterpolator 使用 neighbors 参数限制每次预测的邻近点数，
+              避免构建完整密集矩阵（O(N²) 内存）
+            - 预测阶段：按 chunk_size 行分块生成输出坐标并插值，及时释放临时数组
+            - 直接写入 GDAL GeoTIFF，不经过 ASC 中间文件
+
+        scipy RBF 调参说明：
+            self.scipy_kernel（默认'linear'）
+                — 核函数类型，'linear' 近似IDW效果；
+                  'thin_plate_spline' 平滑性更好；
+                  'gaussian' 适合高斯型空间相关性
+            self.scipy_neighbors（默认50，推荐20~100）
+                — 每次插值使用的最近邻点数；
+                  减小此值可显著降低内存和计算时间
+
+        参数:
+            x_utm: 采样点X坐标(UTM)
+            y_utm: 采样点Y坐标(UTM)
+            values: 采样点对应值
+            output_tif_path: 输出 GeoTIFF 文件路径
+        """
+        if not _HAS_SCIPY:
+            raise ImportError(
+                "scipy 未安装，无法使用 'scipy_idw' 方法。"
+                "请在QGIS Python环境中运行: pip install scipy"
+            )
+
+        # 训练 RBFInterpolator（使用所有采样点建立模型）
+        # neighbors 参数：每次预测仅使用最近的 N 个点，避免密集矩阵，降低内存
+        X_train = np.column_stack([x_utm, y_utm])           # shape: (n_samples, 2)
+        rbf = _RBFInterpolator(
+            X_train,
+            values.astype(np.float64),
+            kernel=self.scipy_kernel,                        # RBF核函数，默认'linear'
+            neighbors=self.scipy_neighbors,                  # 邻近点数限制，控制内存
+        )
+        del X_train
+        gc.collect()
+        print(f"  scipy RBFInterpolator 已建立模型，核函数={self.scipy_kernel}，"
+              f"邻近点数={self.scipy_neighbors}")
+
+        # 创建输出 GeoTIFF 数据集（直接写入，无 ASC 中间文件）
+        os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+        driver = gdal.GetDriverByName('GTiff')
+        out_ds = driver.Create(
+            output_tif_path,
+            self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
+            ['COMPRESS=LZW', 'TILED=YES'],
+        )
+        out_ds.SetGeoTransform(self._geo_transform)
+        out_ds.SetProjection(self._utm_srs.ExportToWkt())
+        band = out_ds.GetRasterBand(1)
+        band.SetNoDataValue(-9999.0)
+
+        # 生成输出网格列坐标（像素中心X，所有行共用）
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
+
+        # 分块处理（按行分块，每块 chunk_size 行）
+        n_rows = self._n_rows
+        chunk_rows = self.chunk_size                         # 每块处理的行数
+        n_chunks = math.ceil(n_rows / chunk_rows)
+
+        for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
+            row_end = min(row_start + chunk_rows, n_rows)
+            actual_rows = row_end - row_start
+
+            # 本块的像素中心Y坐标（Y轴向下，所以用减法）
+            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self.resolution
+
+            # 展开为预测点坐标列表，shape: (actual_rows * n_cols, 2)
+            xx, yy = np.meshgrid(grid_x, grid_y)
+            pts = np.column_stack([xx.ravel(), yy.ravel()])
+            del xx, yy
+
+            # 插值并将结果reshape为(rows, cols)
+            chunk_vals = rbf(pts).reshape(actual_rows, self._n_cols)
+            del pts
+
+            # 将负值截断为0（Ia/PGA不能为负）
+            np.maximum(chunk_vals, 0.0, out=chunk_vals)
+
+            # 写入 GeoTIFF（xoff=0，yoff=行起始）
+            band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
+            del chunk_vals
+            gc.collect()
+
+            if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
+                print(f"  scipy插值进度: {row_end}/{n_rows} 行 "
+                      f"({100.0 * row_end / n_rows:.1f}%)")
+
+        band.ComputeStatistics(False)
+        band.FlushCache()
+        out_ds = None
+        band = None
+        del rbf
+        gc.collect()
+
+        print(f"  已保存: {output_tif_path}")
+
+    def _run_kriging_interpolation(
+        self,
+        x_utm: np.ndarray,
+        y_utm: np.ndarray,
+        values: np.ndarray,
+        output_tif_path: str,
+    ) -> None:
+        """
+        使用 pykrige 普通克里金插值，分块写入 GeoTIFF。
+
+        内存优化策略：
+            - n_closest_points 参数：每个输出点仅使用最近的 N 个采样点，
+              避免构建全局克里金系统（O(N²) 内存）
+            - backend='loop'：逐点循环计算，内存占用最低（vs 'vectorized'）
+            - 按 chunk_size 行分块，及时释放临时数组
+            - 直接写入 GDAL GeoTIFF，不经过 ASC 中间文件
+
+        克里金插值调参说明：
+            self.kriging_variogram（默认'linear'）
+                — 变差函数模型，'spherical'/'gaussian' 适合地震动场；
+                  'linear' 适合简单线性变化场；
+                  'exponential' 适合短程空间相关性
+            self.kriging_nlags（默认6，推荐6~20）
+                — 变差函数分析的滞后数，值越大拟合越精细
+            self.kriging_neighbors（默认50，推荐20~100）
+                — 每次插值使用的最近邻点数，是内存控制的关键参数
+
+        参数:
+            x_utm: 采样点X坐标(UTM)
+            y_utm: 采样点Y坐标(UTM)
+            values: 采样点对应值
+            output_tif_path: 输出 GeoTIFF 文件路径
+        """
+        if not _HAS_PYKRIGE:
+            raise ImportError(
+                "pykrige 未安装，无法使用 'kriging' 方法。"
+                "请在QGIS Python环境中运行: pip install pykrige"
+            )
+
+        # 创建普通克里金对象（在全部采样点上拟合变差函数）
+        ok = _OrdinaryKriging(
+            x_utm.astype(np.float64),
+            y_utm.astype(np.float64),
+            values.astype(np.float64),
+            variogram_model=self.kriging_variogram,    # 变差函数模型，默认'linear'
+            nlags=self.kriging_nlags,                  # 变差函数滞后数，默认6
+            verbose=False,
+            enable_plotting=False,
+        )
+        print(f"  pykrige OrdinaryKriging 已拟合变差函数，"
+              f"模型={self.kriging_variogram}，滞后数={self.kriging_nlags}，"
+              f"邻近点数={self.kriging_neighbors}")
+
+        # 创建输出 GeoTIFF 数据集
+        os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+        driver = gdal.GetDriverByName('GTiff')
+        out_ds = driver.Create(
+            output_tif_path,
+            self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
+            ['COMPRESS=LZW', 'TILED=YES'],
+        )
+        out_ds.SetGeoTransform(self._geo_transform)
+        out_ds.SetProjection(self._utm_srs.ExportToWkt())
+        band = out_ds.GetRasterBand(1)
+        band.SetNoDataValue(-9999.0)
+
+        # 生成输出网格列坐标（像素中心X，所有行共用）
+        grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self.resolution
+
+        # 分块处理（按行分块，每块 chunk_size 行）
+        n_rows = self._n_rows
+        chunk_rows = self.chunk_size                        # 每块处理的行数
+        n_chunks = math.ceil(n_rows / chunk_rows)
+
+        for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
+            row_end = min(row_start + chunk_rows, n_rows)
+
+            # 本块的像素中心Y坐标
+            grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self.resolution
+
+            # 克里金插值（grid模式：输出shape为(len(grid_y), len(grid_x))）
+            # n_closest_points：每个输出点仅使用最近的N个采样点（内存优化关键参数）
+            # backend='loop'：逐点循环，内存最低（vs 'vectorized'占用更多内存）
+            z_chunk, _ss = ok.execute(
+                'grid',
+                grid_x,
+                grid_y,
+                n_closest_points=self.kriging_neighbors,   # 限制邻近点数，控制内存
+                backend='loop',                             # 逐点处理，内存最低
+            )
+
+            # 将负值截断为0
+            np.maximum(z_chunk, 0.0, out=z_chunk)
+
+            # 写入 GeoTIFF（pykrige返回shape为(ny, nx)，直接写入）
+            band.WriteArray(z_chunk.astype(np.float32), 0, row_start)
+            del z_chunk, _ss
+            gc.collect()
+
+            if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
+                print(f"  克里金插值进度: {row_end}/{n_rows} 行 "
+                      f"({100.0 * row_end / n_rows:.1f}%)")
+
+        band.ComputeStatistics(False)
+        band.FlushCache()
+        out_ds = None
+        band = None
+        del ok
+        gc.collect()
+
+        print(f"  已保存: {output_tif_path}")
+
     def _interpolate_to_file(
         self,
         x_utm: np.ndarray,
@@ -682,8 +1021,17 @@ class KmlToIaConverter:
         output_tif_path: str,
     ) -> None:
         """
-        统一插值入口：调用 QGIS 插值算法写入临时 ASC 文件，
-        再转换为最终 GeoTIFF 格式，处理完成后清理临时文件。
+        统一插值入口：根据 self.interp_method 路由到对应的插值方法。
+
+        QGIS 方法（'qgis_idw'/'qgis_tin'）：
+            调用 QGIS 插值算法写入临时 ASC 文件，再转换为最终 GeoTIFF 格式，
+            处理完成后清理临时文件。
+
+        scipy 方法（'scipy_idw'）：
+            直接使用 scipy RBFInterpolator 分块写入 GeoTIFF，无 ASC 中间文件。
+
+        kriging 方法（'kriging'）：
+            直接使用 pykrige OrdinaryKriging 分块写入 GeoTIFF，无 ASC 中间文件。
 
         参数:
             x_utm: 采样点X坐标(UTM)
@@ -691,20 +1039,36 @@ class KmlToIaConverter:
             values: 采样点值
             output_tif_path: 输出 GeoTIFF 文件路径
         """
-        # 临时 ASC 文件：QGIS GridFileWriter 的中间输出格式
-        with tempfile.NamedTemporaryFile(suffix='.asc', delete=False) as tmp:
-            tmp_asc_path = tmp.name
+        method = self.interp_method
 
-        try:
-            self._run_qgis_interpolation(x_utm, y_utm, values, tmp_asc_path)
-            self._asc_to_geotiff(tmp_asc_path, output_tif_path)
-        finally:
-            # 使用 os.path.splitext 安全地替换扩展名，避免路径中含多个 '.asc' 时误替换
-            base, _ = os.path.splitext(tmp_asc_path)
-            for ext in ('.asc', '.prj'):
-                candidate = base + ext
-                if os.path.exists(candidate):
-                    os.remove(candidate)
+        if method in ('qgis_idw', 'qgis_tin'):
+            # QGIS 方法：通过临时 ASC 文件，再转换为 GeoTIFF
+            with tempfile.NamedTemporaryFile(suffix='.asc', delete=False) as tmp:
+                tmp_asc_path = tmp.name
+            try:
+                self._run_qgis_interpolation(x_utm, y_utm, values, tmp_asc_path)
+                self._asc_to_geotiff(tmp_asc_path, output_tif_path)
+            finally:
+                # 使用 os.path.splitext 安全地替换扩展名，避免路径中含多个 '.asc' 时误替换
+                base, _ = os.path.splitext(tmp_asc_path)
+                for ext in ('.asc', '.prj'):
+                    candidate = base + ext
+                    if os.path.exists(candidate):
+                        os.remove(candidate)
+
+        elif method == 'scipy_idw':
+            # scipy RBF 方法：直接写入 GeoTIFF，分块处理节省内存
+            self._run_scipy_interpolation(x_utm, y_utm, values, output_tif_path)
+
+        elif method == 'kriging':
+            # pykrige 克里金方法：直接写入 GeoTIFF，分块处理节省内存
+            self._run_kriging_interpolation(x_utm, y_utm, values, output_tif_path)
+
+        else:
+            raise ValueError(
+                f"不支持的插值方法: '{method}'，"
+                f"可选: 'qgis_idw', 'qgis_tin', 'scipy_idw', 'kriging'"
+            )
 
     # ==================== PGA 栅格化 ====================
 
@@ -830,15 +1194,18 @@ class KmlToIaConverter:
             3. 准备采样点（生成器下采样 + 去重 + 批量坐标转换）
             4. 构建输出栅格网格
             5. （可选）PGA等值线矢量栅格化并输出PGA.tif
-            6. 使用 QGIS IDW/TIN 插值计算并输出Ia.tif
+            6. 使用选定的插值方法计算并输出Ia.tif
+               - 'qgis_idw'/'qgis_tin'：QGIS流式写入ASC，再转GeoTIFF
+               - 'scipy_idw'：scipy RBF分块插值，直接写GeoTIFF
+               - 'kriging'：pykrige克里金分块插值，直接写GeoTIFF
             7. 打印耗时统计
 
         返回:
             bool: 处理是否成功
         """
         print("=" * 60)
-        print("KML → Ia 栅格处理程序（QGIS 3.40.15 插值）")
-        print(f"插值方法: {self.interp_method.upper()}")
+        print("KML → Ia 栅格处理程序（QGIS 3.40.15 多插值方法版）")
+        print(f"插值方法: {self.interp_method}")
         print(f"输出PGA.tif: {'是' if self.export_pga else '否'}")
         print("=" * 60)
 
@@ -878,9 +1245,9 @@ class KmlToIaConverter:
             pga_elapsed = time.time() - pga_start
             print(f"  PGA栅格化耗时: {pga_elapsed:.2f} 秒")
 
-        # 8. Ia插值（QGIS IDW/TIN，流式写入文件）
+        # 8. Ia插值
         print("\n" + "-" * 40)
-        print(f"步骤: Ia插值计算（QGIS {self.interp_method.upper()}）")
+        print(f"步骤: Ia插值计算（{self.interp_method}）")
         print("-" * 40)
 
         interp_start = time.time()
@@ -908,13 +1275,34 @@ class KmlToIaConverter:
 if __name__ == "__main__":
     converter = KmlToIaConverter(
         kml_path="../../data/geology/kml/source.kml",        # 输入KML文件路径
-        pga_output_path="../../data/geology/kml/PGA.tif",                                 # PGA输出路径（不需要可设为None）
-        ia_output_path="../../data/geology/ia/Ia.tif",        # Ia输出路径
-        resolution=30,          # 输出分辨率(米)；推荐10~100，越小精度越高但越慢
-        sample_interval=5,      # 等值线采样间隔；推荐3~10，越小采样越密
-        export_pga=False,       # 是否同时输出PGA.tif
-        interp_method='idw',    # 插值方法: 'idw'(反距离权重) 或 'tin'(三角网)
-        idw_power=2.0,          # IDW幂次；推荐1.0~4.0，越大近点主导（仅idw有效）
-        tin_method=0,           # TIN子方法: 0=线性, 1=Clough-Tocher（仅tin有效）
+        pga_output_path="../../data/geology/kml/PGA.tif",    # PGA输出路径（不需要可设为None）
+        ia_output_path="../../data/geology/ia/Ia.tif",       # Ia输出路径
+        resolution=30,              # 输出分辨率(米)；推荐10~100，越小精度越高但越慢
+        sample_interval=5,          # 等值线采样间隔；推荐3~10，越小采样越密
+        export_pga=False,           # 是否同时输出PGA.tif
+
+        # 选择插值方法：'qgis_idw'（快）、'qgis_tin'（精确）、
+        #               'scipy_idw'（需scipy）、'kriging'（最精确，需pykrige）
+        interp_method='qgis_idw',
+
+        # QGIS IDW 参数（仅 interp_method='qgis_idw' 时有效）
+        qgis_idw_power=2.0,         # IDW幂次；推荐1.0~4.0，越大近点主导
+
+        # QGIS TIN 参数（仅 interp_method='qgis_tin' 时有效）
+        qgis_tin_method=0,          # TIN子方法: 0=线性（快）, 1=Clough-Tocher（平滑）
+
+        # scipy IDW/RBF 参数（仅 interp_method='scipy_idw' 时有效，需安装scipy）
+        scipy_kernel='linear',      # RBF核函数；推荐'linear'/'thin_plate_spline'
+        scipy_neighbors=50,         # 邻近点数；越小越快内存越低，推荐20~100
+
+        # 克里金参数（仅 interp_method='kriging' 时有效，需安装pykrige）
+        kriging_variogram='linear', # 变差函数模型；推荐'linear'/'spherical'/'gaussian'
+        kriging_nlags=6,            # 变差函数滞后数；推荐6~20
+        kriging_neighbors=50,       # 邻近点数；越小越快内存越低，推荐20~100
+
+        # 内存优化参数
+        chunk_size=1000,            # 栅格分块行数（scipy/kriging方法）；推荐500~2000
+        coord_batch_size=10000,     # 坐标转换批次大小；推荐5000~50000
+        max_memory_gb=8.0,          # 最大内存使用目标(GB)；参考值，实际由上方参数控制
     )
     converter.run()
