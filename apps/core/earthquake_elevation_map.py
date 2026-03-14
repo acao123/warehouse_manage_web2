@@ -206,7 +206,7 @@ LEGEND_ROW_COUNT = 2  # 图例行数
 LEGEND_COLUMN_COUNT = 3  # 图例列数
 LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"  # (m)标签字体
 LEGEND_ITEM_SPACING = 2  # 图例项间距
-LEGEND_ITEM_FONT_SIZE_PT = 10  # 图例项默认字体大小
+LEGEND_ITEM_ROW_HEIGHT_MM = 5.0  # 图例项行高（毫米）
 
 
 # ============================================================
@@ -1780,7 +1780,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
-    row_height = 5.0
+    row_height = LEGEND_ITEM_ROW_HEIGHT_MM
     icon_width = 4.0
     icon_height = 2.5
     icon_text_gap = 1.0
@@ -1840,11 +1840,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
 
     # 高程图例
     if elevation_legend_list:
-        # 高程图例标题
+        # 高程图例标题（"高程"用SimHei，"(m)"用Times New Roman，整体居中）
         elevation_title_y = top_legend_start_y + top_legend_height + 2.0
         elevation_title = QgsLayoutItemLabel(layout)
-        elevation_title.setText("高程(m)")
-        elevation_title.setTextFormat(title_format)
+        elevation_title.setMode(QgsLayoutItemLabel.ModeHtml)
+        _fs = LEGEND_TITLE_FONT_SIZE_PT
+        elevation_title.setText(
+            f'<div align="center">'
+            f'<span style="font-family:SimHei;font-size:{_fs}pt;">高程</span>'
+            f'<span style="font-family:Times New Roman;font-size:{_fs}pt;">(m)</span>'
+            f'</div>'
+        )
         elevation_title.attemptMove(QgsLayoutPoint(legend_x, elevation_title_y, QgsUnitTypes.LayoutMillimeters))
         elevation_title.attemptResize(QgsLayoutSize(legend_width, 4.0, QgsUnitTypes.LayoutMillimeters))
         elevation_title.setHAlign(Qt.AlignHCenter)
@@ -2189,6 +2195,13 @@ def generate_earthquake_elevation_map(longitude, latitude, magnitude,
         epicenter_layer = create_epicenter_layer(longitude, latitude)
         if epicenter_layer:
             project.addMapLayer(epicenter_layer)
+            # 将震中图层移到图层树最顶层，确保红色五角星不被其他图层遮挡
+            root = project.layerTreeRoot()
+            epi_node = root.findLayer(epicenter_layer.id())
+            if epi_node:
+                epi_node_clone = epi_node.clone()
+                root.insertChildNode(0, epi_node_clone)
+                root.removeChildNode(epi_node)
 
         # 创建打印布局
         layout = create_print_layout(project, longitude, latitude, magnitude,
