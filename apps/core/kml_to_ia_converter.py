@@ -56,7 +56,7 @@ from qgis.analysis import (
     QgsInterpolator,
     QgsTinInterpolator,
 )
-from PyQt5.QtCore import QVariant
+from PyQt5.QtCore import QMetaType
 
 # ==================== 启用GDAL异常处理 ====================
 gdal.UseExceptions()
@@ -523,7 +523,7 @@ class KmlToIaConverter:
         )
 
         provider = layer.dataProvider()
-        provider.addAttributes([QgsField(field_name, QVariant.Double)])
+        provider.addAttributes([QgsField(field_name, QMetaType.Type.Double)])
         layer.updateFields()
 
         # 每批次添加要素，防止单次写入占用过多内存
@@ -620,6 +620,8 @@ class KmlToIaConverter:
             extent,
             self._n_cols,
             self._n_rows,
+            self.resolution,    # cellSizeX
+            self.resolution,    # cellSizeY
         )
         error_code = writer.writeFile()
         if error_code != 0:
