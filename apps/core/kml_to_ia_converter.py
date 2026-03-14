@@ -49,6 +49,7 @@ import os
 import time
 import math
 import tempfile
+import warnings
 import numpy as np
 from typing import Iterator, List, Optional, Tuple
 from xml.etree import ElementTree as ET
@@ -77,6 +78,15 @@ from PyQt5.QtCore import QMetaType
 #   pip install scipy pykrige
 # 若未安装，'scipy_idw' 和 'kriging' 方法不可用，使用时会抛出 ImportError。
 try:
+    # QGIS 3.40 自带的 GDAL/scipy 模块是用 NumPy 1.x 编译的，
+    # 若系统安装了 NumPy 2.x，会产生如下版本兼容性警告，在此过滤：
+    # "A NumPy version >=1.x.x and <2.x.x is required for this version of SciPy"
+    warnings.filterwarnings(
+        "ignore",
+        message=r"A NumPy version .* is required for this version of SciPy",
+        category=UserWarning,
+        module=r"scipy",
+    )
     from scipy.interpolate import RBFInterpolator as _RBFInterpolator
     _HAS_SCIPY = True
 except ImportError:
@@ -732,14 +742,13 @@ class KmlToIaConverter:
 
         # ---- 流式写入 ASC 文件（逐行，内存友好）----
         # QgsGridFileWriter 不在内存中保留完整栅格，直接按行写入文件
+        # QGIS 3.40 API：QgsGridFileWriter(interpolator, outputPath, extent, nCols, nRows)
         writer = QgsGridFileWriter(
             interpolator,
             tmp_asc_path,
             extent,
             self._n_cols,
             self._n_rows,
-            self.resolution,    # cellSizeX
-            self.resolution,    # cellSizeY
         )
         error_code = writer.writeFile()
         if error_code != 0:
