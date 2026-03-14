@@ -1940,7 +1940,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, elev
         elevation_title.setText(html_text)
         elevation_title.attemptMove(QgsLayoutPoint(legend_x + 2.0, elevation_title_y, QgsUnitTypes.LayoutMillimeters))
         elevation_title.attemptResize(QgsLayoutSize(legend_width - 4.0, 5.0, QgsUnitTypes.LayoutMillimeters))
-        elevation_title.setHAlign(Qt.AlignLeft)
+        elevation_title.setHAlign(Qt.AlignHCenter)
         elevation_title.setVAlign(Qt.AlignVCenter)
         elevation_title.setFrameEnabled(False)
         elevation_title.setBackgroundEnabled(False)
@@ -2303,10 +2303,10 @@ def generate_earthquake_elevation_map(longitude, latitude, magnitude,
             project.addMapLayer(annotation_raster)
 
         # 按正确渲染顺序排列图层（第一项在最上层）
-        # 注记图层放在最上层，这样可以显示地名等信息
+        # 震中图层放在最上层，确保震中五角星不被注记图层遮挡
         ordered_layers = [lyr for lyr in [
-            annotation_raster,  # 天地图注记放在最上层
-            epicenter_layer,
+            epicenter_layer,    # 震中放在最上层，显示在注记之上
+            annotation_raster,  # 天地图注记
             intensity_layer,
             city_point_layer,
             province_layer,
