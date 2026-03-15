@@ -101,7 +101,7 @@ NORTH_ARROW_HEIGHT_MM = 18.0
 # ============================================================
 # 经纬度标注字体大小（磅）
 # ============================================================
-LONLAT_FONT_SIZE_PT = 8
+LONLAT_FONT_SIZE_PT = 10
 
 # ============================================================
 # 行政边界样式
@@ -162,9 +162,9 @@ EPICENTER_STROKE_WIDTH_MM = 0.4
 # 图例宽度（毫米）
 LEGEND_WIDTH_MM = 42.0
 # 图例标题字体大小（磅）
-LEGEND_TITLE_FONT_SIZE_PT = 10
+LEGEND_TITLE_FONT_SIZE_PT = 12
 # 图例项目字体大小（磅）
-LEGEND_ITEM_FONT_SIZE_PT = 8
+LEGEND_ITEM_FONT_SIZE_PT = 10
 # 图例项行高（毫米）
 LEGEND_ROW_HEIGHT_MM = 6.0
 # 图例内边距（毫米）
@@ -2256,11 +2256,11 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
 
 if __name__ == "__main__":
     # 震中经度（度）
-    INPUT_LON = 122.06
+    INPUT_LON = 103.5
     # 震中纬度（度）
-    INPUT_LAT = 24.67
+    INPUT_LAT = 30.5
     # 震级（M）
-    INPUT_MAGNITUDE = 8.8
+    INPUT_MAGNITUDE = 5
     # CSV路径
     INPUT_CSV_PATH = r"../../data/geology/历史地震CSV文件.csv"
     # 输出路径
