@@ -136,7 +136,7 @@ FAULT_EARLY_PLEISTOCENE_COLOR = QColor(16, 136, 16)
 FAULT_EARLY_PLEISTOCENE_WIDTH_MM = 0.2
 # 其他断层
 FAULT_DEFAULT_COLOR = QColor(0, 0, 0)
-FAULT_DEFAULT_WIDTH_MM = 0.25
+FAULT_DEFAULT_WIDTH_MM = 0.15
 
 # ============================================================
 # 地震圆点配置（按等级分级）
@@ -2256,11 +2256,11 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
 
 if __name__ == "__main__":
     # 震中经度（度）
-    INPUT_LON = 103.5
+    INPUT_LON = 122.06
     # 震中纬度（度）
-    INPUT_LAT = 30.5
+    INPUT_LAT = 24.67
     # 震级（M）
-    INPUT_MAGNITUDE = 5
+    INPUT_MAGNITUDE = 7.6
     # CSV路径
     INPUT_CSV_PATH = r"../../data/geology/历史地震CSV文件.csv"
     # 输出路径
