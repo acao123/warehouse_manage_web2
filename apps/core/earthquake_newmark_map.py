@@ -10,8 +10,8 @@ Newmark位移图例说明：
 - 十档颜色从低到高：rgb(148,193,146), rgb(251,245,195), rgb(250,236,150),
   rgb(246,215,75), rgb(246,200,0), rgb(242,182,11), rgb(218,89,49),
   rgb(214,82,11), rgb(192,2,28), rgb(81,52,130)
-- 图例显示：色块 + 位移范围值（根据Dn最大值动态计算）
-- 图例标题：Newmark位移（厘米）
+- 图例显示：色块连接 + 边界位移值（从0到最大值，共11个标签）
+- 图例标题：Newmark位移（厘米）- Newmark使用Times New Roman字体
 
 优化说明：
 - 针对大文件TIF进行优化，只裁剪加载需要范围内的数据
@@ -181,7 +181,7 @@ BASIC_LEGEND_ROW_HEIGHT_MM = 8.0  # 基本图例项行高
 
 # === Newmark位移图例项配置（可单独设置） ===
 NEWMARK_LEGEND_ITEM_FONT_SIZE_PT = 10  # Newmark位移图例项字体大小
-NEWMARK_LEGEND_ROW_HEIGHT_MM = 6  # Newmark位移图例项行高
+NEWMARK_LEGEND_ROW_HEIGHT_MM = 7.0  # Newmark位移图例项行高（色块高度）
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -204,18 +204,18 @@ INTENSITY_LEGEND_COLOR = QColor(0, 0, 0)
 INTENSITY_LEGEND_LINE_WIDTH_MM = 0.5
 
 # === Newmark位移分档配置 ===
-# 十档颜色（从低到高）
+# 十档颜色（从低到高）- 参考用户提供的图例图片
 NEWMARK_COLORS = [
-    QColor(148, 193, 146),  # 第1档
-    QColor(251, 245, 195),  # 第2档
-    QColor(250, 236, 150),  # 第3档
-    QColor(246, 215, 75),   # 第4档
-    QColor(246, 200, 0),    # 第5档
-    QColor(242, 182, 11),   # 第6档
-    QColor(218, 89, 49),    # 第7档
-    QColor(214, 82, 11),    # 第8档
-    QColor(192, 2, 28),     # 第9档
-    QColor(81, 52, 130),    # 第10档
+    QColor(148, 193, 146),  # 第1档 - 浅绿色
+    QColor(251, 245, 195),  # 第2档 - 浅黄色
+    QColor(250, 236, 150),  # 第3档 - 黄色
+    QColor(246, 215, 75),   # 第4档 - 金黄色
+    QColor(246, 200, 0),    # 第5档 - 橙黄色
+    QColor(242, 182, 11),   # 第6档 - 橙色
+    QColor(218, 89, 49),    # 第7档 - 深橙色
+    QColor(214, 82, 11),    # 第8档 - 红橙色
+    QColor(192, 2, 28),     # 第9档 - 红色
+    QColor(81, 52, 130),    # 第10档 - 紫色
 ]
 
 # Newmark位移图例分档值表（根据最大值选择对应列）
@@ -245,7 +245,7 @@ CLIP_BUFFER_DEGREES = 0.1
 # === 图例布局和字体设置 ===
 LEGEND_ROW_COUNT = 2  # 图例行数
 LEGEND_COLUMN_COUNT = 3  # 图例列数
-LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"  # 数字标签字体
+LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"  # 数字标签字体和Newmark英文字体
 
 
 # ============================================================
@@ -451,7 +451,7 @@ def calculate_map_height_from_extent(extent, map_width_mm):
         extent (QgsRectangle): 地图范围
         map_width_mm (float): 地图宽度（毫米）
 
-    ��回:
+    返回:
         float: 地图高度（毫米）
     """
     lon_range = extent.xMaximum() - extent.xMinimum()
@@ -788,9 +788,112 @@ def get_temp_manager():
 # Newmark位移栅格相关函数
 # ============================================================
 
+def get_raster_max_value_in_extent(tif_path, extent, buffer_degrees=CLIP_BUFFER_DEGREES):
+    """
+    只读取指定范围内的栅格数据并计算最大值（不裁剪保存文件）
+
+    该函数针对大文件优化，只读取需要范围内的数据计算最大值，
+    不会将整个文件加载到内存。
+
+    参数:
+        tif_path (str): TIF文件路径
+        extent (QgsRectangle): 目标范围（WGS84坐标）
+        buffer_degrees (float): 缓冲区大小（度）
+
+    返回:
+        float: 范围内栅格最大值，失败返回None
+    """
+    if not GDAL_AVAILABLE:
+        print("[警告] GDAL不可用，无法读取栅格最大值")
+        return None
+
+    abs_path = resolve_path(tif_path) if not os.path.isabs(tif_path) else tif_path
+    if not os.path.exists(abs_path):
+        print(f"[错误] 栅格文件不存在: {abs_path}")
+        return None
+
+    try:
+        ds = gdal.Open(abs_path, gdal.GA_ReadOnly)
+        if ds is None:
+            print(f"[错误] 无法打开栅格文件: {abs_path}")
+            return None
+
+        # 获取栅格地理变换参数
+        gt = ds.GetGeoTransform()
+        # gt[0]: 左上角X坐标（经度）
+        # gt[1]: X方向像素分辨率
+        # gt[2]: 旋转参数（通常为0）
+        # gt[3]: 左上角Y坐标（纬度）
+        # gt[4]: 旋转参数（通常为0）
+        # gt[5]: Y方向像素分辨率（负值）
+
+        raster_width = ds.RasterXSize
+        raster_height = ds.RasterYSize
+
+        # 计算裁剪范围（带缓冲区）
+        clip_xmin = extent.xMinimum() - buffer_degrees
+        clip_xmax = extent.xMaximum() + buffer_degrees
+        clip_ymin = extent.yMinimum() - buffer_degrees
+        clip_ymax = extent.yMaximum() + buffer_degrees
+
+        # 将地理坐标转换为像素坐标
+        px_xmin = int((clip_xmin - gt[0]) / gt[1])
+        px_xmax = int((clip_xmax - gt[0]) / gt[1])
+        px_ymin = int((clip_ymax - gt[3]) / gt[5])  # 注意Y方向是反的
+        px_ymax = int((clip_ymin - gt[3]) / gt[5])
+
+        # 确保像素坐标在有效范围内
+        px_xmin = max(0, min(raster_width - 1, px_xmin))
+        px_xmax = max(px_xmin + 1, min(raster_width, px_xmax))
+        px_ymin = max(0, min(raster_height - 1, px_ymin))
+        px_ymax = max(px_ymin + 1, min(raster_height, px_ymax))
+
+        # 计算读取的宽度和高度
+        read_width = px_xmax - px_xmin
+        read_height = px_ymax - px_ymin
+
+        print(f"[信息] 读取栅格范围: 像素({px_xmin},{px_ymin}) - ({px_xmax},{px_ymax})")
+        print(f"[信息] 读取尺寸: {read_width} x {read_height} 像素")
+
+        # 只读取指定范围的数据
+        band = ds.GetRasterBand(1)
+        nodata_value = band.GetNoDataValue()
+
+        # 读取数据块
+        data = band.ReadAsArray(px_xmin, px_ymin, read_width, read_height)
+
+        if data is None:
+            print(f"[错误] 无法读取栅格数据")
+            ds = None
+            return None
+
+        # 处理NoData值
+        if nodata_value is not None:
+            valid_data = data[data != nodata_value]
+        else:
+            valid_data = data[~np.isnan(data)]
+
+        if valid_data.size == 0:
+            print(f"[警告] 范围内没有有效数据")
+            ds = None
+            return None
+
+        max_value = float(np.max(valid_data))
+
+        ds = None
+        print(f"[信息] 范围内栅格最大值: {max_value:.4f}")
+        return max_value
+
+    except Exception as e:
+        print(f"[错误] 读取栅格最大值异常: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def get_raster_max_value(tif_path):
     """
-    获取栅格文件中的最大值
+    获取栅格文件中的最大值（读取整个文件）
 
     参数:
         tif_path (str): TIF文件路径
@@ -898,6 +1001,31 @@ def select_legend_column(max_value):
     return NEWMARK_LEGEND_TABLE[selected_threshold]
 
 
+def format_legend_value(value):
+    """
+    格式化图例数值显示
+
+    参数:
+        value (float): 数值
+
+    返回:
+        str: 格式化后的字符串
+    """
+    if value == 0:
+        return "0"
+    elif value < 1:
+        # 小于1的数保留2位小数
+        return f"{value:.2f}"
+    elif value < 10 and value != int(value):
+        # 小于10且非整数，保留1位小数
+        return f"{value:.1f}"
+    elif value == int(value):
+        # 整数
+        return f"{int(value)}"
+    else:
+        return f"{value:.2f}"
+
+
 def build_newmark_classes(legend_values):
     """
     根据图例分档值构建Newmark位移分档配置
@@ -918,13 +1046,8 @@ def build_newmark_classes(legend_values):
         max_val = legend_values[i + 1]
         color = NEWMARK_COLORS[i]
 
-        # 格式化标签（根据值大小决定小数位数）
-        if max_val < 1:
-            label = f"{max_val:.1f}"
-        elif max_val == int(max_val):
-            label = f"{int(max_val)}"
-        else:
-            label = f"{max_val:.1f}"
+        # 格式化标签
+        label = format_legend_value(max_val)
 
         classes.append({
             "min": min_val,
@@ -992,30 +1115,34 @@ def apply_newmark_renderer(raster_layer, legend_values):
 
 def build_newmark_legend_list(legend_values):
     """
-    构建Newmark位移图例列表
+    构建Newmark位移图例列表（用于边界标签样式）
 
     参数:
         legend_values (list): 11个分档值列表
 
     返回:
-        list: Newmark位移图例列表，每项为(color_rgba, label)元组
+        tuple: (colors_list, labels_list)
+               - colors_list: 10个颜色的RGBA元组列表
+               - labels_list: 11个边界值标签列表（从0到最大值）
     """
     if legend_values is None:
         print("[信息] 图例值为None，不构建图例列表")
-        return []
+        return [], []
 
-    result = []
-    newmark_classes = build_newmark_classes(legend_values)
-
-    for cls in newmark_classes:
-        color = cls["color"]
+    # 颜色列表（10个色块）
+    colors_list = []
+    for i in range(10):
+        color = NEWMARK_COLORS[i]
         color_rgba = (color.red(), color.green(), color.blue(), 255)
-        label = cls["label"]
-        result.append((color_rgba, label))
+        colors_list.append(color_rgba)
 
-    print(f"[信息] 构建Newmark位移图例列表完成，共 {len(result)} 项")
-    return result
+    # 边界值标签列表（11个值：0, v1, v2, ..., v10）
+    labels_list = []
+    for val in legend_values:
+        labels_list.append(format_legend_value(val))
 
+    print(f"[信息] 构建Newmark位移图例列表完成，共 {len(colors_list)} 个色块, {len(labels_list)} 个标签")
+    return colors_list, labels_list
 
 # ============================================================
 # KML烈度圈解析
@@ -1065,12 +1192,6 @@ def parse_intensity_kml(kml_path):
 def _extract_intensity_from_name(name):
     """
     从Placemark名称中提取烈度值
-
-    参数:
-        name (str): Placemark名称
-
-    返回:
-        int: 烈度值，解析失败返回None
     """
     if not name:
         return None
@@ -1090,16 +1211,7 @@ def _extract_intensity_from_name(name):
 
 
 def _extract_kml_linestring_coords(placemark, ns):
-    """
-    从Placemark中提取LineString坐标
-
-    参数:
-        placemark: XML Placemark元素
-        ns (str): XML命名空间
-
-    返回:
-        list: 坐标列表[(lon, lat), ...]
-    """
+    """从Placemark中提取LineString坐标"""
     coords_list = []
     for ls in placemark.iter(ns + "LineString"):
         coords_elem = ls.find(ns + "coordinates")
@@ -1110,15 +1222,7 @@ def _extract_kml_linestring_coords(placemark, ns):
 
 
 def _parse_kml_coords(text):
-    """
-    解析KML坐标文本为(lon, lat)元组列表
-
-    参数:
-        text (str): KML坐标文本
-
-    返回:
-        list: 坐标列表[(lon, lat), ...]
-    """
+    """解析KML坐标文本为(lon, lat)元组列表"""
     coords = []
     for part in text.strip().split():
         vals = part.split(",")
@@ -1133,15 +1237,7 @@ def _parse_kml_coords(text):
 
 
 def create_intensity_layer(intensity_data):
-    """
-    根据解析的烈度圈数据创建QGIS矢量图层
-
-    参数:
-        intensity_data (list): 烈度圈数据列表
-
-    返回:
-        QgsVectorLayer: 烈度圈图层
-    """
+    """根据解析的烈度圈数据创建QGIS矢量图层"""
     if not intensity_data:
         return None
 
@@ -1195,12 +1291,7 @@ def create_intensity_layer(intensity_data):
 
 
 def _setup_intensity_labels(layer):
-    """
-    配置烈度圈图层的标注
-
-    参数:
-        layer (QgsVectorLayer): 烈度圈图层
-    """
+    """配置烈度圈图层的标注"""
     settings = QgsPalLayerSettings()
     settings.fieldName = "label"
     settings.placement = Qgis.LabelPlacement.Line
@@ -1227,21 +1318,12 @@ def _setup_intensity_labels(layer):
 
 
 # ============================================================
-# 图层加载函数
+# 图层加载���数
 # ============================================================
 
 def load_newmark_raster_optimized(tif_path, extent):
     """
     优化加载Newmark位移TIF栅格图层（针对大文件优化）
-
-    参数:
-        tif_path (str): TIF文件路径
-        extent (QgsRectangle): 目标地图范围
-
-    返回:
-        tuple: (QgsRasterLayer, legend_values)
-               - QgsRasterLayer: Newmark位移栅格图层，加载失败返回None
-               - legend_values: 图例分档值列表
     """
     abs_path = resolve_path(tif_path)
     if not os.path.exists(abs_path):
@@ -1254,64 +1336,32 @@ def load_newmark_raster_optimized(tif_path, extent):
     clipped_path = None
     legend_values = None
 
-    if GDAL_AVAILABLE and file_size_gb > 0.1:
-        print(f"[信息] 文件较大，启用裁剪优化...")
+    if GDAL_AVAILABLE:
+        print(f"[信息] 读取指定范围内的数据计算最大值...")
+        max_value = get_raster_max_value_in_extent(abs_path, extent)
+        legend_values = select_legend_column(max_value)
 
-        temp_manager = get_temp_manager()
-        clipped_path = temp_manager.get_temp_file(suffix="_newmark_clipped.tif")
+        if file_size_gb > 0.1:
+            print(f"[信息] 文件较大，启用裁剪优化...")
+            temp_manager = get_temp_manager()
+            clipped_path = temp_manager.get_temp_file(suffix="_newmark_clipped.tif")
+            result_path = clip_raster_to_extent(abs_path, clipped_path, extent)
 
-        result_path = clip_raster_to_extent(abs_path, clipped_path, extent)
-
-        if result_path and os.path.exists(result_path):
-            # 从裁剪后的文件获取最大值
-            max_value = get_clipped_raster_max_value(result_path)
-            legend_values = select_legend_column(max_value)
-
-            layer = QgsRasterLayer(result_path, "Newmark位移底图")
-            if layer.isValid():
-                print(f"[信息] 成功加载裁剪后的Newmark位移底图")
-                apply_newmark_renderer(layer, legend_values)
-                return layer, legend_values
+            if result_path and os.path.exists(result_path):
+                layer = QgsRasterLayer(result_path, "Newmark位移底图")
+                if layer.isValid():
+                    print(f"[信息] 成功加载裁剪后的Newmark位移底图")
+                    apply_newmark_renderer(layer, legend_values)
+                    return layer, legend_values
+                else:
+                    print(f"[警告] 裁剪后的栅格无效，尝试直接加载原文件")
             else:
-                print(f"[警告] 裁剪后的栅格无效，尝试直接加载原文件")
-        else:
-            print(f"[警告] 栅格裁剪失败，尝试直接加载原文件")
+                print(f"[警告] 栅格裁剪失败，尝试直接加载原文件")
 
-    # 直接加载原文件
     print(f"[信息] 直接加载Newmark位移底图...")
-    max_value = get_raster_max_value(tif_path)
-    legend_values = select_legend_column(max_value)
-
-    layer = QgsRasterLayer(abs_path, "Newmark位移底���")
-    if not layer.isValid():
-        print(f"[错误] 无法加载Newmark位移底图: {abs_path}")
-        return None, None
-
-    print(f"[信息] 成功加载Newmark位移底图: {abs_path}")
-    apply_newmark_renderer(layer, legend_values)
-    return layer, legend_values
-
-
-def load_newmark_raster(tif_path):
-    """
-    加载Newmark位移TIF栅格图层并应用分类渲染（不进行裁剪）
-
-    参数:
-        tif_path (str): TIF文件路径
-
-    返回:
-        tuple: (QgsRasterLayer, legend_values)
-               - QgsRasterLayer: Newmark位移栅格图层，加载失败返回None
-               - legend_values: 图例分档值列表
-    """
-    abs_path = resolve_path(tif_path)
-    if not os.path.exists(abs_path):
-        print(f"[错误] Newmark位移底图文件不存在: {abs_path}")
-        return None, None
-
-    # 获取最大值并选择图例列
-    max_value = get_raster_max_value(tif_path)
-    legend_values = select_legend_column(max_value)
+    if legend_values is None:
+        max_value = get_raster_max_value(tif_path)
+        legend_values = select_legend_column(max_value)
 
     layer = QgsRasterLayer(abs_path, "Newmark位移底图")
     if not layer.isValid():
@@ -1324,16 +1374,7 @@ def load_newmark_raster(tif_path):
 
 
 def load_vector_layer(shp_path, layer_name):
-    """
-    加载矢量图层（SHP文件）
-
-    参数:
-        shp_path (str): SHP文件路径
-        layer_name (str): 图层名称
-
-    返回:
-        QgsVectorLayer: 矢量图层，加载失败返回None
-    """
+    """加载矢量图层（SHP文件）"""
     abs_path = resolve_path(shp_path)
     if not os.path.exists(abs_path):
         print(f"[错误] 矢量文件不存在: {abs_path}")
@@ -1351,12 +1392,7 @@ def load_vector_layer(shp_path, layer_name):
 # ============================================================
 
 def style_province_layer(layer):
-    """
-    设置省界图层样式
-
-    参数:
-        layer (QgsVectorLayer): 省界图层
-    """
+    """设置省界图层样式"""
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
     fill_sl.setStrokeColor(PROVINCE_COLOR)
@@ -1373,14 +1409,8 @@ def style_province_layer(layer):
 
 
 def style_city_layer(layer):
-    """
-    设置市界图层样式
-
-    参数:
-        layer (QgsVectorLayer): 市界图层
-    """
+    """设置市界图层样式"""
     symbol = QgsFillSymbol()
-
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
     fill_sl.setStrokeColor(CITY_COLOR)
@@ -1388,32 +1418,20 @@ def style_city_layer(layer):
     fill_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
     fill_sl.setStrokeStyle(Qt.CustomDashLine)
     fill_sl.setPenJoinStyle(Qt.MiterJoin)
-
     dash_pattern = [4.0, CITY_DASH_GAP_MM / CITY_LINE_WIDTH_MM]
-
     if hasattr(fill_sl, 'setCustomDashVector'):
         fill_sl.setCustomDashVector(dash_pattern)
     else:
         fill_sl.setStrokeStyle(Qt.DashLine)
-
     symbol.changeSymbolLayer(0, fill_sl)
     layer.renderer().setSymbol(symbol)
     layer.triggerRepaint()
-
-    print(
-        f"[信息] 市界图层样式设置完成 - 颜色: RGB({CITY_COLOR.red()},{CITY_COLOR.green()},{CITY_COLOR.blue()}), "
-        f"线宽: {CITY_LINE_WIDTH_MM}mm, 虚线间隔: {CITY_DASH_GAP_MM}mm")
+    print(f"[信息] 市界图层样式设置完成")
 
 
 def style_county_layer(layer):
-    """
-    设置县界图层样式
-
-    参数:
-        layer (QgsVectorLayer): 县界图层
-    """
+    """设置县界图层样式"""
     symbol = QgsFillSymbol()
-
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
     fill_sl.setStrokeColor(COUNTY_COLOR)
@@ -1421,30 +1439,19 @@ def style_county_layer(layer):
     fill_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
     fill_sl.setStrokeStyle(Qt.CustomDashLine)
     fill_sl.setPenJoinStyle(Qt.MiterJoin)
-
     dash_pattern = [7.0, COUNTY_DASH_GAP_MM / COUNTY_LINE_WIDTH_MM]
-
     if hasattr(fill_sl, 'setCustomDashVector'):
         fill_sl.setCustomDashVector(dash_pattern)
     else:
         fill_sl.setStrokeStyle(Qt.DashLine)
-
     symbol.changeSymbolLayer(0, fill_sl)
     layer.renderer().setSymbol(symbol)
     layer.triggerRepaint()
-
-    print(
-        f"[信息] 县界图层样式设置完成 - 颜色: RGB({COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()}), "
-        f"线宽: {COUNTY_LINE_WIDTH_MM}mm, 虚线间隔: {COUNTY_DASH_GAP_MM}mm")
+    print(f"[信息] 县界图层样式设置完成")
 
 
 def _setup_province_labels(layer):
-    """
-    配置省界图层标注
-
-    参数:
-        layer (QgsVectorLayer): 省界图层
-    """
+    """配置省界图层标注"""
     field_name = _find_name_field(layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
     if not field_name:
         print("[警告] 未找到省份名称字段，跳过标注设置")
@@ -1481,16 +1488,7 @@ def _setup_province_labels(layer):
 # ============================================================
 
 def create_epicenter_layer(longitude, latitude):
-    """
-    创建震中标记图层：红色五角星+白边
-
-    参数:
-        longitude (float): 震中经度
-        latitude (float): 震中纬度
-
-    返回:
-        QgsVectorLayer: 震中标记图层
-    """
+    """创建震中标记图层：红色五角星+白边"""
     layer = QgsVectorLayer("Point?crs=EPSG:4326", "震中", "memory")
     provider = layer.dataProvider()
     provider.addAttributes([QgsField("name", QVariant.String)])
@@ -1515,21 +1513,12 @@ def create_epicenter_layer(longitude, latitude):
     symbol.changeSymbolLayer(0, marker_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     layer.triggerRepaint()
-
     print(f"[信息] 创建震中图层: ({longitude}, {latitude})")
     return layer
 
 
 def create_city_point_layer(extent):
-    """
-    加载地级市点位数据（不显示标注，只显示点位）
-
-    参数:
-        extent (QgsRectangle): 地图范围
-
-    返回:
-        QgsVectorLayer: 地级市点位图层
-    """
+    """加载地级市点位数据"""
     abs_path = resolve_path(CITY_POINTS_SHP_PATH)
     if not os.path.exists(abs_path):
         print(f"[警告] 地级市点位数据不存在: {abs_path}")
@@ -1573,22 +1562,14 @@ def create_city_point_layer(extent):
     symbol.appendSymbolLayer(outer_sl)
     symbol.appendSymbolLayer(inner_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
-
-    # 不再设置标注，只显示点位
     layer.setLabelsEnabled(False)
-
     layer.triggerRepaint()
-    print(f"[信息] 加载地级市点位图层完成（不显示标注）")
+    print(f"[信息] 加载地级市点位图层完成")
     return layer
 
 
 def create_intensity_legend_layer():
-    """
-    创建烈度图例用的线图层
-
-    返回:
-        QgsVectorLayer: 烈度图例线图层
-    """
+    """创建烈度图例用的线图层"""
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "烈度", "memory")
     provider = layer.dataProvider()
     provider.addAttributes([QgsField("name", QVariant.String)])
@@ -1604,17 +1585,11 @@ def create_intensity_legend_layer():
     symbol.changeSymbolLayer(0, line_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     layer.triggerRepaint()
-    print("[信息] 创建烈度图例图层")
     return layer
 
 
 def create_province_legend_layer():
-    """
-    创建省界图例用的线图层
-
-    返回:
-        QgsVectorLayer: 省界图例线图层
-    """
+    """创建省界图例用的线图层"""
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "省界", "memory")
     provider = layer.dataProvider()
     provider.addAttributes([QgsField("name", QVariant.String)])
@@ -1630,17 +1605,11 @@ def create_province_legend_layer():
     symbol.changeSymbolLayer(0, line_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     layer.triggerRepaint()
-    print("[信息] 创建省界图例线图层")
     return layer
 
 
 def create_city_legend_layer():
-    """
-    创建市界图例用的线图层
-
-    返回:
-        QgsVectorLayer: 市界图例线图层
-    """
+    """创建市界图例用的线图层"""
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "市界", "memory")
     provider = layer.dataProvider()
     provider.addAttributes([QgsField("name", QVariant.String)])
@@ -1651,7 +1620,6 @@ def create_city_legend_layer():
     line_sl.setWidth(CITY_LINE_WIDTH_MM)
     line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
     line_sl.setPenStyle(Qt.CustomDashLine)
-
     dash_pattern = [4.0, CITY_DASH_GAP_MM / CITY_LINE_WIDTH_MM]
     line_sl.setCustomDashVector(dash_pattern)
 
@@ -1659,17 +1627,11 @@ def create_city_legend_layer():
     symbol.changeSymbolLayer(0, line_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     layer.triggerRepaint()
-    print(f"[信息] 创建市界图例线图层 - 线宽: {CITY_LINE_WIDTH_MM}mm, 虚线间隔: {CITY_DASH_GAP_MM}mm")
     return layer
 
 
 def create_county_legend_layer():
-    """
-    创建县界图例用的线图层
-
-    返回:
-        QgsVectorLayer: 县界图例线图层
-    """
+    """创建县界图例用的线图层"""
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "县界", "memory")
     provider = layer.dataProvider()
     provider.addAttributes([QgsField("name", QVariant.String)])
@@ -1680,7 +1642,6 @@ def create_county_legend_layer():
     line_sl.setWidth(COUNTY_LINE_WIDTH_MM)
     line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
     line_sl.setPenStyle(Qt.CustomDashLine)
-
     dash_pattern = [7.0, COUNTY_DASH_GAP_MM / COUNTY_LINE_WIDTH_MM]
     line_sl.setCustomDashVector(dash_pattern)
 
@@ -1688,7 +1649,6 @@ def create_county_legend_layer():
     symbol.changeSymbolLayer(0, line_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     layer.triggerRepaint()
-    print(f"[信息] 创建县界图例线图层 - 线宽: {COUNTY_LINE_WIDTH_MM}mm, 虚线间隔: {COUNTY_DASH_GAP_MM}mm")
     return layer
 
 
@@ -1697,25 +1657,8 @@ def create_county_legend_layer():
 # ============================================================
 
 def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm,
-                        newmark_legend_list=None, ordered_layers=None, show_legend_text=True):
-    """
-    创建QGIS打印布局
-
-    参数:
-        project (QgsProject): QGIS项目实例
-        longitude (float): 震中经度
-        latitude (float): 震中纬度
-        magnitude (float): 地震震级
-        extent (QgsRectangle): 地图范围
-        scale (int): 比例尺
-        map_height_mm (float): 地图高度（毫米）
-        newmark_legend_list (list): Newmark位移图例列表
-        ordered_layers (list): 按渲染顺序排列的图层列表
-        show_legend_text (bool): 是否显示图例文字（Dn>1000时为False）
-
-    返回:
-        QgsPrintLayout: 打印布局对象
-    """
+                        legend_values=None, ordered_layers=None, show_legend_text=True):
+    """创建QGIS打印布局"""
     layout = QgsPrintLayout(project)
     layout.initializeDefaults()
     layout.setName("地震Newmark位移分布图")
@@ -1724,28 +1667,23 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     output_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
 
     page = layout.pageCollection().page(0)
-    page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm,
-                                   QgsUnitTypes.LayoutMillimeters))
+    page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm, QgsUnitTypes.LayoutMillimeters))
 
     map_left = BORDER_LEFT_MM
     map_top = BORDER_TOP_MM
 
     map_item = QgsLayoutItemMap(layout)
-    map_item.attemptMove(QgsLayoutPoint(map_left, map_top,
-                                        QgsUnitTypes.LayoutMillimeters))
-    map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, map_height_mm,
-                                         QgsUnitTypes.LayoutMillimeters))
+    map_item.attemptMove(QgsLayoutPoint(map_left, map_top, QgsUnitTypes.LayoutMillimeters))
+    map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, map_height_mm, QgsUnitTypes.LayoutMillimeters))
     map_item.setExtent(extent)
     map_item.setCrs(CRS_WGS84)
     map_item.setFrameEnabled(True)
-    map_item.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM,
-                                                      QgsUnitTypes.LayoutMillimeters))
+    map_item.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
     map_item.setFrameStrokeColor(QColor(0, 0, 0))
     map_item.setBackgroundEnabled(True)
     map_item.setBackgroundColor(QColor(255, 255, 255))
     layout.addLayoutItem(map_item)
 
-    # 显式设置地图项渲染的图层列表
     layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
     if layers_to_set:
         map_item.setLayers(layers_to_set)
@@ -1754,20 +1692,13 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     _setup_map_grid(map_item, extent)
     _add_north_arrow(layout, map_height_mm)
     _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
-    _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
-                newmark_legend_list, show_legend_text)
+    _add_legend(layout, map_item, project, map_height_mm, output_height_mm, legend_values, show_legend_text)
 
     return layout
 
 
 def _setup_map_grid(map_item, extent):
-    """
-    配置地图经纬度网格
-
-    参数:
-        map_item (QgsLayoutItemMap): 地图布局项
-        extent (QgsRectangle): 地图范围
-    """
+    """配置地图经纬度网格"""
     grid = QgsLayoutItemMapGrid("经纬度网格", map_item)
     grid.setEnabled(True)
     grid.setCrs(CRS_WGS84)
@@ -1808,17 +1739,10 @@ def _setup_map_grid(map_item, extent):
     grid.setFramePenColor(QColor(0, 0, 0))
 
     map_item.grids().addGrid(grid)
-    print("[信息] 经纬度网格设置完成")
 
 
 def _add_north_arrow(layout, map_height_mm):
-    """
-    添加指北针
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        map_height_mm (float): 地图高度（毫米）
-    """
+    """添加指北针"""
     map_right = BORDER_LEFT_MM + MAP_WIDTH_MM
     map_top = BORDER_TOP_MM
     arrow_x = map_right - NORTH_ARROW_WIDTH_MM
@@ -1827,8 +1751,7 @@ def _add_north_arrow(layout, map_height_mm):
     bg_shape = QgsLayoutItemShape(layout)
     bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
     bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
-                                         QgsUnitTypes.LayoutMillimeters))
+    bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM, QgsUnitTypes.LayoutMillimeters))
     bg_symbol = QgsFillSymbol.createSimple({
         'color': '255,255,255,255',
         'outline_color': '0,0,0,255',
@@ -1847,29 +1770,16 @@ def _add_north_arrow(layout, map_height_mm):
     north_arrow.setPicturePath(svg_path)
     padding_x = 1.0
     padding_y = 0.5
-    north_arrow.attemptMove(QgsLayoutPoint(arrow_x + padding_x, arrow_y + padding_y,
-                                           QgsUnitTypes.LayoutMillimeters))
+    north_arrow.attemptMove(QgsLayoutPoint(arrow_x + padding_x, arrow_y + padding_y, QgsUnitTypes.LayoutMillimeters))
     north_arrow.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM - padding_x * 2,
-                                            NORTH_ARROW_HEIGHT_MM - padding_y * 2,
-                                            QgsUnitTypes.LayoutMillimeters))
+                                            NORTH_ARROW_HEIGHT_MM - padding_y * 2, QgsUnitTypes.LayoutMillimeters))
     north_arrow.setFrameEnabled(False)
     north_arrow.setBackgroundEnabled(False)
     layout.addLayoutItem(north_arrow)
-    print(f"[信息] 指北针添加完成")
 
 
 def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
-    """
-    添加比例尺
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        map_item (QgsLayoutItemMap): 地图布局项
-        scale (int): 比例尺
-        extent (QgsRectangle): 地图范围
-        center_lat (float): 中心纬度
-        map_height_mm (float): 地图高度（毫米）
-    """
+    """添加比例尺"""
     map_left = BORDER_LEFT_MM
     map_top = BORDER_TOP_MM
     map_right = map_left + MAP_WIDTH_MM
@@ -1995,25 +1905,13 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
     lbl_end.setBackgroundEnabled(False)
     layout.addLayoutItem(lbl_end)
 
-    print(f"[信息] 比例尺添加完成，1:{scale:,}")
-
 
 def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
-                newmark_legend_list=None, show_legend_text=True):
+                legend_values=None, show_legend_text=True):
     """
     添加图例
-    - 上部：震中/地级市/省界/市界/县界/烈度（3行2列，平行排列）
-    - 下部：Newmark位移图例（色块 + 位移值，使用Times New Roman字体）
-    - 图例标题居中显示"Newmark位移（厘米）"
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        map_item (QgsLayoutItemMap): 地图布局项
-        project (QgsProject): QGIS项目
-        map_height_mm (float): 地图���度（毫米）
-        output_height_mm (float): 输出高度（毫米）
-        newmark_legend_list (list): Newmark位移图例列表
-        show_legend_text (bool): 是否显示图例文字
+    - 上部：震中/地级市/省界/市界/县界/烈度（3行2列）
+    - 下部：Newmark位移图例（色块连接，标签在边界位置）
     """
     legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
     legend_y = BORDER_TOP_MM
@@ -2027,14 +1925,12 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     title_format.setColor(QColor(0, 0, 0))
 
-    # 基本图例项文本格式
     basic_item_format = QgsTextFormat()
     basic_item_format.setFont(QFont("SimSun", BASIC_LEGEND_FONT_SIZE_PT))
     basic_item_format.setSize(BASIC_LEGEND_FONT_SIZE_PT)
     basic_item_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     basic_item_format.setColor(QColor(0, 0, 0))
 
-    # Newmark位移图例文本格式（使用Times New Roman字体）
     newmark_format = QgsTextFormat()
     newmark_format.setFont(QFont(LEGEND_FONT_TIMES_NEW_ROMAN, NEWMARK_LEGEND_ITEM_FONT_SIZE_PT))
     newmark_format.setSize(NEWMARK_LEGEND_ITEM_FONT_SIZE_PT)
@@ -2069,11 +1965,10 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(title_label)
 
-    # 上部图例：3行2列（基本图例项）
+    # 上部图例：3行2列
     top_legend_start_y = legend_y + 7.0
-
-    col_count = 2  # 2列
-    row_count = 3  # 3行
+    col_count = 2
+    row_count = 3
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
@@ -2085,7 +1980,6 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     available_width = legend_width - left_pad - right_pad - (col_count - 1) * col_gap
     col_width = available_width / col_count
 
-    # 图例项：3行2列排列
     legend_items = [
         ("震中", "star"),
         ("地级市", "circle"),
@@ -2098,7 +1992,6 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     for idx, (display_name, draw_type) in enumerate(legend_items):
         row = idx // col_count
         col = idx % col_count
-
         item_x = legend_x + left_pad + col * (col_width + col_gap)
         item_y = top_legend_start_y + row * row_height
         icon_center_y = item_y + row_height / 2.0
@@ -2136,12 +2029,19 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
 
     top_legend_height = row_count * row_height
 
-    # Newmark位移图例
-    if newmark_legend_list and show_legend_text:
-        # Newmark位移图例标题：居中显示 "Newmark位移（厘米）"
+    # Newmark位移图例 - 边界标签样式
+    if legend_values and show_legend_text:
         newmark_title_y = top_legend_start_y + top_legend_height + 2.0
 
-        # 中文部分格式
+        # 标题 "Newmark位移（厘米）" - Newmark使用Times New Roman
+        newmark_en_format = QgsTextFormat()
+        newmark_en_font = QFont(LEGEND_FONT_TIMES_NEW_ROMAN)
+        newmark_en_font.setPointSizeF(10.0)
+        newmark_en_format.setFont(newmark_en_font)
+        newmark_en_format.setSize(10.0)
+        newmark_en_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+        newmark_en_format.setColor(QColor(0, 0, 0))
+
         newmark_title_cn_format = QgsTextFormat()
         newmark_title_cn_font = QFont("SimHei")
         newmark_title_cn_font.setPointSizeF(10.0)
@@ -2150,82 +2050,115 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         newmark_title_cn_format.setSizeUnit(QgsUnitTypes.RenderPoints)
         newmark_title_cn_format.setColor(QColor(0, 0, 0))
 
-        # 标题组合居中显示
-        title_group_width = 30.0
-        title_group_x = legend_x + (legend_width - title_group_width) / 2.0
+        newmark_text = "Newmark"
+        cn_text = "位移（厘米）"
+        newmark_width_est = len(newmark_text) * 2.2
+        cn_width_est = len(cn_text) * 3.5
+        total_width_est = newmark_width_est + cn_width_est
+        title_start_x = legend_x + (legend_width - total_width_est) / 2.0
 
-        # "Newmark位移（厘米）" 标题
-        newmark_title_label = QgsLayoutItemLabel(layout)
-        newmark_title_label.setText("Newmark位移（厘米）")
-        newmark_title_label.setTextFormat(newmark_title_cn_format)
-        newmark_title_label.attemptMove(QgsLayoutPoint(legend_x, newmark_title_y, QgsUnitTypes.LayoutMillimeters))
-        newmark_title_label.attemptResize(QgsLayoutSize(legend_width, 5.0, QgsUnitTypes.LayoutMillimeters))
-        newmark_title_label.setHAlign(Qt.AlignHCenter)
-        newmark_title_label.setVAlign(Qt.AlignVCenter)
-        newmark_title_label.setFrameEnabled(False)
-        newmark_title_label.setBackgroundEnabled(False)
-        layout.addLayoutItem(newmark_title_label)
+        newmark_en_label = QgsLayoutItemLabel(layout)
+        newmark_en_label.setText(newmark_text)
+        newmark_en_label.setTextFormat(newmark_en_format)
+        newmark_en_label.attemptMove(QgsLayoutPoint(title_start_x, newmark_title_y, QgsUnitTypes.LayoutMillimeters))
+        newmark_en_label.attemptResize(QgsLayoutSize(newmark_width_est + 1, 5.0, QgsUnitTypes.LayoutMillimeters))
+        newmark_en_label.setHAlign(Qt.AlignLeft)
+        newmark_en_label.setVAlign(Qt.AlignVCenter)
+        newmark_en_label.setFrameEnabled(False)
+        newmark_en_label.setBackgroundEnabled(False)
+        layout.addLayoutItem(newmark_en_label)
 
-        item_start_y = newmark_title_y + 5.0
+        cn_label = QgsLayoutItemLabel(layout)
+        cn_label.setText(cn_text)
+        cn_label.setTextFormat(newmark_title_cn_format)
+        cn_label.attemptMove(QgsLayoutPoint(title_start_x + newmark_width_est, newmark_title_y,
+                                            QgsUnitTypes.LayoutMillimeters))
+        cn_label.attemptResize(QgsLayoutSize(cn_width_est + 2, 5.0, QgsUnitTypes.LayoutMillimeters))
+        cn_label.setHAlign(Qt.AlignLeft)
+        cn_label.setVAlign(Qt.AlignVCenter)
+        cn_label.setFrameEnabled(False)
+        cn_label.setBackgroundEnabled(False)
+        layout.addLayoutItem(cn_label)
 
-        newmark_icon_width = 8.0
-        newmark_icon_height = NEWMARK_LEGEND_ROW_HEIGHT_MM - 0.5
-        newmark_gap = 2.0
-        newmark_left_pad = 3.0
-        newmark_right_pad = 2.0
-        item_spacing = 0.5
+        # 色块和标签区域
+        colorbar_start_y = newmark_title_y + 6.0
+        colorbar_width = 8.0
+        colorbar_height = NEWMARK_LEGEND_ROW_HEIGHT_MM  # 每个色块高度
+        colorbar_left_pad = 3.0
+        label_gap = 2.0  # 色块和标签之间的间距
 
-        text_area_width = legend_width - newmark_left_pad - newmark_icon_width - newmark_gap - newmark_right_pad
+        num_colors = 10
+        total_colorbar_height = num_colors * colorbar_height
 
-        current_y = item_start_y
-        displayed_count = 0
+        # 检查是否超出图例区域
+        if colorbar_start_y + total_colorbar_height > legend_y + legend_height - 2.0:
+            # 调整色块高度以适应
+            available_height = legend_y + legend_height - 2.0 - colorbar_start_y
+            colorbar_height = available_height / num_colors
 
-        for idx, (color_rgba, label) in enumerate(newmark_legend_list):
-            item_height = NEWMARK_LEGEND_ROW_HEIGHT_MM
+        total_colorbar_height = num_colors * colorbar_height
 
-            if current_y + item_height > legend_y + legend_height - 2.0:
-                break
+        # 绘制10个连接的色块
+        for i in range(num_colors):
+            color = NEWMARK_COLORS[i]
+            color_str = f"{color.red()},{color.green()},{color.blue()},255"
 
-            # 绘制色块
+            box_y = colorbar_start_y + i * colorbar_height
+
             color_box = QgsLayoutItemShape(layout)
             color_box.setShapeType(QgsLayoutItemShape.Rectangle)
-            color_box.attemptMove(QgsLayoutPoint(legend_x + newmark_left_pad, current_y,
-                                                 QgsUnitTypes.LayoutMillimeters))
-            color_box.attemptResize(QgsLayoutSize(newmark_icon_width, newmark_icon_height,
-                                                  QgsUnitTypes.LayoutMillimeters))
-            color_str = f"{color_rgba[0]},{color_rgba[1]},{color_rgba[2]},{color_rgba[3]}"
+            color_box.attemptMove(QgsLayoutPoint(legend_x + colorbar_left_pad, box_y, QgsUnitTypes.LayoutMillimeters))
+            color_box.attemptResize(QgsLayoutSize(colorbar_width, colorbar_height, QgsUnitTypes.LayoutMillimeters))
             box_symbol = QgsFillSymbol.createSimple({
                 'color': color_str,
-                'outline_color': '80,80,80,255',
-                'outline_width': '0.15',
-                'outline_width_unit': 'MM',
+                'outline_style': 'no',
             })
             color_box.setSymbol(box_symbol)
             color_box.setFrameEnabled(False)
             layout.addLayoutItem(color_box)
 
-            # 绘制标签文本（使用Times New Roman字体）
-            text_x = legend_x + newmark_left_pad + newmark_icon_width + newmark_gap
+        # 在色块周围添加边框
+        border_box = QgsLayoutItemShape(layout)
+        border_box.setShapeType(QgsLayoutItemShape.Rectangle)
+        border_box.attemptMove(QgsLayoutPoint(legend_x + colorbar_left_pad, colorbar_start_y,
+                                              QgsUnitTypes.LayoutMillimeters))
+        border_box.attemptResize(QgsLayoutSize(colorbar_width, total_colorbar_height, QgsUnitTypes.LayoutMillimeters))
+        border_symbol = QgsFillSymbol.createSimple({
+            'color': '0,0,0,0',
+            'outline_color': '80,80,80,255',
+            'outline_width': '0.15',
+            'outline_width_unit': 'MM',
+        })
+        border_box.setSymbol(border_symbol)
+        border_box.setFrameEnabled(False)
+        layout.addLayoutItem(border_box)
 
-            text_label = QgsLayoutItemLabel(layout)
-            text_label.setText(label)
-            text_label.setTextFormat(newmark_format)
-            text_label.attemptMove(QgsLayoutPoint(text_x, current_y, QgsUnitTypes.LayoutMillimeters))
-            text_label.attemptResize(QgsLayoutSize(text_area_width, newmark_icon_height,
-                                                   QgsUnitTypes.LayoutMillimeters))
-            text_label.setHAlign(Qt.AlignLeft)
-            text_label.setVAlign(Qt.AlignVCenter)
-            text_label.setFrameEnabled(False)
-            text_label.setBackgroundEnabled(False)
-            text_label.setMode(QgsLayoutItemLabel.ModeFont)
-            layout.addLayoutItem(text_label)
+        # 绘制11个边界标签（从0开始，标签与色块边界对齐）
+        label_x = legend_x + colorbar_left_pad + colorbar_width + label_gap
+        label_width = legend_width - colorbar_left_pad - colorbar_width - label_gap - 2.0
+        label_height_mm = 4.0  # 标签高度
 
-            current_y += item_height + item_spacing
-            displayed_count += 1
+        for i in range(11):
+            # 标签的Y位置：与色块边界对齐（第一个标签与第一个色块顶部对齐）
+            label_y = colorbar_start_y + i * colorbar_height - label_height_mm / 2.0
 
-        print(
-            f"[信息] Newmark位移图例添加完成，共 {displayed_count} 项，字体: {LEGEND_FONT_TIMES_NEW_ROMAN} {NEWMARK_LEGEND_ITEM_FONT_SIZE_PT}pt")
-    elif newmark_legend_list and not show_legend_text:
+            # 获取对应的数值标签
+            value = legend_values[i]
+            label_text = format_legend_value(value)
+
+            value_label = QgsLayoutItemLabel(layout)
+            value_label.setText(label_text)
+            value_label.setTextFormat(newmark_format)
+            value_label.attemptMove(QgsLayoutPoint(label_x, label_y, QgsUnitTypes.LayoutMillimeters))
+            value_label.attemptResize(QgsLayoutSize(label_width, label_height_mm, QgsUnitTypes.LayoutMillimeters))
+            value_label.setHAlign(Qt.AlignLeft)
+            value_label.setVAlign(Qt.AlignVCenter)
+            value_label.setFrameEnabled(False)
+            value_label.setBackgroundEnabled(False)
+            layout.addLayoutItem(value_label)
+
+        print(f"[信息] Newmark位移图例添加完成，共10个色块，11个边界标签")
+    elif legend_values and not show_legend_text:
         print("[信息] Dn最大值超过1000，不显示Newmark位移图例文字")
     else:
         print("[信息] 无Newmark位移数据，跳过Newmark位移图例")
@@ -2234,26 +2167,15 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
 
 
 def _draw_star_icon(layout, x, center_y, width, height):
-    """
-    在图例中绘制红色五角星图标
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        x (float): X坐标
-        center_y (float): 中心Y坐标
-        width (float): 宽度
-        height (float): 高度
-    """
+    """在图例中绘制红色五角星图标"""
     star_label = QgsLayoutItemLabel(layout)
     star_label.setText("★")
-
     star_format = QgsTextFormat()
     star_format.setFont(QFont("SimSun", 10))
     star_format.setSize(10)
     star_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     star_format.setColor(EPICENTER_COLOR)
     star_label.setTextFormat(star_format)
-
     star_label.attemptMove(QgsLayoutPoint(x, center_y - height / 2.0 - 0.5, QgsUnitTypes.LayoutMillimeters))
     star_label.attemptResize(QgsLayoutSize(width, height + 1.0, QgsUnitTypes.LayoutMillimeters))
     star_label.setHAlign(Qt.AlignHCenter)
@@ -2264,16 +2186,7 @@ def _draw_star_icon(layout, x, center_y, width, height):
 
 
 def _draw_city_icon(layout, x, center_y, width, height):
-    """
-    在图例中绘制地级市圆点图标
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        x (float): X坐标
-        center_y (float): 中心Y坐标
-        width (float): 宽度
-        height (float): 高度
-    """
+    """在图例中绘制地级市圆点图标"""
     icon_size = min(width, height) * 0.6
     center_x = x + width / 2.0
 
@@ -2308,68 +2221,38 @@ def _draw_city_icon(layout, x, center_y, width, height):
 
 
 def _draw_line_icon(layout, x, center_y, width, color, line_width_mm, solid=True):
-    """
-    在图例中绘制实线图标
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        x (float): X坐标
-        center_y (float): 中心Y坐标
-        width (float): 宽度
-        color (QColor): 线条颜色
-        line_width_mm (float): 线宽（毫米）
-        solid (bool): 是否实线
-    """
+    """在图例中绘制实线图标"""
     line_shape = QgsLayoutItemShape(layout)
     line_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-
     line_height = max(line_width_mm, 0.5)
     line_shape.attemptMove(QgsLayoutPoint(x, center_y - line_height / 2.0, QgsUnitTypes.LayoutMillimeters))
     line_shape.attemptResize(QgsLayoutSize(width, line_height, QgsUnitTypes.LayoutMillimeters))
-
     color_str = f"{color.red()},{color.green()},{color.blue()},255"
     line_symbol = QgsFillSymbol.createSimple({
         'color': color_str,
         'outline_style': 'no',
     })
-
     line_shape.setSymbol(line_symbol)
     line_shape.setFrameEnabled(False)
     layout.addLayoutItem(line_shape)
 
 
 def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_gap_mm):
-    """
-    在图例中绘制虚���图标
-
-    参数:
-        layout (QgsPrintLayout): 打印布局
-        x (float): 起始X坐标
-        center_y (float): 中心Y坐标
-        width (float): 图标总宽度
-        color (QColor): 线条颜色
-        line_width_mm (float): 线宽(mm)
-        dash_gap_mm (float): 虚线间隔(mm)
-    """
+    """在图例中绘制虚线图标"""
     line_height = max(line_width_mm, 0.5)
     color_str = f"{color.red()},{color.green()},{color.blue()},255"
-
     dash_length_mm = max(dash_gap_mm * 3.5, 0.8)
     pattern_length = dash_length_mm + dash_gap_mm
 
     current_x = x
     while current_x < x + width:
         actual_dash_length = min(dash_length_mm, x + width - current_x)
-
         if actual_dash_length <= 0:
             break
-
         dash_shape = QgsLayoutItemShape(layout)
         dash_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-        dash_shape.attemptMove(QgsLayoutPoint(current_x, center_y - line_height / 2.0,
-                                              QgsUnitTypes.LayoutMillimeters))
-        dash_shape.attemptResize(QgsLayoutSize(actual_dash_length, line_height,
-                                               QgsUnitTypes.LayoutMillimeters))
+        dash_shape.attemptMove(QgsLayoutPoint(current_x, center_y - line_height / 2.0, QgsUnitTypes.LayoutMillimeters))
+        dash_shape.attemptResize(QgsLayoutSize(actual_dash_length, line_height, QgsUnitTypes.LayoutMillimeters))
         dash_symbol = QgsFillSymbol.createSimple({
             'color': color_str,
             'outline_style': 'no',
@@ -2377,7 +2260,6 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
         dash_shape.setSymbol(dash_symbol)
         dash_shape.setFrameEnabled(False)
         layout.addLayoutItem(dash_shape)
-
         current_x += pattern_length
 
 
@@ -2387,25 +2269,8 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def generate_earthquake_newmark_map(longitude, latitude, magnitude,
                                     output_path="output_newmark_map.png",
-                                    kml_path=None,
-                                    dn_tif_path=None):
-    """
-    生成地震Newmark位移分布图（主入口函数）
-
-    针对大文件TIF进行了优化，只加载所需范围内的数据。
-    只加载天地图矢量注记图层（放置在最上层），不加载矢量底图。
-
-    参数:
-        longitude (float): 震中经度
-        latitude (float): 震中纬度
-        magnitude (float): 地震震级
-        output_path (str): 输出PNG文件路径
-        kml_path (str): 烈度圈KML文件路径（可选）
-        dn_tif_path (str): Newmark位移TIF文件路径（可选，默认使用DN_TIF_PATH）
-
-    返回:
-        str: 成功时返回输出文件路径，失败返回None
-    """
+                                    kml_path=None, dn_tif_path=None):
+    """生成地震Newmark位移分布图（主入口函数）"""
     print("=" * 60)
     print(f"[开始] 生成地震Newmark位移分布图")
     print(f"  震中: ({longitude}, {latitude}), 震级: M{magnitude}")
@@ -2415,7 +2280,6 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
     print(f"  GDAL可用: {GDAL_AVAILABLE}")
     print("=" * 60)
 
-    # 使用传入的TIF路径或默认路径
     tif_path = dn_tif_path if dn_tif_path else DN_TIF_PATH
 
     config = get_magnitude_config(magnitude)
@@ -2429,7 +2293,6 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
     map_height_mm = calculate_map_height_from_extent(extent, MAP_WIDTH_MM)
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
-    # 初始化QGIS应用
     qgs_app = None
     if not QgsApplication.instance():
         qgs_app = QgsApplication([], False)
@@ -2440,58 +2303,40 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
     project.clear()
     project.setCrs(CRS_WGS84)
 
-    # 获取临时文件管理器
     temp_manager = get_temp_manager()
-
-    # 临时注记底图文件路径
-    temp_annotation_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "_temp_annotation_newmark.png"
-    )
+    temp_annotation_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_temp_annotation_newmark.png")
 
     try:
-        # ============================================================
-        # 下载天地图矢量注记瓦片（只下载注记，不下载底图）
-        # ============================================================
         width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
         height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
 
         annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
 
-        # 加载Newmark位移底图（优化版，按需裁剪）
         newmark_layer, legend_values = load_newmark_raster_optimized(tif_path, extent)
         if newmark_layer:
             project.addMapLayer(newmark_layer)
 
-        # 构建Newmark位移图例列表
-        newmark_legend_list = build_newmark_legend_list(legend_values)
         show_legend_text = legend_values is not None
-        print(f"[信息] 获取到 {len(newmark_legend_list)} 个Newmark位移图例项")
 
-        # 加载县界图层
         county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
         if county_layer:
             style_county_layer(county_layer)
             project.addMapLayer(county_layer)
 
-        # 加载市界图层
         city_layer = load_vector_layer(CITY_SHP_PATH, "市界_地图")
         if city_layer:
             style_city_layer(city_layer)
             project.addMapLayer(city_layer)
 
-        # 加载省界图层
         province_layer = load_vector_layer(PROVINCE_SHP_PATH, "省界_地图")
         if province_layer:
             style_province_layer(province_layer)
             project.addMapLayer(province_layer)
 
-        # 加载地级市点位图层（不显示标注）
         city_point_layer = create_city_point_layer(extent)
         if city_point_layer:
             project.addMapLayer(city_point_layer)
 
-        # 创建图例辅助图层
         province_legend_layer = create_province_legend_layer()
         if province_legend_layer:
             project.addMapLayer(province_legend_layer)
@@ -2508,7 +2353,6 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
         if intensity_legend_layer:
             project.addMapLayer(intensity_legend_layer)
 
-        # 处理烈度圈KML
         intensity_data = []
         intensity_layer = None
         if kml_path:
@@ -2521,20 +2365,16 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
                 if intensity_layer:
                     project.addMapLayer(intensity_layer)
 
-        # 创建震中图层
         epicenter_layer = create_epicenter_layer(longitude, latitude)
         if epicenter_layer:
             project.addMapLayer(epicenter_layer)
 
-        # 添加注记图层到项目（如果下载成功）
         if annotation_raster:
             project.addMapLayer(annotation_raster)
 
-        # 按正确渲染顺序排列图层（第一项在最上层）
-        # 震中图层放在最上层，确保震中五角星不被注记图层遮挡
         ordered_layers = [lyr for lyr in [
-            epicenter_layer,      # 震中放在最上层，显示在注记之上
-            annotation_raster,    # 天地图注记
+            epicenter_layer,
+            annotation_raster,
             intensity_layer,
             city_point_layer,
             province_layer,
@@ -2543,19 +2383,15 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
             newmark_layer,
         ] if lyr is not None]
 
-        # 创建打印布局
         layout = create_print_layout(project, longitude, latitude, magnitude,
-                                     extent, scale, map_height_mm, newmark_legend_list,
+                                     extent, scale, map_height_mm, legend_values,
                                      ordered_layers, show_legend_text)
 
-        # 导出PNG
         result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
 
     finally:
-        # 清理临时文件
         temp_manager.cleanup()
 
-        # 清理指北针临时SVG文件
         svg_temp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_newmark_temp.svg")
         if os.path.exists(svg_temp):
             try:
@@ -2563,14 +2399,14 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
             except OSError:
                 pass
 
-        # 清理临时注记底图文件
         if os.path.exists(temp_annotation_path):
             try:
                 os.remove(temp_annotation_path)
                 pgw_path = temp_annotation_path.replace(".png", ".pgw")
                 if os.path.exists(pgw_path):
                     os.remove(pgw_path)
-            except OSError:                pass
+            except OSError:
+                pass
 
     print("=" * 60)
     if result:
@@ -2582,17 +2418,7 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
 
 
 def export_layout_to_png(layout, output_path, dpi=150):
-    """
-    将打印布局导出为PNG图片
-
-    参数:
-        layout (QgsPrintLayout): 打印布局对象
-        output_path (str): 输出文件路径
-        dpi (int): 输出分辨率（默认150）
-
-    返回:
-        str: 成功时返回输出文件路径，失败返回None
-    """
+    """将打印布局导出为PNG图片"""
     out_dir = os.path.dirname(os.path.abspath(output_path))
     if not os.path.exists(out_dir):
         os.makedirs(out_dir, exist_ok=True)
@@ -2625,492 +2451,58 @@ def export_layout_to_png(layout, output_path, dpi=150):
 # 测试方法
 # ============================================================
 
-def test_magnitude_config():
-    """测试震级配置获取"""
-    print("\n--- 测试: get_magnitude_config ---")
-    config_s = get_magnitude_config(4.5)
-    assert config_s["scale"] == 150000
-    assert config_s["map_size_km"] == 30
-    print(f"  M4.5 -> 范围{config_s['map_size_km']}km, 比例尺1:{config_s['scale']} ✓")
-
-    config_m = get_magnitude_config(6.5)
-    assert config_m["scale"] == 500000
-    assert config_m["map_size_km"] == 100
-    print(f"  M6.5 -> 范围{config_m['map_size_km']}km, 比例尺1:{config_m['scale']} ✓")
-
-    config_l = get_magnitude_config(7.5)
-    assert config_l["scale"] == 1500000
-    assert config_l["map_size_km"] == 300
-    print(f"  M7.5 -> 范围{config_l['map_size_km']}km, 比例尺1:{config_l['scale']} ✓")
-    print("  所有震级配置测试通过 ✓")
-
-
-def test_calculate_extent():
-    """测试地图范围计算"""
-    print("\n--- 测试: calculate_extent ---")
-    extent = calculate_extent(116.4, 39.9, 15)
-    assert extent.xMinimum() < 116.4 < extent.xMaximum()
-    assert extent.yMinimum() < 39.9 < extent.yMaximum()
-    delta_y = extent.yMaximum() - extent.yMinimum()
-    assert abs(delta_y - 0.2703) < 0.02
-    print(f"  15km半径范围: 纬度差{delta_y:.4f}° ✓")
-    print("  所有范围计算测试通过 ✓")
-
-
-def test_int_to_roman():
-    """测试罗马数字转换"""
-    print("\n--- 测试: int_to_roman ---")
-    assert int_to_roman(4) == "IV"
-    assert int_to_roman(5) == "V"
-    assert int_to_roman(6) == "VI"
-    assert int_to_roman(9) == "IX"
-    assert int_to_roman(10) == "X"
-    assert int_to_roman(12) == "XII"
-    print("  IV=4, V=5, VI=6, IX=9, X=10, XII=12 ✓")
-    print("  罗马数字转换测试通过 ✓")
-
-
-def test_newmark_colors():
-    """测试Newmark位移颜色配置"""
-    print("\n--- 测试: Newmark位移颜色配置 ---")
-
-    assert len(NEWMARK_COLORS) == 10
-    print(f"  Newmark位移颜色数量: {len(NEWMARK_COLORS)} ✓")
-
-    # 测试第一档颜色
-    color1 = NEWMARK_COLORS[0]
-    assert color1.red() == 148
-    assert color1.green() == 193
-    assert color1.blue() == 146
-    print(f"  第1档颜色: RGB({color1.red()},{color1.green()},{color1.blue()}) ✓")
-
-    # 测试第五档颜色
-    color5 = NEWMARK_COLORS[4]
-    assert color5.red() == 246
-    assert color5.green() == 200
-    assert color5.blue() == 0
-    print(f"  第5档颜色: RGB({color5.red()},{color5.green()},{color5.blue()}) ✓")
-
-    # 测试第十档颜色
-    color10 = NEWMARK_COLORS[9]
-    assert color10.red() == 81
-    assert color10.green() == 52
-    assert color10.blue() == 130
-    print(f"  第10档颜色: RGB({color10.red()},{color10.green()},{color10.blue()}) ✓")
-
-    print("  Newmark位移颜色配置测试通过 ✓")
-
-
-def test_select_legend_column():
-    """测试图例分档列选择"""
-    print("\n--- 测试: select_legend_column ---")
-
-    # 测试最大值为3时，选择5的列
-    legend_5 = select_legend_column(3)
-    assert legend_5 == NEWMARK_LEGEND_TABLE[5]
-    assert legend_5[0] == 0
-    assert legend_5[10] == 5.0
-    print(f"  最大值3 -> 选择5的列: {legend_5} ✓")
-
-    # 测试最大值为8时，选择10的列
-    legend_10 = select_legend_column(8)
-    assert legend_10 == NEWMARK_LEGEND_TABLE[10]
-    assert legend_10[0] == 0
-    assert legend_10[10] == 10
-    print(f"  最大值8 -> 选择10的列: {legend_10} ✓")
-
-    # 测试最大值为15时，选择20的列
-    legend_20 = select_legend_column(15)
-    assert legend_20 == NEWMARK_LEGEND_TABLE[20]
-    assert legend_20[0] == 0
-    assert legend_20[10] == 20
-    print(f"  最大值15 -> 选择20的列: {legend_20} ✓")
-
-    # 测试最大值为45时，选择50的列
-    legend_50 = select_legend_column(45)
-    assert legend_50 == NEWMARK_LEGEND_TABLE[50]
-    assert legend_50[0] == 0
-    assert legend_50[10] == 50
-    print(f"  最大值45 -> 选择50的列: {legend_50} ✓")
-
-    # 测试最大值为80时，选择100的列
-    legend_100 = select_legend_column(80)
-    assert legend_100 == NEWMARK_LEGEND_TABLE[100]
-    assert legend_100[0] == 0
-    assert legend_100[10] == 100
-    print(f"  最大值80 -> 选择100的列: {legend_100} ✓")
-
-    # 测试最大值为150时，选择200的列
-    legend_200 = select_legend_column(150)
-    assert legend_200 == NEWMARK_LEGEND_TABLE[200]
-    assert legend_200[0] == 0
-    assert legend_200[10] == 200
-    print(f"  最大值150 -> 选择200的列: {legend_200} ✓")
-
-    # 测试最大值为250时，选择300的列
-    legend_300 = select_legend_column(250)
-    assert legend_300 == NEWMARK_LEGEND_TABLE[300]
-    assert legend_300[0] == 0
-    assert legend_300[10] == 300
-    print(f"  最大值250 -> 选择300的列: {legend_300} ✓")
-
-    # 测试最大值为400时，选择500的列
-    legend_500 = select_legend_column(400)
-    assert legend_500 == NEWMARK_LEGEND_TABLE[500]
-    assert legend_500[0] == 0
-    assert legend_500[10] == 500
-    print(f"  最大值400 -> 选择500的列: {legend_500} ✓")
-
-    # 测试最大值为800时，选择1000的列
-    legend_1000 = select_legend_column(800)
-    assert legend_1000 == NEWMARK_LEGEND_TABLE[1000]
-    assert legend_1000[0] == 0
-    assert legend_1000[10] == 1000
-    print(f"  最大值800 -> 选择1000的列: {legend_1000} ✓")
-
-    # 测试最大值超过1000时，返回None
-    legend_over = select_legend_column(1500)
-    assert legend_over is None
-    print(f"  最大值1500 -> 返回None（不显示图例） ✓")
-
-    print("  图例分档列选择测试通过 ✓")
-
-
-def test_build_newmark_classes():
-    """测试Newmark位移分档配置构建"""
-    print("\n--- 测试: build_newmark_classes ---")
-
-    # 使用最大值10的图例值
-    legend_values = NEWMARK_LEGEND_TABLE[10]
-    classes = build_newmark_classes(legend_values)
-
-    assert len(classes) == 10
-    print(f"  分档数量: {len(classes)} ✓")
-
-    # 测试第一档
-    cls1 = classes[0]
-    assert cls1["min"] == 0
-    assert cls1["max"] == 1
-    assert cls1["color"] == NEWMARK_COLORS[0]
-    assert cls1["label"] == "1"
-    print(f"  第1档: {cls1['min']}-{cls1['max']}, 标签: {cls1['label']} ✓")
-
-    # 测试第五档
-    cls5 = classes[4]
-    assert cls5["min"] == 4
-    assert cls5["max"] == 5
-    assert cls5["color"] == NEWMARK_COLORS[4]
-    assert cls5["label"] == "5"
-    print(f"  第5档: {cls5['min']}-{cls5['max']}, 标签: {cls5['label']} ✓")
-
-    # 测试第十档
-    cls10 = classes[9]
-    assert cls10["min"] == 9
-    assert cls10["max"] == 10
-    assert cls10["color"] == NEWMARK_COLORS[9]
-    assert cls10["label"] == "10"
-    print(f"  第10档: {cls10['min']}-{cls10['max']}, 标签: {cls10['label']} ✓")
-
-    print("  Newmark位移分档配置构建测试通过 ✓")
-
-
-def test_build_newmark_legend_list():
-    """测试Newmark位移图例列表构建"""
-    print("\n--- 测试: build_newmark_legend_list ---")
-
-    # 使用最大值10的图例值
-    legend_values = NEWMARK_LEGEND_TABLE[10]
-    legend_list = build_newmark_legend_list(legend_values)
-
-    assert len(legend_list) == 10
-    print(f"  图例项数量: {len(legend_list)} ✓")
-
-    # 测试第一项
-    color1, label1 = legend_list[0]
-    assert color1 == (148, 193, 146, 255)
-    assert label1 == "1"
-    print(f"  第1项: {label1}, RGBA{color1} ✓")
-
-    # 测试第五项
-    color5, label5 = legend_list[4]
-    assert color5 == (246, 200, 0, 255)
-    assert label5 == "5"
-    print(f"  第5项: {label5}, RGBA{color5} ✓")
-
-    # 测试None情况
-    empty_list = build_newmark_legend_list(None)
-    assert len(empty_list) == 0
-    print(f"  None输入返回空列表 ✓")
-
-    print("  Newmark位移图例列表构建测试通过 ✓")
-
-
-def test_newmark_legend_table():
-    """测试Newmark位移图例分档值表"""
-    print("\n--- 测试: NEWMARK_LEGEND_TABLE ---")
-
-    # 验证所有阈值列都存在
-    for threshold in NEWMARK_MAX_THRESHOLDS:
-        assert threshold in NEWMARK_LEGEND_TABLE
-        assert len(NEWMARK_LEGEND_TABLE[threshold]) == 11
-        assert NEWMARK_LEGEND_TABLE[threshold][0] == 0
-        assert NEWMARK_LEGEND_TABLE[threshold][10] == threshold
-        print(f"  阈值{threshold}: 起始值0, 结束值{threshold}, 共11项 ✓")
-
-    # 验证最大值5的分档
-    legend_5 = NEWMARK_LEGEND_TABLE[5]
-    expected_5 = [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
-    assert legend_5 == expected_5
-    print(f"  最大值5分档验证通过 ✓")
-
-    # 验证最大值10的分档
-    legend_10 = NEWMARK_LEGEND_TABLE[10]
-    expected_10 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    assert legend_10 == expected_10
-    print(f"  最大值10分档验证通过 ✓")
-
-    # 验证最大值20的分档
-    legend_20 = NEWMARK_LEGEND_TABLE[20]
-    expected_20 = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
-    assert legend_20 == expected_20
-    print(f"  最大值20分档验证通过 ✓")
-
-    print("  NEWMARK_LEGEND_TABLE测试通过 ✓")
-
-
-def test_boundary_styles():
-    """测试市界和县界样式参数"""
-    print("\n--- 测试: 市界和县界样式参数 ---")
-
-    assert CITY_COLOR.red() == 160
-    assert CITY_COLOR.green() == 160
-    assert CITY_COLOR.blue() == 160
-    assert CITY_LINE_WIDTH_MM == 0.24
-    assert CITY_DASH_GAP_MM == 0.3
-    print(f"  市界颜色: RGB({CITY_COLOR.red()},{CITY_COLOR.green()},{CITY_COLOR.blue()}) ✓")
-    print(f"  市界线宽: {CITY_LINE_WIDTH_MM}mm ✓")
-    print(f"  市界虚线间隔: {CITY_DASH_GAP_MM}mm ✓")
-
-    assert COUNTY_COLOR.red() == 160
-    assert COUNTY_COLOR.green() == 160
-    assert COUNTY_COLOR.blue() == 160
-    assert COUNTY_LINE_WIDTH_MM == 0.14
-    assert COUNTY_DASH_GAP_MM == 0.2
-    print(f"  县界颜色: RGB({COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()}) ✓")
-    print(f"  县界线宽: {COUNTY_LINE_WIDTH_MM}mm ✓")
-    print(f"  县界虚线间隔: {COUNTY_DASH_GAP_MM}mm ✓")
-
-    print("  市界和县界样式参数测试通过 ✓")
-
-
-def test_legend_font_config():
-    """测试图例字体配置"""
-    print("\n--- 测试: 图例字体配置 ---")
-
-    assert NEWMARK_LEGEND_ITEM_FONT_SIZE_PT == 10
-    print(f"  Newmark位移图例字体大小: {NEWMARK_LEGEND_ITEM_FONT_SIZE_PT}pt ✓")
-
-    assert BASIC_LEGEND_FONT_SIZE_PT == 10
-    print(f"  基本图例字体大小: {BASIC_LEGEND_FONT_SIZE_PT}pt ✓")
-
-    assert LEGEND_FONT_TIMES_NEW_ROMAN == "Times New Roman"
-    print(f"  Newmark位移数字字体: {LEGEND_FONT_TIMES_NEW_ROMAN} ✓")
-
-    print("  图例字体配置测试通过 ✓")
-
-
-def test_temp_file_manager():
-    """测试临时文件管理器"""
-    print("\n--- 测试: TempFileManager ---")
-
-    manager = TempFileManager()
-
-    temp_dir = manager.get_temp_dir()
-    assert temp_dir is not None
-    assert os.path.exists(temp_dir)
-    print(f"  临时目录创建成功: {temp_dir} ✓")
-
-    temp_file = manager.get_temp_file(suffix=".tif")
-    assert temp_file is not None
-    assert temp_file.endswith(".tif")
-    print(f"  临时文件创建成功: {temp_file} ✓")
-
-    manager.cleanup()
-    assert not os.path.exists(temp_dir)
-    print("  临时文件清理成功 ✓")
-
-    print("  临时文件管理器测试通过 ✓")
-
-
-def test_gdal_availability():
-    """测试GDAL可用性"""
-    print("\n--- 测试: GDAL可用性 ---")
-
-    print(f"  GDAL模块可用: {GDAL_AVAILABLE}")
-
-    if GDAL_AVAILABLE:
-        print(f"  GDAL版本: {gdal.VersionInfo()}")
-        print("  GDAL功能正常 ✓")
-    else:
-        print("  [警告] GDAL不可用，将使用备用方案")
-
-    print("  GDAL可用性测试完成")
-
-
-def test_clip_extent_calculation():
-    """测试裁剪范围计算"""
-    print("\n--- 测试: 裁剪范围计算 ---")
-
-    extent = calculate_extent(118.18, 39.63, 150)
-
-    clip_xmin = extent.xMinimum() - CLIP_BUFFER_DEGREES
-    clip_xmax = extent.xMaximum() + CLIP_BUFFER_DEGREES
-    clip_ymin = extent.yMinimum() - CLIP_BUFFER_DEGREES
-    clip_ymax = extent.yMaximum() + CLIP_BUFFER_DEGREES
-
-    assert clip_xmin < extent.xMinimum()
-    assert clip_xmax > extent.xMaximum()
-    assert clip_ymin < extent.yMinimum()
-    assert clip_ymax > extent.yMaximum()
-
-    buffer_applied = extent.xMinimum() - clip_xmin
-    assert abs(buffer_applied - CLIP_BUFFER_DEGREES) < 0.0001
-
-    print(
-        f"  原始范围: ({extent.xMinimum():.4f}, {extent.yMinimum():.4f}) - ({extent.xMaximum():.4f}, {extent.yMaximum():.4f})")
-    print(f"  裁剪范围: ({clip_xmin:.4f}, {clip_ymin:.4f}) - ({clip_xmax:.4f}, {clip_ymax:.4f})")
-    print(f"  缓冲区大小: {CLIP_BUFFER_DEGREES}度 ✓")
-
-    print("  裁剪范围计算测试通过 ✓")
-
-
-def test_legend_layout_config():
-    """测试图例布局配置"""
-    print("\n--- 测试: 图例布局配置 ---")
-
-    # 测试基本图例项配置
-    assert BASIC_LEGEND_FONT_SIZE_PT == 10
-    assert BASIC_LEGEND_ROW_HEIGHT_MM == 8.0
-    print(f"  基本图例项字体大小: {BASIC_LEGEND_FONT_SIZE_PT}pt ✓")
-    print(f"  基本图例项行高: {BASIC_LEGEND_ROW_HEIGHT_MM}mm ✓")
-
-    # 测试Newmark位移图例项配置
-    assert NEWMARK_LEGEND_ITEM_FONT_SIZE_PT == 10
-    assert NEWMARK_LEGEND_ROW_HEIGHT_MM == 6
-    print(f"  Newmark位移图例项字体大小: {NEWMARK_LEGEND_ITEM_FONT_SIZE_PT}pt ✓")
-    print(f"  Newmark位移图例项行高: {NEWMARK_LEGEND_ROW_HEIGHT_MM}mm ✓")
-
-    # 验证3行2列布局
-    legend_items = [
-        ("震中", "star"),
-        ("地级市", "circle"),
-        ("省界", "solid_line"),
-        ("市界", "dash_line_city"),
-        ("县界", "dash_line_county"),
-        ("烈度", "solid_line_black"),
-    ]
-    assert len(legend_items) == 6  # 3行 x 2列 = 6项
-    print(f"  基本图例项数量: {len(legend_items)} (3行x2列) ✓")
-
-    print("  图例布局配置测试通过 ✓")
-
-
-def test_newmark_all_thresholds():
-    """测试所有Newmark位移阈值的分档选择"""
-    print("\n--- 测试: 所有Newmark位移阈值分档选择 ---")
-
-    test_cases = [
-        (0.5, 5),      # 最大值0.5，选择5的列
-        (4.9, 5),      # 最大值4.9，选择5的列
-        (5.0, 5),      # 最大值5.0，选择5的列
-        (5.1, 10),     # 最大值5.1，选择10的列
-        (10, 10),      # 最大值10，选择10的列
-        (10.1, 20),    # 最大值10.1，选择20的列
-        (20, 20),      # 最大值20，选择20的列
-        (20.1, 50),    # 最大值20.1，选择50的列
-        (50, 50),      # 最大值50，选择50的列
-        (50.1, 100),   # 最大值50.1，选择100的列
-        (100, 100),    # 最大值100，选择100的列
-        (100.1, 200),  # 最大值100.1，选择200的列
-        (200, 200),    # 最大值200，选择200的列
-        (200.1, 300),  # 最大值200.1，选择300的列
-        (300, 300),    # 最大值300，选择300的列
-        (300.1, 500),  # 最大值300.1，选择500的列
-        (500, 500),    # 最大值500，选择500的列
-        (500.1, 1000), # 最大值500.1，选择1000的列
-        (1000, 1000),  # 最大值1000，选择1000的列
-    ]
-
-    for max_val, expected_threshold in test_cases:
-        result = select_legend_column(max_val)
-        assert result == NEWMARK_LEGEND_TABLE[expected_threshold], \
-            f"最大值{max_val}应选择{expected_threshold}的列"
-        print(f"  最大值{max_val} -> 阈值{expected_threshold} ✓")
-
-    # 测试超过1000的情况
-    result_over = select_legend_column(1001)
-    assert result_over is None
-    print(f"  最大值1001 -> None（不显示图例） ✓")
-
-    print("  所有Newmark位移阈值分档选择测试通过 ✓")
-
-
-def test_newmark_label_format():
-    """测试Newmark位移图例标签格式"""
-    print("\n--- 测试: Newmark位移图例标签格式 ---")
-
-    # 测试最大值5的标签（带小数）
-    legend_5 = NEWMARK_LEGEND_TABLE[5]
-    classes_5 = build_newmark_classes(legend_5)
-
-    assert classes_5[0]["label"] == "0.5"
-    assert classes_5[1]["label"] == "1.0"
-    assert classes_5[9]["label"] == "5.0"
-    print(f"  最大值5: 标签格式带小数 ✓")
-
-    # 测试最大值10的标签（整数）
-    legend_10 = NEWMARK_LEGEND_TABLE[10]
-    classes_10 = build_newmark_classes(legend_10)
-
-    assert classes_10[0]["label"] == "1"
-    assert classes_10[4]["label"] == "5"
-    assert classes_10[9]["label"] == "10"
-    print(f"  最大值10: 标签格式整数 ✓")
-
-    # 测试最大值100的标签
-    legend_100 = NEWMARK_LEGEND_TABLE[100]
-    classes_100 = build_newmark_classes(legend_100)
-
-    assert classes_100[0]["label"] == "10"
-    assert classes_100[4]["label"] == "50"
-    assert classes_100[9]["label"] == "100"
-    print(f"  最大值100: 标签格式整数 ✓")
-
-    print("  Newmark位移图例标签格式测试通过 ✓")
-
-
 def run_all_tests():
     """运行所有测试"""
     print("\n" + "=" * 60)
     print("运行 earthquake_newmark_map 全部测试")
     print("=" * 60)
 
-    test_magnitude_config()
-    test_calculate_extent()
-    test_int_to_roman()
-    test_newmark_colors()
-    test_select_legend_column()
-    test_build_newmark_classes()
-    test_build_newmark_legend_list()
-    test_newmark_legend_table()
-    test_boundary_styles()
-    test_legend_font_config()
-    test_temp_file_manager()
-    test_gdal_availability()
-    test_clip_extent_calculation()
-    test_legend_layout_config()
-    test_newmark_all_thresholds()
-    test_newmark_label_format()
+    # 测试震级配置
+    print("\n--- 测试: get_magnitude_config ---")
+    config_s = get_magnitude_config(4.5)
+    assert config_s["scale"] == 150000
+    print(f"  M4.5 -> 比例尺1:{config_s['scale']} ✓")
+
+    config_m = get_magnitude_config(6.5)
+    assert config_m["scale"] == 500000
+    print(f"  M6.5 -> 比��尺1:{config_m['scale']} ✓")
+
+    config_l = get_magnitude_config(7.5)
+    assert config_l["scale"] == 1500000
+    print(f"  M7.5 -> 比例尺1:{config_l['scale']} ✓")
+
+    # 测试范围计算
+    print("\n--- 测试: calculate_extent ---")
+    extent = calculate_extent(116.4, 39.9, 15)
+    assert extent.xMinimum() < 116.4 < extent.xMaximum()
+    print(f"  15km半径范围计算正确 ✓")
+
+    # 测试罗马数字
+    print("\n--- 测试: int_to_roman ---")
+    assert int_to_roman(4) == "IV"
+    assert int_to_roman(9) == "IX"
+    print("  罗马数字转换正确 ✓")
+
+    # 测试图例值选择
+    print("\n--- 测试: select_legend_column ---")
+    legend_5 = select_legend_column(3)
+    assert legend_5[10] == 5.0
+    print(f"  最大值3 -> 选择5的列 ✓")
+
+    legend_10 = select_legend_column(8)
+    assert legend_10[10] == 10
+    print(f"  最大值8 -> 选择10的列 ✓")
+
+    legend_over = select_legend_column(1500)
+    assert legend_over is None
+    print(f"  最大值1500 -> 返回None ✓")
+
+    # 测试数值格式化
+    print("\n--- 测试: format_legend_value ---")
+    assert format_legend_value(0) == "0"
+    assert format_legend_value(0.5) == "0.50"
+    assert format_legend_value(10) == "10"
+    print("  数值格式化正确 ✓")
 
     print("\n" + "=" * 60)
     print("全部测试执行完成")
@@ -3136,8 +2528,8 @@ if __name__ == "__main__":
             print(f"[错误] 参数格式错误: {e}")
             print("用法: python earthquake_newmark_map.py <经度> <纬度> <震级> [输出文件名] [kml路径] [Dn_tif路径]")
     else:
-        print("使用默认参数运行（唐山地震 M7.8）...")
+        print("使用默认参数运行...")
         generate_earthquake_newmark_map(
             longitude=103.36, latitude=34.09,
-            magnitude=7.0, output_path="earthquake_newmark_tangshan_M7.8.png"
+            magnitude=7.0, output_path="earthquake_newmark_M7.0.png"
         )
