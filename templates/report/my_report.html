@@ -33,11 +33,16 @@
 
 <!-- 任务状态列渲染模板 -->
 <script type="text/html" id="statusTpl">
-    {{#  var statusMap = {'0':'刚创建','1':'正在执行','2':'执行成功','3':'执行失败'}; }}
-    {{#  var colorMap  = {'0':'#999','1':'#1E9FFF','2':'#5FB878','3':'#FF5722'}; }}
-    <span style="color:{{ colorMap[String(d.task_status)] }}">
-        {{ statusMap[String(d.task_status)] || d.task_status }}
-    </span>
+    {{#
+        var s = String(d.task_status);
+        var statusText, color;
+        if (s === '0')      { statusText = '刚创建';   color = '#999';    }
+        else if (s === '1') { statusText = '正在执行'; color = '#1E9FFF'; }
+        else if (s === '2') { statusText = '执行成功'; color = '#5FB878'; }
+        else if (s === '3') { statusText = '执行失败'; color = '#FF5722'; }
+        else                { statusText = s;          color = '';        }
+    }}
+    <span style="color:{{ color }}">{{ statusText }}</span>
 </script>
 
 <script src="/static/layui/layui/layui.js"></script>
