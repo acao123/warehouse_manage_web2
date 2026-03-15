@@ -126,16 +126,16 @@ COUNTY_DASH_GAP_MM = 0.2
 # 断裂线样式（不同断层类型有不同线宽和颜色）
 # ============================================================
 # 全新世断层：红色，最粗
-FAULT_HOLOCENE_COLOR = QColor(255, 50, 50)
+FAULT_HOLOCENE_COLOR = QColor(255, 0, 0)
 FAULT_HOLOCENE_WIDTH_MM = 0.5
 # 晚更新世断层：品红色，中等
-FAULT_LATE_PLEISTOCENE_COLOR = QColor(255, 0, 255)
+FAULT_LATE_PLEISTOCENE_COLOR = QColor(255, 53, 255)
 FAULT_LATE_PLEISTOCENE_WIDTH_MM = 0.35
 # 早中更新世断层：绿色，最细
-FAULT_EARLY_PLEISTOCENE_COLOR = QColor(0, 200, 100)
+FAULT_EARLY_PLEISTOCENE_COLOR = QColor(16, 136, 16)
 FAULT_EARLY_PLEISTOCENE_WIDTH_MM = 0.2
 # 其他断层
-FAULT_DEFAULT_COLOR = QColor(255, 200, 50)
+FAULT_DEFAULT_COLOR = QColor(0, 0, 0)
 FAULT_DEFAULT_WIDTH_MM = 0.25
 
 # ============================================================
@@ -740,7 +740,7 @@ def _classify_fault(name, style_url, description, style_colors, parent_folder_ty
                 return "holocene"
             if rr > 150 and gg < 100 and bb > 150:
                 return "late_pleistocene"
-            if gg > 150 and rr < 100 and bb < 100:
+            if gg > 100 and rr < 100 and bb < 100:
                 return "early_pleistocene"
         except ValueError:
             pass
@@ -1896,7 +1896,7 @@ def _draw_legend_line(layout, x, center_y, width, color, line_width_mm):
         color (QColor): 线条颜色
         line_width_mm (float): 线宽（毫米）
     """
-    line_height = max(line_width_mm, 0.5)
+    line_height = line_width_mm
     line_shape = QgsLayoutItemShape(layout)
     line_shape.setShapeType(QgsLayoutItemShape.Rectangle)
     line_shape.attemptMove(QgsLayoutPoint(x, center_y - line_height / 2.0,
