@@ -150,7 +150,7 @@ EARTHQUAKE_LEVEL_CONFIG = {
 # ============================================================
 # 震中五角星样式
 # ============================================================
-EPICENTER_STAR_SIZE_MM = 5.0
+EPICENTER_STAR_SIZE_MM = 6.0
 EPICENTER_COLOR = QColor(255, 0, 0)
 EPICENTER_STROKE_COLOR = QColor(255, 255, 255)
 EPICENTER_STROKE_WIDTH_MM = 0.4
@@ -1291,14 +1291,14 @@ def generate_statistics(filtered_quakes, radius_km):
     mx = max(filtered_quakes, key=lambda e: e["magnitude"]) if filtered_quakes else None
 
     txt = (f"自1900年以来，本次地震震中{int(radius_km)}km范围内"
-           f"曾发生{ct}次4.7级以上地震，\n"
+           f"曾发生{ct}次4.7级以上地震，"
            f"其中4.7~5.9级地震{c1}次，6.0~6.9级地震{c2}次，"
            f"7.0~7.9级地震{c3}次，8.0级以上地震{c4}次。")
     if mx:
         y_s = str(mx.get("year", 0)) if mx.get("year", 0) > 0 else "未知"
         m_s = str(mx.get("month", 0)) if mx.get("month", 0) > 0 else "未知"
         d_s = str(mx.get("day", 0)) if mx.get("day", 0) > 0 else "未知"
-        txt += f"\n最大地震为{y_s}年{m_s}月{d_s}日{mx.get('location', '')}{mx['magnitude']}级地震。"
+        txt += f"最大地震为{y_s}年{m_s}月{d_s}日{mx.get('location', '')}{mx['magnitude']}级地震"
     return txt
 
 
@@ -2160,7 +2160,7 @@ if __name__ == "__main__":
     # 震中纬度（度）
     INPUT_LAT = 24.67
     # 震级（M）
-    INPUT_MAGNITUDE = 6.6
+    INPUT_MAGNITUDE = 8.8
     # CSV路径
     INPUT_CSV_PATH = r"../../data/geology/历史地震CSV文件.csv"
     # 输出路径
@@ -2174,3 +2174,6 @@ if __name__ == "__main__":
         output_path=OUTPUT_PATH,
         csv_encoding="gbk",
     )
+
+    print('*' * 65)
+    print(stat_result)
