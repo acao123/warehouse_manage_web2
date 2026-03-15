@@ -90,38 +90,42 @@
             </div>
         </div>
 
-        <!-- 第二块：基本文件 -->
+        <!-- 第二块：基本文件（默认折叠） -->
         <div class="report-block">
-            <div class="report-block-title">基本文件</div>
-            <div class="layui-form">
-                <div class="layui-form-item">
-                    <label class="layui-form-label" style="width:160px;">历史地震CSV文件</label>
-                    <div class="layui-input-block">
-                        <input type="file" id="history_record" accept=".csv" style="display:none;">
-                        <button type="button" class="layui-btn layui-btn-sm" onclick="document.getElementById('history_record').click()">
-                            <i class="layui-icon layui-icon-upload"></i> 选择文件
-                        </button>
-                        <span id="history_record_name" style="margin-left:10px;color:#666;font-size:12px;">未选择文件</span>
+            <button type="button" class="layui-btn layui-btn-sm layui-btn-primary" id="toggleFiles">
+                ﹀ 基本文件
+            </button>
+            <div class="collapse-content" id="filesContent" style="margin-top:12px;">
+                <div class="layui-form">
+                    <div class="layui-form-item">
+                        <label class="layui-form-label" style="width:160px;">历史地震CSV文件</label>
+                        <div class="layui-input-block">
+                            <input type="file" id="history_record" accept=".csv" style="display:none;">
+                            <button type="button" class="layui-btn layui-btn-sm" onclick="document.getElementById('history_record').click()">
+                                <i class="layui-icon layui-icon-upload"></i> 选择文件
+                            </button>
+                            <span id="history_record_name" style="margin-left:10px;color:#666;font-size:12px;">未选择文件</span>
+                        </div>
                     </div>
-                </div>
-                <div class="layui-form-item">
-                    <label class="layui-form-label" style="width:160px;">烈度KML文件</label>
-                    <div class="layui-input-block">
-                        <input type="file" id="intensity_kml" accept=".kml" style="display:none;">
-                        <button type="button" class="layui-btn layui-btn-sm" onclick="document.getElementById('intensity_kml').click()">
-                            <i class="layui-icon layui-icon-upload"></i> 选择文件
-                        </button>
-                        <span id="intensity_kml_name" style="margin-left:10px;color:#666;font-size:12px;">未选择文件</span>
+                    <div class="layui-form-item">
+                        <label class="layui-form-label" style="width:160px;">烈度KML文件</label>
+                        <div class="layui-input-block">
+                            <input type="file" id="intensity_kml" accept=".kml" style="display:none;">
+                            <button type="button" class="layui-btn layui-btn-sm" onclick="document.getElementById('intensity_kml').click()">
+                                <i class="layui-icon layui-icon-upload"></i> 选择文件
+                            </button>
+                            <span id="intensity_kml_name" style="margin-left:10px;color:#666;font-size:12px;">未选择文件</span>
+                        </div>
                     </div>
-                </div>
-                <div class="layui-form-item">
-                    <label class="layui-form-label" style="width:160px;">PGA KML文件</label>
-                    <div class="layui-input-block">
-                        <input type="file" id="pga_kml" accept=".kml" style="display:none;">
-                        <button type="button" class="layui-btn layui-btn-sm" onclick="document.getElementById('pga_kml').click()">
-                            <i class="layui-icon layui-icon-upload"></i> 选择文件
-                        </button>
-                        <span id="pga_kml_name" style="margin-left:10px;color:#666;font-size:12px;">未选择文件</span>
+                    <div class="layui-form-item">
+                        <label class="layui-form-label" style="width:160px;">PGA KML文件</label>
+                        <div class="layui-input-block">
+                            <input type="file" id="pga_kml" accept=".kml" style="display:none;">
+                            <button type="button" class="layui-btn layui-btn-sm" onclick="document.getElementById('pga_kml').click()">
+                                <i class="layui-icon layui-icon-upload"></i> 选择文件
+                            </button>
+                            <span id="pga_kml_name" style="margin-left:10px;color:#666;font-size:12px;">未选择文件</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -264,6 +268,20 @@
                 });
             }
         });
+
+        // ---- 基本文件折叠/展开 ----
+        var filesExpanded = false;
+        document.getElementById('toggleFiles').onclick = function(){
+            filesExpanded = !filesExpanded;
+            var content = document.getElementById('filesContent');
+            if(filesExpanded){
+                content.classList.add('active');
+                this.textContent = '︿ 基本文件';
+            } else {
+                content.classList.remove('active');
+                this.textContent = '﹀ 基本文件';
+            }
+        };
 
         // ---- 插值算法折叠/展开 ----
         var interpExpanded = false;
