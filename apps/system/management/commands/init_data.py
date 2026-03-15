@@ -55,6 +55,39 @@ class Command(BaseCommand):
             route_path='/system/menu/list/',
             menu_icon='layui-icon-menu-fill'
         )
+
+        # 一级菜单：报告管理
+        menu_report = Menu.objects.create(
+            menu_name='报告管理',
+            menu_order=2,
+            route_path='',
+            menu_icon='layui-icon-chart'
+        )
+
+        # 报告管理 - 二级菜单
+        menu_execute_report = Menu.objects.create(
+            menu_name='执行报告',
+            parent=menu_report,
+            menu_order=1,
+            route_path='/report/execute/',
+            menu_icon='layui-icon-play'
+        )
+
+        menu_my_report = Menu.objects.create(
+            menu_name='我的报告',
+            parent=menu_report,
+            menu_order=2,
+            route_path='/report/my/',
+            menu_icon='layui-icon-file'
+        )
+
+        menu_all_report = Menu.objects.create(
+            menu_name='所有报告',
+            parent=menu_report,
+            menu_order=3,
+            route_path='/report/all/',
+            menu_icon='layui-icon-list'
+        )
         
         # 创建角色
         self.stdout.write('创建角色...')
@@ -64,7 +97,10 @@ class Command(BaseCommand):
             role_name='系统管理员',
             role_key='admin'
         )
-        role_admin.menus.add(menu_system, menu_user, menu_role, menu_menu)
+        role_admin.menus.add(
+            menu_system, menu_user, menu_role, menu_menu,
+            menu_report, menu_execute_report, menu_my_report, menu_all_report
+        )
         
         # 普通用户角色（只有用户管理权限）
         role_user = Role.objects.create(

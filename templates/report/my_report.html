@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的报告</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+</head>
+<body>
+<div style="padding: 15px;">
+
+    <!-- 搜索栏 -->
+    <div class="layui-form" style="margin-bottom: 15px;">
+        <div class="layui-inline">
+            <input type="text" id="searchAddress" placeholder="参考位置" class="layui-input">
+        </div>
+        <div class="layui-inline">
+            <input type="date" id="searchStartDate" placeholder="创建时间起" class="layui-input" style="width:150px;">
+        </div>
+        <span style="line-height:38px;margin:0 4px;">至</span>
+        <div class="layui-inline">
+            <input type="date" id="searchEndDate" placeholder="创建时间止" class="layui-input" style="width:150px;">
+        </div>
+        <div class="layui-inline">
+            <button class="layui-btn" onclick="searchMyReport()">搜索</button>
+            <button class="layui-btn layui-btn-primary" onclick="resetMyReport()">重置</button>
+        </div>
+    </div>
+
+    <!-- 数据表格 -->
+    <table class="layui-hide" id="myReportTable" lay-filter="myReportTable"></table>
+</div>
+
+<!-- 任务状态列渲染模板 -->
+<script type="text/html" id="statusTpl">
+    {{#  var statusMap = {'0':'刚创建','1':'正在执行','2':'执行成功','3':'执行失败'}; }}
+    {{#  var colorMap  = {'0':'#999','1':'#1E9FFF','2':'#5FB878','3':'#FF5722'}; }}
+    <span style="color:{{ colorMap[String(d.task_status)] }}">
+        {{ statusMap[String(d.task_status)] || d.task_status }}
+    </span>
+</script>
+
+<script src="/static/layui/layui/layui.js"></script>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script>
+    layui.use(['table', 'layer'], function(){
+        var table = layui.table;
+
+        // 渲染我的报告表格
+        var myReportTable = table.render({
+            elem: '#myReportTable',
+            url: '/report/my/list/',
+            page: true,
+            height: 'full-70',
+            cols: [[
+                {field: 'ori_time',          title: '发震时刻',       width: 160},
+                {field: 'longitude',         title: '经度',           width: 120},
+                {field: 'latitude',          title: '纬度',           width: 120},
+                {field: 'magnitude',         title: '震级',           width: 80},
+                {field: 'address',           title: '参考位置',        minWidth: 150},
+                {field: 'created_at',        title: '创建时间',        width: 160},
+                {field: 'success_time',      title: '任务完成时间',    width: 160},
+                {field: 'task_status',       title: '任务状态',        width: 100, templet: '#statusTpl'},
+                {field: 'interp_method',     title: '插值算法',        width: 120},
+                {field: 'sample_interval',   title: '等值线采样间隔',   width: 130},
+                {field: 'max_sample_points', title: '最大采样点数',    width: 120}
+            ]]
+        });
+
+        // 搜索
+        window.searchMyReport = function(){
+            myReportTable.reload({
+                where: {
+                    address:    $('#searchAddress').val(),
+                    start_date: $('#searchStartDate').val(),
+                    end_date:   $('#searchEndDate').val()
+                },
+                page: { curr: 1 }
+            });
+        };
+
+        // 重置
+        window.resetMyReport = function(){
+            $('#searchAddress').val('');
+            $('#searchStartDate').val('');
+            $('#searchEndDate').val('');
+            myReportTable.reload({ where: {}, page: { curr: 1 } });
+        };
+    });
+</script>
+</body>
+</html>

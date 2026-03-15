@@ -18,6 +18,7 @@ from django.contrib import admin
 from django.urls import path
 from system import views
 from ac_data import views as ac_views
+from report import views as report_views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -66,4 +67,17 @@ urlpatterns = [
     path('ac/data/upload/', ac_views.ac_upload_view, name='ac_upload'),
     path('ac/data/edit/', ac_views.ac_edit_view, name='ac_edit'),
     path('ac/data/delete/', ac_views.ac_delete_view, name='ac_delete'),
+
+    # 报告管理 - 页面路由
+    path('report/execute/', report_views.execute_report_page_view, name='execute_report'),
+    path('report/my/', report_views.my_report_page_view, name='my_report'),
+    path('report/all/', report_views.all_report_page_view, name='all_report'),
+
+    # 报告管理 - API 接口
+    path('report/task/create/', report_views.create_task_view, name='report_task_create'),
+    path('report/task/running/', report_views.running_tasks_view, name='report_task_running'),
+    path('report/task/stop/', report_views.stop_task_view, name='report_task_stop'),
+    path('report/my/list/', report_views.my_report_list_view, name='report_my_list'),
+    path('report/all/list/', report_views.all_report_list_view, name='report_all_list'),
+    path('report/task/delete/', report_views.delete_tasks_view, name='report_task_delete'),
 ]

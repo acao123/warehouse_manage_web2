@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>所有报告</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+</head>
+<body>
+<div style="padding: 15px;">
+
+    <!-- 搜索栏 -->
+    <div class="layui-form" style="margin-bottom: 15px;">
+        <div class="layui-inline">
+            <input type="text" id="searchAddress" placeholder="参考位置" class="layui-input">
+        </div>
+        <div class="layui-inline">
+            <input type="date" id="searchStartDate" placeholder="创建时间起" class="layui-input" style="width:150px;">
+        </div>
+        <span style="line-height:38px;margin:0 4px;">至</span>
+        <div class="layui-inline">
+            <input type="date" id="searchEndDate" placeholder="创建时间止" class="layui-input" style="width:150px;">
+        </div>
+        <div class="layui-inline">
+            <button class="layui-btn" onclick="searchAllReport()">搜索</button>
+            <button class="layui-btn layui-btn-primary" onclick="resetAllReport()">重置</button>
+            <button class="layui-btn layui-btn-danger" onclick="batchDelete()">
+                <i class="layui-icon layui-icon-delete"></i> 批量删除
+            </button>
+        </div>
+    </div>
+
+    <!-- 数据表格 -->
+    <table class="layui-hide" id="allReportTable" lay-filter="allReportTable"></table>
+</div>
+
+<!-- 任务状态列渲染模板 -->
+<script type="text/html" id="statusTpl">
+    {{#  var statusMap = {'0':'刚创建','1':'正在执行','2':'执行成功','3':'执行失败'}; }}
+    {{#  var colorMap  = {'0':'#999','1':'#1E9FFF','2':'#5FB878','3':'#FF5722'}; }}
+    <span style="color:{{ colorMap[String(d.task_status)] }}">
+        {{ statusMap[String(d.task_status)] || d.task_status }}
+    </span>
+</script>
+
+<!-- 操作列按钮模板 -->
+<script type="text/html" id="allToolbar">
+    {{# if(d.task_status === 1){ }}
+    <a class="layui-btn layui-btn-warning layui-btn-xs" lay-event="stop">结束任务</a>
+    {{# } }}
+</script>
+
+<script src="/static/layui/layui/layui.js"></script>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script>
+    // CSRF Token 工具函数
+    function getCookie(name) {
+        var cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            var cookies = document.cookie.split(';');
+            for (var i = 0; i < cookies.length; i++) {
+                var cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+    $.ajaxSetup({
+        beforeSend: function(xhr, settings) {
+            if (!/^(GET|HEAD|OPTIONS|TRACE)$/i.test(settings.type)) {
+                xhr.setRequestHeader("X-CSRFToken", getCookie('csrftoken'));
+            }
+        }
+    });
+
+    layui.use(['table', 'layer'], function(){
+        var table = layui.table;
+        var layer = layui.layer;
+
+        // 渲染所有报告表格（开启多选）
+        var allReportTable = table.render({
+            elem: '#allReportTable',
+            url: '/report/all/list/',
+            page: true,
+            height: 'full-70',
+            cols: [[
+                {type: 'checkbox', fixed: 'left'},
+                {field: 'id',                title: 'ID',             width: 80, sort: true},
+                {field: 'user_id',           title: '创建人ID',        width: 100},
+                {field: 'ori_time',          title: '发震时刻',         width: 160},
+                {field: 'longitude',         title: '经度',             width: 120},
+                {field: 'latitude',          title: '纬度',             width: 120},
+                {field: 'magnitude',         title: '震级',             width: 80},
+                {field: 'address',           title: '参考位置',          minWidth: 150},
+                {field: 'created_at',        title: '创建时间',          width: 160},
+                {field: 'success_time',      title: '任务完成时间',       width: 160},
+                {field: 'task_status',       title: '任务状态',          width: 100, templet: '#statusTpl'},
+                {field: 'interp_method',     title: '插值算法',          width: 120},
+                {field: 'sample_interval',   title: '等值线采样间隔',     width: 130},
+                {field: 'max_sample_points', title: '最大采样点数',       width: 120},
+                {fixed: 'right', title: '操作', toolbar: '#allToolbar', width: 100}
+            ]]
+        });
+
+        // 监听工具条（结束任务）
+        table.on('tool(allReportTable)', function(obj){
+            var data = obj.data;
+            if(obj.event === 'stop'){
+                layer.confirm('确定要结束该任务吗？', {icon: 3, title: '结束确认'}, function(index){
+                    $.post('/report/task/stop/', {task_id: data.id}, function(res){
+                        if(res.code === 0){
+                            layer.msg('任务已结束');
+                            allReportTable.reload();
+                        } else {
+                            layer.msg(res.msg || '操作失败');
+                        }
+                    });
+                    layer.close(index);
+                });
+            }
+        });
+
+        // 搜索
+        window.searchAllReport = function(){
+            allReportTable.reload({
+                where: {
+                    address:    $('#searchAddress').val(),
+                    start_date: $('#searchStartDate').val(),
+                    end_date:   $('#searchEndDate').val()
+                },
+                page: { curr: 1 }
+            });
+        };
+
+        // 重置
+        window.resetAllReport = function(){
+            $('#searchAddress').val('');
+            $('#searchStartDate').val('');
+            $('#searchEndDate').val('');
+            allReportTable.reload({ where: {}, page: { curr: 1 } });
+        };
+
+        // 批量删除
+        window.batchDelete = function(){
+            var checkStatus = table.checkStatus('allReportTable');
+            var selected = checkStatus.data;
+            if(selected.length === 0){
+                layer.msg('请先选择要删除的任务'); return;
+            }
+            // 检查是否有正在执行的任务
+            var hasRunning = selected.some(function(item){ return item.task_status === 1; });
+            if(hasRunning){
+                layer.msg('选中的任务中包含正在执行的任务，不允许删除'); return;
+            }
+            var ids = selected.map(function(item){ return item.id; });
+            layer.confirm('确定删除选中的 ' + ids.length + ' 条任务吗？', {icon: 3, title: '删除确认'}, function(index){
+                $.ajax({
+                    url: '/report/task/delete/',
+                    type: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({task_ids: ids}),
+                    success: function(res){
+                        if(res.code === 0){
+                            layer.msg(res.msg || '删除成功');
+                            allReportTable.reload();
+                        } else {
+                            layer.msg(res.msg || '删除失败');
+                        }
+                    },
+                    error: function(){
+                        layer.msg('请求失败');
+                    }
+                });
+                layer.close(index);
+            });
+        };
+    });
+</script>
+</body>
+</html>
