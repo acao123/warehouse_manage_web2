@@ -16,6 +16,7 @@ import sys
 import csv
 import math
 import zipfile
+import datetime
 import requests
 from io import BytesIO
 from lxml import etree
@@ -550,6 +551,7 @@ def _parse_kml_faults(kml_data, ext, result):
     ns = root.nsmap.get(None, 'http://www.opengis.net/kml/2.2')
     nsmap = {'kml': ns}
     sc = _parse_kml_styles(root, nsmap, ns)
+    folder_types = _parse_folder_structure(root, nsmap, ns)
     pms = root.findall('.//kml:Placemark', nsmap)
     if not pms:
         pms = root.findall('.//{' + ns + '}Placemark')
@@ -561,7 +563,8 @@ def _parse_kml_faults(kml_data, ext, result):
         name = _ft(pm, 'name', nsmap, ns)
         surl = _ft(pm, 'styleUrl', nsmap, ns)
         desc = _ft(pm, 'description', nsmap, ns)
-        ftype = _classify_fault(name, surl, desc, sc)
+        parent_folder_type = _get_parent_folder_type(pm, folder_types, nsmap, ns)
+        ftype = _classify_fault(name, surl, desc, sc, parent_folder_type)
         for lc in _extract_ls_coords(pm, nsmap, ns):
             if len(lc) < 2:
                 continue
@@ -575,6 +578,82 @@ def _parse_kml_faults(kml_data, ext, result):
                     cur = []
             if len(cur) >= 2:
                 result[ftype].append(cur)
+
+
+def _parse_folder_structure(root, nsmap, ns):
+    """
+    解析KML的Folder结构，获取每个Folder的断层类型
+
+    参数:
+        root: XML根元素
+        nsmap (dict): 命名空间映射
+        ns (str): 默认命名空间
+    返回:
+        dict: {folder_element: fault_type}
+    """
+    folder_types = {}
+    folders = root.findall('.//kml:Folder', nsmap)
+    if not folders:
+        folders = root.findall('.//{' + ns + '}Folder')
+    if not folders:
+        folders = root.findall('.//Folder')
+    for folder in folders:
+        folder_name = _ft(folder, 'name', nsmap, ns)
+        ftype = _classify_by_folder_name(folder_name)
+        if ftype:
+            folder_types[folder] = ftype
+    return folder_types
+
+
+def _classify_by_folder_name(folder_name):
+    """
+    根据Folder名称分类断层类型
+
+    参数:
+        folder_name (str): Folder名称
+    返回:
+        str: 断层类型或None
+    """
+    if not folder_name:
+        return None
+    name_lower = folder_name.lower()
+    if "全新世" in folder_name or "holocene" in name_lower:
+        return "holocene"
+    if "晚更新世" in folder_name or "late pleistocene" in name_lower or "晚更新" in folder_name:
+        return "late_pleistocene"
+    if any(k in folder_name for k in ["早中更新世", "早更新世", "中更新世", "早-中更新世"]):
+        return "early_pleistocene"
+    if "early" in name_lower and "pleistocene" in name_lower:
+        return "early_pleistocene"
+    if "middle" in name_lower and "pleistocene" in name_lower:
+        return "early_pleistocene"
+    return None
+
+
+def _get_parent_folder_type(pm, folder_types, nsmap, ns):
+    """
+    获取Placemark所属Folder的断层类型
+
+    参数:
+        pm: Placemark元素
+        folder_types (dict): Folder类型映射
+        nsmap (dict): 命名空间映射
+        ns (str): 默认命名空间
+    返回:
+        str: 断层类型或None
+    """
+    parent = pm.getparent()
+    while parent is not None:
+        if parent in folder_types:
+            return folder_types[parent]
+        tag_name = parent.tag.split('}')[-1] if '}' in parent.tag else parent.tag
+        if tag_name == 'Folder':
+            folder_name = _ft(parent, 'name', nsmap, ns)
+            ftype = _classify_by_folder_name(folder_name)
+            if ftype:
+                return ftype
+        parent = parent.getparent()
+    return None
 
 
 def _ft(elem, tag, nsmap, ns):
@@ -639,8 +718,10 @@ def _parse_kml_styles(root, nsmap, ns):
     return sc
 
 
-def _classify_fault(name, style_url, description, style_colors):
+def _classify_fault(name, style_url, description, style_colors, parent_folder_type=None):
     """判断断裂类型"""
+    if parent_folder_type:
+        return parent_folder_type
     combined = (name + " " + description).lower()
     if "全新世" in name or "全新世" in description or "holocene" in combined:
         return "holocene"
@@ -1277,7 +1358,7 @@ def generate_statistics(filtered_quakes, radius_km):
     生成历史地震统计信息
 
     参数:
-        filtered_quakes (list): 筛选后地震记录
+        filtered_quakes (list): 筛选后地震记录（已包含本次地震）
         radius_km (float): 筛选半径
 
     返回:
@@ -1291,14 +1372,22 @@ def generate_statistics(filtered_quakes, radius_km):
     mx = max(filtered_quakes, key=lambda e: e["magnitude"]) if filtered_quakes else None
 
     txt = (f"自1900年以来，本次地震震中{int(radius_km)}km范围内"
-           f"曾发生{ct}次4.7级以上地震，"
+           f"共发生{ct}次4.7级以上地震（含本次），"
            f"其中4.7~5.9级地震{c1}次，6.0~6.9级地震{c2}次，"
            f"7.0~7.9级地震{c3}次，8.0级以上地震{c4}次。")
     if mx:
-        y_s = str(mx.get("year", 0)) if mx.get("year", 0) > 0 else "未知"
-        m_s = str(mx.get("month", 0)) if mx.get("month", 0) > 0 else "未知"
-        d_s = str(mx.get("day", 0)) if mx.get("day", 0) > 0 else "未知"
-        txt += f"最大地震为{y_s}年{m_s}月{d_s}日{mx.get('location', '')}{mx['magnitude']}级地震"
+        y = mx.get("year", 0)
+        m = mx.get("month", 0)
+        d = mx.get("day", 0)
+        if y > 0 and m > 0 and d > 0:
+            date_s = f"{y}年{m}月{d}日"
+        elif y > 0 and m > 0:
+            date_s = f"{y}年{m}月"
+        elif y > 0:
+            date_s = f"{y}年"
+        else:
+            date_s = ""
+        txt += f"最大地震为{date_s}{mx.get('location', '')}{mx['magnitude']}级地震"
     return txt
 
 
@@ -1779,8 +1868,9 @@ def _draw_legend_star(layout, x, center_y, width, height):
     star_label = QgsLayoutItemLabel(layout)
     star_label.setText("★")
     star_format = QgsTextFormat()
-    star_format.setFont(QFont("SimSun", LEGEND_TITLE_FONT_SIZE_PT))
-    star_format.setSize(LEGEND_TITLE_FONT_SIZE_PT)
+    star_font_size = LEGEND_TITLE_FONT_SIZE_PT + 4
+    star_format.setFont(QFont("SimSun", star_font_size))
+    star_format.setSize(star_font_size)
     star_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     star_format.setColor(EPICENTER_COLOR)
     star_label.setTextFormat(star_format)
@@ -1991,6 +2081,16 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
     # [2/8] 筛选范围内地震
     print("[2/8] 筛选范围内地震...")
     filtered = filter_earthquakes(earthquakes, center_lon, center_lat, radius_km)
+    # 将本次地震加入统计列表
+    today = datetime.date.today()
+    current_quake = {
+        "time_str": today.strftime("%Y/%m/%d"),
+        "lon": center_lon, "lat": center_lat, "depth": 0.0,
+        "location": "", "magnitude": magnitude,
+        "year": today.year, "month": today.month, "day": today.day,
+        "distance": 0.0,
+    }
+    filtered.append(current_quake)
     print()
 
     # [3/8] 计算地图范围
