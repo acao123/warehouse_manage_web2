@@ -1,190 +1,242 @@
 # -*- coding: utf-8 -*-
 """
-历史地震分布图生成脚本（基于Python + Pillow + requests + shapefile + KMZ）
+历史地震分布图生成脚本（基于QGIS 3.40.15）
 功能：根据用户输入的震中经纬度、震级以及历史地震CSV文件，
-      绘制震中附近一定范围内的历史地震分布图，叠加省界、市界、县界、
+      使用QGIS生成震中附近一定范围内的历史地震分布图，叠加省界、市界、县界、
       断裂图层，带经纬度边框，并输出统计信息。
 
-依赖安装：pip install Pillow requests pyshp lxml
-作者：acao123
-日期：2026-02-27
+参考 earthquake_elevation_map.py 的QGIS加载方式。
 
-修改说明：
-1. 底图继续使用矢量底图(vec_c)+矢量注记(cva_c)，添加海洋蓝色底色，
-   提高注记zoom级别并使用LANCZOS重采样保持清晰
-2. 震级圆点增大尺寸并加粗描边，确保可见
-3. 省界改为灰色(比市界深一点)，线宽减小
-4. 图例每个图标前增加左侧留白
-5. 比例尺右侧展示完全，增加右边距
-6. 指北针增加灰色透明背景
-7. 8.0级以上圆点尺寸缩小，仅比7.0级稍大
+依赖：QGIS 3.40.15 Python环境
+作者：acao123
 """
 
 import os
 import sys
 import csv
 import math
-import time
 import zipfile
 import requests
 from io import BytesIO
 from lxml import etree
-from PIL import Image, ImageDraw, ImageFont
-
-try:
-    import shapefile
-except ImportError:
-    print("*** 请安装pyshp库: pip install pyshp ***")
-    sys.exit(1)
+from PIL import Image
 
 # ============================================================
-# 【配置常量区域】
+# QGIS 相关模块导入
 # ============================================================
+from qgis.core import (
+    Qgis,
+    QgsApplication,
+    QgsProject,
+    QgsRasterLayer,
+    QgsVectorLayer,
+    QgsCoordinateReferenceSystem,
+    QgsPointXY,
+    QgsRectangle,
+    QgsLayoutSize,
+    QgsLayoutPoint,
+    QgsLayoutItemMap,
+    QgsLayoutItemLabel,
+    QgsLayoutItemPicture,
+    QgsLayoutItemShape,
+    QgsLayoutItemMapGrid,
+    QgsPrintLayout,
+    QgsUnitTypes,
+    QgsTextFormat,
+    QgsTextBufferSettings,
+    QgsMarkerSymbol,
+    QgsSimpleMarkerSymbolLayer,
+    QgsSimpleLineSymbolLayer,
+    QgsLineSymbol,
+    QgsFillSymbol,
+    QgsSimpleFillSymbolLayer,
+    QgsSingleSymbolRenderer,
+    QgsCategorizedSymbolRenderer,
+    QgsRendererCategory,
+    QgsPalLayerSettings,
+    QgsVectorLayerSimpleLabeling,
+    QgsLayoutMeasurement,
+    QgsGeometry,
+    QgsFeature,
+    QgsField,
+    QgsLayoutExporter,
+)
+from qgis.PyQt.QtCore import Qt, QVariant
+from qgis.PyQt.QtGui import QColor, QFont
 
+# ============================================================
+# 天地图配置
+# ============================================================
 TIANDITU_TK = "1ef76ef90c6eb961cb49618f9b1a399d"
 
-# 矢量底图URL（继续使用vec_c）
-TIANDITU_VEC_URL = (
-    "http://t{s}.tianditu.gov.cn/vec_c/wmts?"
-    "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-    "&LAYER=vec&STYLE=default&TILEMATRIXSET=c"
-    "&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
-    "&tk=" + TIANDITU_TK
-)
+# ============================================================
+# 布局尺寸常量（参考 earthquake_elevation_map.py）
+# ============================================================
+# 输出图总宽度（毫米）
+MAP_TOTAL_WIDTH_MM = 220.0
+# 左边距（毫米）
+BORDER_LEFT_MM = 4.0
+# 上边距（毫米）
+BORDER_TOP_MM = 4.0
+# 下边距（毫米）
+BORDER_BOTTOM_MM = 2.0
+# 右边距（毫米）
+BORDER_RIGHT_MM = 1.0
+# 地图内容宽度（图例叠加在底图内部，不占额外列）
+MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - BORDER_RIGHT_MM
 
-# 矢量注记URL（继续使用cva_c）
-TIANDITU_CVA_URL = (
-    "http://t{s}.tianditu.gov.cn/cva_c/wmts?"
-    "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-    "&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
-    "&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
-    "&tk=" + TIANDITU_TK
-)
-
-# 是否叠加矢量注记图层
-ENABLE_LABEL_OVERLAY = True
-
-# 地图内容区域尺寸（不含经纬度边框）
-MAP_WIDTH = 1400
-MAP_HEIGHT = 1050
-
-# 经纬度边框宽度（像素）
-BORDER_LEFT = 80
-BORDER_RIGHT = 80
-BORDER_TOP = 60
-BORDER_BOTTOM = 60
-
-# 最终输出图片尺寸 = 地图 + 边框
-OUTPUT_WIDTH = BORDER_LEFT + MAP_WIDTH + BORDER_RIGHT
-OUTPUT_HEIGHT = BORDER_TOP + MAP_HEIGHT + BORDER_BOTTOM
-
+# 输出DPI
 OUTPUT_DPI = 150
-OUTPUT_FORMAT = "png"
-TILE_TIMEOUT = 20
-TILE_RETRY = 3
+
+# 边框线宽（毫米）
+BORDER_WIDTH_MM = 0.35
 
 # ============================================================
-# 【地震圆点配置】
-# 【修改2】增大所有圆点尺寸，透明度提高到255，确保在底图上清晰可见
-# 【修改7】8.0级以上圆点从34→28，仅比7.0级(26)稍大
+# 指北针尺寸（毫米）
 # ============================================================
-
-COLOR_LEVEL_1 = (0, 255, 0, 255)       # 4.7~5.9级 - 绿色
-COLOR_LEVEL_2 = (255, 255, 0, 255)     # 6.0~6.9级 - 黄色
-COLOR_LEVEL_3 = (255, 165, 0, 255)     # 7.0~7.9级 - 橙色
-COLOR_LEVEL_4 = (255, 0, 0, 255)       # 8.0级以上 - 红色
-
-SIZE_LEVEL_1 = 18   # 4.7~5.9级（从14增大到18）
-SIZE_LEVEL_2 = 22   # 6.0~6.9级（从20增大到22）
-SIZE_LEVEL_3 = 26   # 7.0~7.9级（保持26）
-SIZE_LEVEL_4 = 27   # 8.0级以上（从30缩小到28，仅比7.0级稍大）
-
-EPICENTER_STAR_COLOR = (255, 0, 0, 255)
-EPICENTER_STAR_SIZE = 30
+NORTH_ARROW_WIDTH_MM = 12.0
+NORTH_ARROW_HEIGHT_MM = 18.0
 
 # ============================================================
-# 【行政边界线样式】
-# 【修改3】省界改为深灰色，线宽减小；比市界深一点即可
+# 经纬度标注字体大小（磅）
 # ============================================================
+LONLAT_FONT_SIZE_PT = 8
 
-# 省界：深灰色实线（比市界深一点，不再纯黑粗线）
-PROVINCE_BORDER_COLOR = (60, 60, 60, 255)
-PROVINCE_BORDER_WIDTH = 2
+# ============================================================
+# 行政边界样式
+# ============================================================
+# 省界：深灰色实线
+PROVINCE_COLOR = QColor(60, 60, 60)
+PROVINCE_LINE_WIDTH_MM = 0.4
+PROVINCE_LABEL_FONT_SIZE_PT = 8
+PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
 
 # 市界：灰色虚线
-CITY_BORDER_COLOR = (100, 100, 100, 255)
-CITY_BORDER_WIDTH = 1
-CITY_BORDER_DASH = (12, 6)
+CITY_COLOR = QColor(100, 100, 100)
+CITY_LINE_WIDTH_MM = 0.24
+CITY_DASH_GAP_MM = 0.3
 
 # 县界：浅灰色虚线
-COUNTY_BORDER_COLOR = (160, 160, 160, 220)
-COUNTY_BORDER_WIDTH = 1
-COUNTY_BORDER_DASH = (8, 4)
+COUNTY_COLOR = QColor(160, 160, 160)
+COUNTY_LINE_WIDTH_MM = 0.14
+COUNTY_DASH_GAP_MM = 0.2
 
 # ============================================================
-# 【断裂线样式 - 加粗 + 带黑色衬底】
+# 断裂线样式（不同断层类型有不同线宽和颜色）
 # ============================================================
-
-FAULT_HOLOCENE_COLOR = (255, 50, 50, 255)
-FAULT_HOLOCENE_WIDTH = 5
-FAULT_HOLOCENE_SHADOW_COLOR = (0, 0, 0, 160)
-FAULT_HOLOCENE_SHADOW_WIDTH = 7
-
-FAULT_LATE_PLEISTOCENE_COLOR = (255, 0, 255, 255)
-FAULT_LATE_PLEISTOCENE_WIDTH = 5
-FAULT_LATE_PLEISTOCENE_SHADOW_COLOR = (0, 0, 0, 160)
-FAULT_LATE_PLEISTOCENE_SHADOW_WIDTH = 7
-
-FAULT_EARLY_PLEISTOCENE_COLOR = (0, 255, 150, 255)
-FAULT_EARLY_PLEISTOCENE_WIDTH = 5
-FAULT_EARLY_PLEISTOCENE_SHADOW_COLOR = (0, 0, 0, 160)
-FAULT_EARLY_PLEISTOCENE_SHADOW_WIDTH = 7
-
-FAULT_DEFAULT_COLOR = (255, 200, 50, 220)
-FAULT_DEFAULT_WIDTH = 4
+# 全新世断层：红色，最粗
+FAULT_HOLOCENE_COLOR = QColor(255, 50, 50)
+FAULT_HOLOCENE_WIDTH_MM = 0.5
+# 晚更新世断层：品红色，中等
+FAULT_LATE_PLEISTOCENE_COLOR = QColor(255, 0, 255)
+FAULT_LATE_PLEISTOCENE_WIDTH_MM = 0.35
+# 早中更新世断层：绿色，最细
+FAULT_EARLY_PLEISTOCENE_COLOR = QColor(0, 200, 100)
+FAULT_EARLY_PLEISTOCENE_WIDTH_MM = 0.2
+# 其他断层
+FAULT_DEFAULT_COLOR = QColor(255, 200, 50)
+FAULT_DEFAULT_WIDTH_MM = 0.25
 
 # ============================================================
-# 【文件路径】
+# 地震圆点配置（按等级分级）
 # ============================================================
-
-SHP_PROVINCE_PATH = r"../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp"
-SHP_CITY_PATH = r"../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp"
-SHP_COUNTY_PATH = r"../../data/geology/省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp"
-KMZ_FAULT_PATH = r"../../data/geology/断层/全国六代图断裂.KMZ"
-
-# 字体
-FONT_PATH_TITLE = "C:/Windows/Fonts/simhei.ttf"
-FONT_PATH_NORMAL = "C:/Windows/Fonts/simsun.ttc"
-
-# 天地图矩阵参数
-TIANDITU_MATRIX = {}
-for _z in range(1, 19):
-    _n_cols = 2 ** _z
-    _n_rows = 2 ** (_z - 1)
-    TIANDITU_MATRIX[_z] = {
-        "n_cols": _n_cols, "n_rows": _n_rows,
-        "tile_span_lon": 360.0 / _n_cols, "tile_span_lat": 180.0 / _n_rows,
-    }
+EARTHQUAKE_LEVEL_CONFIG = {
+    1: {"min_mag": 4.7, "max_mag": 5.9, "color": QColor(0, 200, 0),   "size_mm": 2.5, "label": "4.7~5.9级"},
+    2: {"min_mag": 6.0, "max_mag": 6.9, "color": QColor(255, 255, 0), "size_mm": 3.5, "label": "6.0~6.9级"},
+    3: {"min_mag": 7.0, "max_mag": 7.9, "color": QColor(255, 165, 0), "size_mm": 4.5, "label": "7.0~7.9级"},
+    4: {"min_mag": 8.0, "max_mag": 99.0, "color": QColor(255, 0, 0),  "size_mm": 5.0, "label": "8.0级以上"},
+}
 
 # ============================================================
-# 【工具函数】
+# 震中五角星样式
+# ============================================================
+EPICENTER_STAR_SIZE_MM = 5.0
+EPICENTER_COLOR = QColor(255, 0, 0)
+EPICENTER_STROKE_COLOR = QColor(255, 255, 255)
+EPICENTER_STROKE_WIDTH_MM = 0.4
+
+# ============================================================
+# 图例配置（底图左下角）
+# ============================================================
+# 图例宽度（毫米）
+LEGEND_WIDTH_MM = 42.0
+# 图例标题字体大小（磅）
+LEGEND_TITLE_FONT_SIZE_PT = 10
+# 图例项目字体大小（磅）
+LEGEND_ITEM_FONT_SIZE_PT = 8
+# 图例项行高（毫米）
+LEGEND_ROW_HEIGHT_MM = 6.0
+# 图例内边距（毫米）
+LEGEND_PADDING_MM = 2.0
+# 图例图标宽度（毫米）
+LEGEND_ICON_WIDTH_MM = 8.0
+# 图标与文字间距（毫米）
+LEGEND_ICON_TEXT_GAP_MM = 1.5
+
+# ============================================================
+# 比例尺字体大小（磅）
+# ============================================================
+SCALE_FONT_SIZE_PT = 8
+
+# ============================================================
+# 震级配置
+# ============================================================
+MAGNITUDE_CONFIG = {
+    "small": {
+        "min_mag": 0, "max_mag": 6,
+        "radius_km": 15, "map_size_km": 30, "scale": 150000,
+    },
+    "medium": {
+        "min_mag": 6, "max_mag": 7,
+        "radius_km": 50, "map_size_km": 100, "scale": 500000,
+    },
+    "large": {
+        "min_mag": 7, "max_mag": 99,
+        "radius_km": 150, "map_size_km": 300, "scale": 1500000,
+    },
+}
+
+# ============================================================
+# 数据文件路径（相对于脚本所在目录）
+# ============================================================
+SHP_PROVINCE_PATH = (
+    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
+    "/全国省份行政区划数据/省级行政区划/省.shp"
+)
+SHP_CITY_PATH = (
+    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
+    "/全国市级行政区划数据/市级行政区划/市.shp"
+)
+SHP_COUNTY_PATH = (
+    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
+    "/全国县级行政区划数据/县级行政区划/县.shp"
+)
+KMZ_FAULT_PATH = "../../data/geology/断层/全国六代图断裂.KMZ"
+
+# WGS84坐标系
+CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
+
+
+# ============================================================
+# 工具函数
 # ============================================================
 
-def get_range_params(magnitude):
+def get_magnitude_config(magnitude):
     """
-    根据震级确定绘图范围参数
+    根据震级获取配置参数
 
     参数:
-        magnitude (float): 震级
+        magnitude (float): 地震震级
+
     返回:
-        tuple: (半径km, 地图边长km, 比例尺分母)
+        dict: 包含radius_km, map_size_km, scale的配置字典
     """
-    if magnitude < 6.0:
-        return 15, 30, 150000
-    elif magnitude < 7.0:
-        return 50, 100, 500000
+    if magnitude < 6:
+        return MAGNITUDE_CONFIG["small"]
+    elif magnitude < 7:
+        return MAGNITUDE_CONFIG["medium"]
     else:
-        return 150, 300, 1500000
+        return MAGNITUDE_CONFIG["large"]
 
 
 def get_earthquake_level(mag):
@@ -193,6 +245,7 @@ def get_earthquake_level(mag):
 
     参数:
         mag (float): 震级
+
     返回:
         int: 等级
     """
@@ -207,22 +260,13 @@ def get_earthquake_level(mag):
     return 0
 
 
-def get_level_color(level):
-    """根据等级返回颜色"""
-    return {1: COLOR_LEVEL_1, 2: COLOR_LEVEL_2, 3: COLOR_LEVEL_3, 4: COLOR_LEVEL_4}.get(level, (128, 128, 128, 150))
-
-
-def get_level_size(level):
-    """根据等级返回圆点直径"""
-    return {1: SIZE_LEVEL_1, 2: SIZE_LEVEL_2, 3: SIZE_LEVEL_3, 4: SIZE_LEVEL_4}.get(level, 6)
-
-
 def haversine_distance(lon1, lat1, lon2, lat2):
     """
     Haversine公式计算球面距离
 
     参数:
         lon1, lat1, lon2, lat2 (float): 经纬度
+
     返回:
         float: 距离（千米）
     """
@@ -234,230 +278,145 @@ def haversine_distance(lon1, lat1, lon2, lat2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def km_to_degree_lon(km, latitude):
-    """千米转经度差"""
-    return km / (111.32 * math.cos(math.radians(latitude)))
-
-
-def km_to_degree_lat(km):
-    """千米转纬度差"""
-    return km / 110.574
-
-
-def geo_to_pixel(lon, lat, geo_extent, img_width, img_height):
+def calculate_extent(longitude, latitude, half_size_km):
     """
-    经纬度转地图区域像素坐标（不含边框偏移）
+    根据震中经纬度和半幅宽度计算地图范围（WGS84坐标）
 
     参数:
-        lon, lat (float): 经纬度
-        geo_extent (dict): 地理范围
-        img_width, img_height (int): 地图区域尺寸
+        longitude (float): 震中经度
+        latitude (float): 震中纬度
+        half_size_km (float): 地图半幅宽度（公里）
+
     返回:
-        tuple: (px, py)
+        QgsRectangle: 地图范围矩形
     """
-    px = (lon - geo_extent["min_lon"]) / (geo_extent["max_lon"] - geo_extent["min_lon"]) * img_width
-    py = (geo_extent["max_lat"] - lat) / (geo_extent["max_lat"] - geo_extent["min_lat"]) * img_height
-    return int(round(px)), int(round(py))
+    delta_lat = half_size_km / 111.0
+    delta_lon = half_size_km / (111.0 * math.cos(math.radians(latitude)))
+    return QgsRectangle(
+        longitude - delta_lon, latitude - delta_lat,
+        longitude + delta_lon, latitude + delta_lat,
+    )
 
 
-def format_degree(value, is_lon=True):
+def calculate_map_height_from_extent(extent, map_width_mm):
     """
-    将十进制度数格式化为 度°分' 格式（如 103°24'）
+    根据地图范围和宽度计算地图高度（保持宽高比）
 
     参数:
-        value (float): 十进制度数
-        is_lon (bool): True=经度，False=纬度
+        extent (QgsRectangle): 地图范围
+        map_width_mm (float): 地图宽度（毫米）
+
     返回:
-        str: 格式化字符串
+        float: 地图高度（毫米）
     """
-    abs_val = abs(value)
-    degrees = int(abs_val)
-    minutes = int((abs_val - degrees) * 60)
-    if is_lon:
-        suffix = "E" if value >= 0 else "W"
-    else:
-        suffix = "N" if value >= 0 else "S"
-    return f"{degrees}°{minutes:02d}'"
+    lon_range = extent.xMaximum() - extent.xMinimum()
+    lat_range = extent.yMaximum() - extent.yMinimum()
+    if lon_range <= 0:
+        return map_width_mm
+    return map_width_mm * lat_range / lon_range
 
-# ============================================================
-# 【天地图瓦片函数】
-# 【修改1】继续使用矢量底图+矢量注记，但改善显示效果：
-#   - 底色改为浅蓝色(模拟海洋)，解决海洋区域白色问题
-#   - 提高zoom级别选择策略，优先更高zoom以获取更清晰的注记文字
-#   - 注记层使用LANCZOS重采样提升清晰度
-# ============================================================
 
-def select_zoom_level(geo_extent, img_width, img_height):
+def resolve_path(relative_path):
     """
-    【修改1】选择最优缩放级别。
-    在满足瓦片数量限制前提下优先选择更高zoom，使注记文字更大更清晰。
+    将相对路径转换为绝对路径
 
     参数:
-        geo_extent (dict): 地理范围
-        img_width (int): 目标宽度
-        img_height (int): 目标高度
+        relative_path (str): 相对路径
+
     返回:
-        int: 缩放级别
+        str: 绝对路径
     """
-    lon_range = geo_extent["max_lon"] - geo_extent["min_lon"]
-    lat_range = geo_extent["max_lat"] - geo_extent["min_lat"]
-    best_zoom = 1
-    for z in range(1, 19):
-        m = TIANDITU_MATRIX[z]
-        tx = math.ceil(lon_range / m["tile_span_lon"]) + 1
-        ty = math.ceil(lat_range / m["tile_span_lat"]) + 1
-        mosaic_w = tx * 256
-        mosaic_h = ty * 256
-        # 拼接图至少为目标尺寸即可，尽量选更高zoom
-        if mosaic_w >= img_width and mosaic_h >= img_height:
-            best_zoom = z
-            # 限制瓦片总数不超过600块（放宽限制以获取更高zoom）
-            if tx * ty > 600:
-                best_zoom = z - 1 if z > 1 else z
-                break
-        else:
-            best_zoom = z
-    return max(3, min(best_zoom, 18))
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.normpath(os.path.join(base_dir, relative_path))
 
 
-def lonlat_to_tile_epsg4326(lon, lat, zoom):
-    """经纬度转瓦片行列号"""
-    m = TIANDITU_MATRIX[zoom]
-    col = int(math.floor((lon + 180.0) / m["tile_span_lon"]))
-    row = int(math.floor((90.0 - lat) / m["tile_span_lat"]))
-    return max(0, min(col, m["n_cols"] - 1)), max(0, min(row, m["n_rows"] - 1))
+def _choose_tick_step(range_deg, target_min=3, target_max=6):
+    """
+    根据地理范围选择合适的经纬度刻度间隔
+
+    参数:
+        range_deg (float): 地理范围（度）
+        target_min (int): 最小刻度数
+        target_max (int): 最大刻度数
+
+    返回:
+        float: 刻度间隔（度）
+    """
+    candidates = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
+    for step in candidates:
+        n = range_deg / step
+        if target_min <= n <= target_max:
+            return step
+    best_step = candidates[-1]
+    best_diff = float("inf")
+    for step in candidates:
+        diff = abs(range_deg / step - 5)
+        if diff < best_diff:
+            best_diff = diff
+            best_step = step
+    return best_step
 
 
-def tile_to_lonlat_epsg4326(tile_col, tile_row, zoom):
-    """瓦片行列号转左上角经纬度"""
-    m = TIANDITU_MATRIX[zoom]
-    return -180.0 + tile_col * m["tile_span_lon"], 90.0 - tile_row * m["tile_span_lat"]
+def _find_name_field(layer, candidates):
+    """
+    在矢量图层字段列表中查找名称字段
 
+    参数:
+        layer (QgsVectorLayer): 矢量图层
+        candidates (list): 候选字段名列表
 
-def download_tile_with_retry(url_template, zoom, tile_col, tile_row, retries=TILE_RETRY):
-    """下载瓦片（支持重试和服务器轮询）"""
-    for attempt in range(retries):
-        server = (tile_col + tile_row + attempt) % 8
-        url = (url_template.replace("{s}", str(server)).replace("{z}", str(zoom))
-               .replace("{x}", str(tile_col)).replace("{y}", str(tile_row)))
-        try:
-            resp = requests.get(url, timeout=TILE_TIMEOUT)
-            if resp.status_code == 200 and len(resp.content) > 0:
-                return Image.open(BytesIO(resp.content))
-            elif attempt < retries - 1:
-                time.sleep(0.3)
-        except Exception as e:
-            if attempt < retries - 1:
-                time.sleep(0.5)
-            else:
-                print(f"    瓦片失败: z={zoom} col={tile_col} row={tile_row}: {e}")
+    返回:
+        str: 找到的字段名，未找到返回None
+    """
+    fields = layer.fields()
+    field_names = [f.name() for f in fields]
+    for candidate in candidates:
+        if candidate in field_names:
+            return candidate
+    for candidate in candidates:
+        for fn in field_names:
+            if candidate.lower() in fn.lower():
+                return fn
+    for f in fields:
+        if f.type() == QVariant.String:
+            return f.name()
     return None
 
 
-def fetch_basemap(center_lon, center_lat, half_span_km, scale_denom, img_width, img_height):
+def create_north_arrow_svg(output_path):
     """
-    【修改1】获取天地图矢量底图+矢量注记。
-    改进点：
-      - 拼接图底色使用浅蓝色(170,211,223)模拟海洋，解决海洋区域白色问题
-      - 矢量底图瓦片本身已包含陆地颜色，会覆盖掉浅蓝色底色
-      - 注记层使用LANCZOS重采样保持清晰（而非NEAREST，避免锯齿）
+    创建指北针SVG文件
 
     参数:
-        center_lon, center_lat (float): 中心经纬度
-        half_span_km (float): 半边长km
-        scale_denom (int): 比例尺分母
-        img_width, img_height (int): 地图区域尺寸
+        output_path (str): SVG文件输出路径
+
     返回:
-        tuple: (PIL.Image, geo_extent)
+        str: SVG文件路径
     """
-    delta_lon = km_to_degree_lon(half_span_km, center_lat)
-    delta_lat = km_to_degree_lat(half_span_km)
-    geo_extent = {
-        "min_lon": center_lon - delta_lon, "max_lon": center_lon + delta_lon,
-        "min_lat": center_lat - delta_lat, "max_lat": center_lat + delta_lat,
-    }
-    print(f"  地理范围: 经度[{geo_extent['min_lon']:.4f}, {geo_extent['max_lon']:.4f}], "
-          f"纬度[{geo_extent['min_lat']:.4f}, {geo_extent['max_lat']:.4f}]")
-
-    zoom = select_zoom_level(geo_extent, img_width, img_height)
-    print(f"  缩放级别: zoom={zoom}")
-    matrix = TIANDITU_MATRIX[zoom]
-
-    col_min, row_min = lonlat_to_tile_epsg4326(geo_extent["min_lon"], geo_extent["max_lat"], zoom)
-    col_max, row_max = lonlat_to_tile_epsg4326(geo_extent["max_lon"], geo_extent["min_lat"], zoom)
-    col_min = max(0, col_min - 1)
-    row_min = max(0, row_min - 1)
-    col_max = min(matrix["n_cols"] - 1, col_max + 1)
-    row_max = min(matrix["n_rows"] - 1, row_max + 1)
-    ntx = col_max - col_min + 1
-    nty = row_max - row_min + 1
-    print(f"  瓦片: {ntx}x{nty}={ntx * nty}块")
-
-    ts = 256
-    mw, mh = ntx * ts, nty * ts
-
-    # 【修改1】底色使用浅蓝色模拟海洋，矢量瓦片的陆地部分会覆盖此颜色
-    mosaic_vec = Image.new("RGBA", (mw, mh), (170, 211, 223, 255))
-    mosaic_cva = Image.new("RGBA", (mw, mh), (0, 0, 0, 0))
-
-    mo_lon, mo_lat = tile_to_lonlat_epsg4326(col_min, row_min, zoom)
-    me_lon, me_lat = tile_to_lonlat_epsg4326(col_max + 1, row_max + 1, zoom)
-
-    dl_ok, dl_fail = 0, 0
-    for col in range(col_min, col_max + 1):
-        for row in range(row_min, row_max + 1):
-            px, py = (col - col_min) * ts, (row - row_min) * ts
-            # 矢量底图
-            tile = download_tile_with_retry(TIANDITU_VEC_URL, zoom, col, row)
-            if tile:
-                mosaic_vec.paste(tile.convert("RGBA"), (px, py))
-                dl_ok += 1
-            else:
-                dl_fail += 1
-            # 矢量注记
-            if ENABLE_LABEL_OVERLAY:
-                lbl = download_tile_with_retry(TIANDITU_CVA_URL, zoom, col, row)
-                if lbl:
-                    mosaic_cva.paste(lbl.convert("RGBA"), (px, py))
-        print(f"    下载: {(col - col_min + 1) / ntx * 100:.0f}%")
-
-    print(f"  瓦片完成: 成功={dl_ok}, 失败={dl_fail}")
-
-    def g2m(lon, lat):
-        return ((lon - mo_lon) / (me_lon - mo_lon) * mw,
-                (mo_lat - lat) / (mo_lat - me_lat) * mh)
-
-    cl, ct = g2m(geo_extent["min_lon"], geo_extent["max_lat"])
-    cr, cb = g2m(geo_extent["max_lon"], geo_extent["min_lat"])
-    cl, ct = max(0, int(round(cl))), max(0, int(round(ct)))
-    cr, cb = min(mw, int(round(cr))), min(mh, int(round(cb)))
-
-    # 裁剪底图，使用 LANCZOS 缩放
-    cropped_vec = mosaic_vec.crop((cl, ct, cr, cb)) if cr > cl and cb > ct else mosaic_vec
-    resized_vec = cropped_vec.resize((img_width, img_height), Image.LANCZOS)
-
-    # 【修改1】注记也使用 LANCZOS 缩放，兼顾清晰度和平滑度
-    if ENABLE_LABEL_OVERLAY:
-        cropped_cva = mosaic_cva.crop((cl, ct, cr, cb)) if cr > cl and cb > ct else mosaic_cva
-        resized_cva = cropped_cva.resize((img_width, img_height), Image.LANCZOS)
-        result = Image.alpha_composite(resized_vec, resized_cva)
-    else:
-        result = resized_vec
-
-    return result, geo_extent
+    svg_content = '''<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 90" width="60" height="90">
+  <polygon points="30,24 18,77 30,64" fill="black" stroke="black" stroke-width="1"/>
+  <polygon points="30,24 42,77 30,64" fill="white" stroke="black" stroke-width="1"/>
+  <text x="30" y="22" text-anchor="middle" font-size="14" font-weight="bold"
+        font-family="Arial" fill="black">N</text>
+</svg>'''
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(svg_content)
+    return output_path
 
 
 # ============================================================
-# 【CSV读取】
+# CSV读取函数
 # ============================================================
 
 def read_earthquake_csv(csv_path, encoding="gbk"):
     """
-    读取历史地震CSV
+    读取历史地震CSV文件
 
     参数:
-        csv_path (str): 路径
-        encoding (str): 编码
+        csv_path (str): CSV文件路径
+        encoding (str): 文件编码
+
     返回:
         list: 地震记录字典列表
     """
@@ -506,15 +465,16 @@ def read_earthquake_csv(csv_path, encoding="gbk"):
 
 def filter_earthquakes(earthquakes, center_lon, center_lat, radius_km, min_magnitude=4.7):
     """
-    筛选范围内地震
+    筛选指定范围内的地震记录
 
     参数:
-        earthquakes (list): 全部记录
-        center_lon, center_lat (float): 震中
-        radius_km (float): 半径
+        earthquakes (list): 全部地震记录
+        center_lon, center_lat (float): 震中经纬度
+        radius_km (float): 筛选半径（千米）
         min_magnitude (float): 最小震级
+
     返回:
-        list: 筛选结果
+        list: 筛选后的地震记录
     """
     filtered = []
     for eq in earthquakes:
@@ -530,205 +490,17 @@ def filter_earthquakes(earthquakes, center_lon, center_lat, radius_km, min_magni
 
 
 # ============================================================
-# 【SHP读取】
+# KMZ断裂线解析函数
 # ============================================================
 
-def read_shapefile_lines(shp_path, geo_extent):
+def parse_kmz_faults(kmz_path, geo_extent_dict):
     """
-    读取SHP文件边界线段
+    解析KMZ断裂线文件
 
     参数:
-        shp_path (str): SHP路径
-        geo_extent (dict): 地理范围
-    返回:
-        list: [[(lon,lat),...], ...]
-    """
-    if not os.path.exists(shp_path):
-        print(f"  *** SHP不存在: {shp_path} ***")
-        return []
-    try:
-        sf = shapefile.Reader(shp_path)
-    except Exception as e:
-        print(f"  *** SHP读取失败: {e} ***")
-        return []
+        kmz_path (str): KMZ文件路径
+        geo_extent_dict (dict): 地理范围 {"min_lon", "max_lon", "min_lat", "max_lat"}
 
-    el = (geo_extent["max_lon"] - geo_extent["min_lon"]) * 0.3
-    ea = (geo_extent["max_lat"] - geo_extent["min_lat"]) * 0.3
-    ext = (geo_extent["min_lon"] - el, geo_extent["max_lon"] + el,
-           geo_extent["min_lat"] - ea, geo_extent["max_lat"] + ea)
-
-    all_lines = []
-    shapes = sf.shapes()
-    print(f"  SHP {os.path.basename(shp_path)}: {len(shapes)} 个要素")
-
-    for shape in shapes:
-        if hasattr(shape, 'bbox') and len(shape.bbox) >= 4:
-            if (shape.bbox[2] < ext[0] or shape.bbox[0] > ext[1] or
-                    shape.bbox[3] < ext[2] or shape.bbox[1] > ext[3]):
-                continue
-        parts = list(shape.parts) if hasattr(shape, 'parts') else [0]
-        points = shape.points if hasattr(shape, 'points') else []
-        if not points:
-            continue
-        for i in range(len(parts)):
-            si = parts[i]
-            ei = parts[i + 1] if i + 1 < len(parts) else len(points)
-            pp = points[si:ei]
-            if len(pp) < 2:
-                continue
-            cur = []
-            for pt in pp:
-                if ext[0] <= pt[0] <= ext[1] and ext[2] <= pt[1] <= ext[3]:
-                    cur.append((pt[0], pt[1]))
-                else:
-                    if len(cur) >= 2:
-                        all_lines.append(cur)
-                    cur = []
-            if len(cur) >= 2:
-                all_lines.append(cur)
-
-    print(f"  提取到 {len(all_lines)} 条线段")
-    return all_lines
-
-# ============================================================
-# 【绘线函数（实线/虚线/带衬底）】
-# ============================================================
-
-def draw_solid_lines(draw, lines, geo_extent, img_w, img_h, color, width):
-    """
-    绘制实线
-
-    参数:
-        draw: 绘图对象
-        lines: 线段列表
-        geo_extent: 地理范围
-        img_w, img_h: 图片尺寸
-        color: RGBA颜色
-        width: 线宽
-    """
-    for line in lines:
-        pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in line]
-        if len(pts) >= 2:
-            draw.line(pts, fill=color, width=width)
-
-
-def draw_solid_lines_with_shadow(draw, lines, geo_extent, img_w, img_h,
-                                 color, width, shadow_color, shadow_width):
-    """
-    绘制带黑色衬底的实线
-
-    参数:
-        draw: 绘图对象
-        lines: 线段列表
-        geo_extent: 地理范围
-        img_w, img_h: 图片尺寸
-        color: 主线颜色
-        width: 主线宽度
-        shadow_color: 衬底颜色
-        shadow_width: 衬底宽度
-    """
-    for line in lines:
-        pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in line]
-        if len(pts) >= 2:
-            draw.line(pts, fill=shadow_color, width=shadow_width)
-    for line in lines:
-        pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in line]
-        if len(pts) >= 2:
-            draw.line(pts, fill=color, width=width)
-
-
-def draw_dashed_lines(draw, lines, geo_extent, img_w, img_h, color, width, dash):
-    """
-    绘制虚线
-
-    参数:
-        draw: 绘图对象
-        lines: 线段列表
-        geo_extent: 地理范围
-        img_w, img_h: 图片尺寸
-        color: RGBA颜色
-        width: 线宽
-        dash: (线段长, 间隔长)
-    """
-    for line in lines:
-        pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in line]
-        if len(pts) >= 2:
-            _draw_dashed_polyline(draw, pts, color, width, dash)
-
-
-def draw_dashed_lines_with_shadow(draw, lines, geo_extent, img_w, img_h,
-                                  color, width, dash, shadow_color, shadow_width):
-    """
-    绘制带衬底的虚线
-
-    参数:
-        draw: 绘图对象
-        lines: 线段列表
-        geo_extent: 地理范围
-        img_w, img_h: 图片尺寸
-        color: 主线颜色
-        width: 主线宽度
-        dash: (线段长, 间隔长)
-        shadow_color: 衬底颜色
-        shadow_width: 衬底宽度
-    """
-    for line in lines:
-        pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in line]
-        if len(pts) >= 2:
-            _draw_dashed_polyline(draw, pts, shadow_color, shadow_width, dash)
-    for line in lines:
-        pts = [geo_to_pixel(lon, lat, geo_extent, img_w, img_h) for lon, lat in line]
-        if len(pts) >= 2:
-            _draw_dashed_polyline(draw, pts, color, width, dash)
-
-
-def _draw_dashed_polyline(draw, pts, color, width, dash):
-    """
-    绘制虚线折线
-
-    参数:
-        draw: 绘图对象
-        pts: 像���坐标列表
-        color: 颜色
-        width: 线宽
-        dash: (线段长, 间隔长)
-    """
-    dl, gl = dash
-    tp = dl + gl
-    acc = 0.0
-    for i in range(len(pts) - 1):
-        x1, y1 = pts[i]
-        x2, y2 = pts[i + 1]
-        dx, dy = x2 - x1, y2 - y1
-        sl = math.sqrt(dx * dx + dy * dy)
-        if sl < 1:
-            continue
-        ux, uy = dx / sl, dy / sl
-        pos = 0.0
-        while pos < sl:
-            pp = acc % tp
-            if pp < dl:
-                step = min(dl - pp, sl - pos)
-                sx, sy = x1 + ux * pos, y1 + uy * pos
-                ex, ey = x1 + ux * (pos + step), y1 + uy * (pos + step)
-                draw.line([(sx, sy), (ex, ey)], fill=color, width=width)
-            else:
-                step = min(tp - pp, sl - pos)
-            pos += step
-            acc += step
-
-
-# ============================================================
-# 【KMZ断裂解析】
-# ============================================================
-
-def parse_kmz_faults(kmz_path, geo_extent):
-    """
-    解析KMZ断裂线
-
-    参数:
-        kmz_path (str): KMZ路径
-        geo_extent (dict): ���理范围
     返回:
         dict: {"holocene":[], "late_pleistocene":[], "early_pleistocene":[], "default":[]}
     """
@@ -737,10 +509,12 @@ def parse_kmz_faults(kmz_path, geo_extent):
         print(f"  *** KMZ不存在: {kmz_path} ***")
         return empty
 
-    el = (geo_extent["max_lon"] - geo_extent["min_lon"]) * 0.3
-    ea = (geo_extent["max_lat"] - geo_extent["min_lat"]) * 0.3
-    ext = (geo_extent["min_lon"] - el, geo_extent["max_lon"] + el,
-           geo_extent["min_lat"] - ea, geo_extent["max_lat"] + ea)
+    el = (geo_extent_dict["max_lon"] - geo_extent_dict["min_lon"]) * 0.3
+    ea = (geo_extent_dict["max_lat"] - geo_extent_dict["min_lat"]) * 0.3
+    ext = (
+        geo_extent_dict["min_lon"] - el, geo_extent_dict["max_lon"] + el,
+        geo_extent_dict["min_lat"] - ea, geo_extent_dict["max_lat"] + ea,
+    )
 
     result = {"holocene": [], "late_pleistocene": [], "early_pleistocene": [], "default": []}
     try:
@@ -767,7 +541,7 @@ def parse_kmz_faults(kmz_path, geo_extent):
 
 
 def _parse_kml_faults(kml_data, ext, result):
-    """解析KML断裂"""
+    """解析KML断裂数据"""
     try:
         root = etree.fromstring(kml_data)
     except Exception as e:
@@ -893,7 +667,7 @@ def _classify_fault(name, style_url, description, style_colors):
 
 
 def _extract_ls_coords(pm, nsmap, ns):
-    """提取LineString坐标"""
+    """提取LineString坐标列表"""
     all_lines = []
     ls_elems = []
     for tag in [f'kml:LineString', f'{{{ns}}}LineString', 'LineString']:
@@ -920,7 +694,7 @@ def _extract_ls_coords(pm, nsmap, ns):
 
 
 def _parse_coords(text):
-    """解析KML coordinates"""
+    """解析KML coordinates文本为(lon, lat)列表"""
     pts = []
     for p in text.replace('\n', ' ').replace('\t', ' ').split():
         f = p.strip().split(',')
@@ -932,445 +706,582 @@ def _parse_coords(text):
     return pts
 
 
-def draw_fault_lines(draw, fault_data, geo_extent, img_w, img_h):
-    """
-    绘制断裂线（带黑色衬底）
-
-    参数:
-        draw: 绘图对象
-        fault_data: 分类断裂线
-        geo_extent: 地理范围
-        img_w, img_h: 图片尺寸
-    """
-    sm = {
-        "holocene": (FAULT_HOLOCENE_COLOR, FAULT_HOLOCENE_WIDTH,
-                     FAULT_HOLOCENE_SHADOW_COLOR, FAULT_HOLOCENE_SHADOW_WIDTH),
-        "late_pleistocene": (FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH,
-                             FAULT_LATE_PLEISTOCENE_SHADOW_COLOR, FAULT_LATE_PLEISTOCENE_SHADOW_WIDTH),
-        "early_pleistocene": (FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH,
-                              FAULT_EARLY_PLEISTOCENE_SHADOW_COLOR, FAULT_EARLY_PLEISTOCENE_SHADOW_WIDTH),
-        "default": (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH, (0, 0, 0, 100), FAULT_DEFAULT_WIDTH + 2),
-    }
-    for ftype, lines in fault_data.items():
-        if not lines:
-            continue
-        c, w, sc, sw = sm.get(ftype, (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH, (0, 0, 0, 100),
-                                      FAULT_DEFAULT_WIDTH + 2))
-        draw_solid_lines_with_shadow(draw, lines, geo_extent, img_w, img_h, c, w, sc, sw)
-        print(f"  绘制 {ftype}: {len(lines)} 条")
-
-
 # ============================================================
-# 【绘图函数】
+# 天地图瓦片下载函数
 # ============================================================
 
-def draw_star(draw, cx, cy, radius, color, num_points=5):
+def download_tianditu_basemap_tiles(extent, width_px, height_px, output_path):
     """
-    绘制五角星
+    下载天地图矢量底图瓦片（vec_c）并拼接为本地栅格图像
 
     参数:
-        draw: 绘图对象
-        cx, cy: 中心坐标
-        radius: 外接圆半径
-        color: RGBA颜色
-        num_points: 角数
-    """
-    inner_r = radius * 0.382
-    points = []
-    for i in range(num_points * 2):
-        angle = math.radians(i * 360.0 / (num_points * 2) - 90)
-        r = radius if i % 2 == 0 else inner_r
-        points.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
-    draw.polygon(points, fill=color, outline=(0, 0, 0, 255))
+        extent (QgsRectangle): 渲染范围（WGS84）
+        width_px (int): 输出图像宽度（像素）
+        height_px (int): 输出图像高度（像素）
+        output_path (str): 输出文件路径
 
-
-def draw_earthquake_points(draw, filtered_quakes, geo_extent, img_w, img_h):
-    """
-    【修改2】绘制历史地震圆点（加粗描边，确保在矢量底图上清晰可见）
-
-    参数:
-        draw: 绘图对象
-        filtered_quakes: 地震记录
-        geo_extent: 地理范围
-        img_w, img_h: 地图区域尺寸
     返回:
-        int: 绘制数量
+        QgsRasterLayer或None
     """
-    sorted_q = sorted(filtered_quakes, key=lambda e: e["magnitude"])
-    count = 0
-    for eq in sorted_q:
+    tk = TIANDITU_TK
+    lon_range = extent.xMaximum() - extent.xMinimum()
+    zoom = int(math.log2(360 / lon_range * width_px / 256))
+    zoom = max(1, min(zoom, 18))
+    print(f"[信息] 下载天地图矢量底图瓦片，缩放级别: {zoom}")
+
+    def lon_to_tile_x(lon, z):
+        """经度转瓦片X坐标"""
+        n = 2 ** z
+        x = int((lon + 180.0) / 360.0 * n)
+        return max(0, min(n - 1, x))
+
+    def lat_to_tile_y(lat, z):
+        """纬度转瓦片Y坐标（天地图c系列）"""
+        n = 2 ** (z - 1)
+        y = int((90.0 - lat) / 180.0 * n)
+        return max(0, min(n - 1, y))
+
+    def tile_x_to_lon(x, z):
+        """瓦片X坐标转经度（左边界）"""
+        n = 2 ** z
+        return x / n * 360.0 - 180.0
+
+    def tile_y_to_lat(y, z):
+        """瓦片Y坐标转纬度（上边界）"""
+        n = 2 ** (z - 1)
+        return 90.0 - y / n * 180.0
+
+    tile_x_min = lon_to_tile_x(extent.xMinimum(), zoom)
+    tile_x_max = lon_to_tile_x(extent.xMaximum(), zoom)
+    tile_y_min = lat_to_tile_y(extent.yMaximum(), zoom)
+    tile_y_max = lat_to_tile_y(extent.yMinimum(), zoom)
+
+    if tile_y_min > tile_y_max:
+        tile_y_min, tile_y_max = tile_y_max, tile_y_min
+
+    num_tiles_x = tile_x_max - tile_x_min + 1
+    num_tiles_y = tile_y_max - tile_y_min + 1
+    print(f"[信息] 需要下载 {num_tiles_x * num_tiles_y} 个底图瓦片 ({num_tiles_x} x {num_tiles_y})")
+
+    tile_size = 256
+    mosaic_width = num_tiles_x * tile_size
+    mosaic_height = num_tiles_y * tile_size
+    # 底色使用浅蓝色模拟海洋，陆地由矢量瓦片覆盖
+    mosaic = Image.new('RGB', (mosaic_width, mosaic_height), (170, 211, 223))
+
+    downloaded = 0
+    failed = 0
+    servers = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7']
+
+    for ty in range(tile_y_min, tile_y_max + 1):
+        for tx in range(tile_x_min, tile_x_max + 1):
+            server = servers[(tx + ty) % len(servers)]
+            vec_url = (
+                f"http://{server}.tianditu.gov.cn/vec_c/wmts?"
+                f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+                f"&LAYER=vec&STYLE=default&TILEMATRIXSET=c"
+                f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
+                f"&tk={tk}"
+            )
+            try:
+                resp = requests.get(vec_url, timeout=10)
+                if resp.status_code == 200 and len(resp.content) > 0:
+                    tile_img = Image.open(BytesIO(resp.content)).convert('RGB')
+                    paste_x = (tx - tile_x_min) * tile_size
+                    paste_y = (ty - tile_y_min) * tile_size
+                    mosaic.paste(tile_img, (paste_x, paste_y))
+                    downloaded += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                failed += 1
+                print(f"[警告] 底图瓦片下载异常: {tx},{ty} - {e}")
+
+    print(f"[信息] 底图瓦片下载完成: 成功 {downloaded}, 失败 {failed}")
+
+    if downloaded == 0:
+        print("[错误] 没有成功下载任何底图瓦片")
+        return None
+
+    actual_lon_min = tile_x_to_lon(tile_x_min, zoom)
+    actual_lon_max = tile_x_to_lon(tile_x_max + 1, zoom)
+    actual_lat_max = tile_y_to_lat(tile_y_min, zoom)
+    actual_lat_min = tile_y_to_lat(tile_y_max + 1, zoom)
+
+    crop_left = int((extent.xMinimum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
+    crop_right = int((extent.xMaximum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
+    crop_top = int((actual_lat_max - extent.yMaximum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
+    crop_bottom = int((actual_lat_max - extent.yMinimum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
+
+    crop_left = max(0, min(mosaic_width - 1, crop_left))
+    crop_right = max(crop_left + 1, min(mosaic_width, crop_right))
+    crop_top = max(0, min(mosaic_height - 1, crop_top))
+    crop_bottom = max(crop_top + 1, min(mosaic_height, crop_bottom))
+
+    cropped = mosaic.crop((crop_left, crop_top, crop_right, crop_bottom))
+    final_image = cropped.resize((width_px, height_px), Image.LANCZOS)
+    final_image.save(output_path, 'PNG')
+    print(f"[信息] 底图已保存: {output_path}")
+
+    # 生成World文件，使GDAL能正确关联地理坐标
+    world_file_path = output_path.replace(".png", ".pgw")
+    x_res = (extent.xMaximum() - extent.xMinimum()) / width_px
+    y_res = (extent.yMaximum() - extent.yMinimum()) / height_px
+    with open(world_file_path, 'w') as f:
+        f.write(f"{x_res}\n0\n0\n{-y_res}\n{extent.xMinimum()}\n{extent.yMaximum()}\n")
+
+    raster_layer = QgsRasterLayer(output_path, "天地图底图", "gdal")
+    if raster_layer.isValid():
+        print("[信息] 成功加载底图栅格图层")
+        return raster_layer
+    else:
+        print("[错误] 无法加载底图栅格图层")
+        return None
+
+
+def download_tianditu_annotation_tiles(extent, width_px, height_px, output_path):
+    """
+    下载天地图矢量注记瓦片（cva_c）并拼接为本地栅格图像（透明背景）
+
+    参数:
+        extent (QgsRectangle): 渲染范围（WGS84）
+        width_px (int): 输出图像宽度（像素）
+        height_px (int): 输出图像高度（像素）
+        output_path (str): 输出文件路径
+
+    返回:
+        QgsRasterLayer或None
+    """
+    tk = TIANDITU_TK
+    lon_range = extent.xMaximum() - extent.xMinimum()
+    zoom = int(math.log2(360 / lon_range * width_px / 256))
+    zoom = max(1, min(zoom, 18))
+    print(f"[信息] 下载天地图注记瓦片，缩放级别: {zoom}")
+
+    def lon_to_tile_x(lon, z):
+        """经度转瓦片X坐标"""
+        n = 2 ** z
+        x = int((lon + 180.0) / 360.0 * n)
+        return max(0, min(n - 1, x))
+
+    def lat_to_tile_y(lat, z):
+        """纬度转瓦片Y坐标（天地图c系列）"""
+        n = 2 ** (z - 1)
+        y = int((90.0 - lat) / 180.0 * n)
+        return max(0, min(n - 1, y))
+
+    def tile_x_to_lon(x, z):
+        """瓦片X坐标转经度（左边界）"""
+        n = 2 ** z
+        return x / n * 360.0 - 180.0
+
+    def tile_y_to_lat(y, z):
+        """瓦片Y坐标转纬度（上边界）"""
+        n = 2 ** (z - 1)
+        return 90.0 - y / n * 180.0
+
+    tile_x_min = lon_to_tile_x(extent.xMinimum(), zoom)
+    tile_x_max = lon_to_tile_x(extent.xMaximum(), zoom)
+    tile_y_min = lat_to_tile_y(extent.yMaximum(), zoom)
+    tile_y_max = lat_to_tile_y(extent.yMinimum(), zoom)
+
+    if tile_y_min > tile_y_max:
+        tile_y_min, tile_y_max = tile_y_max, tile_y_min
+
+    num_tiles_x = tile_x_max - tile_x_min + 1
+    num_tiles_y = tile_y_max - tile_y_min + 1
+    total_tiles = num_tiles_x * num_tiles_y
+    print(f"[信息] 需要下载 {total_tiles} 个注记瓦片 ({num_tiles_x} x {num_tiles_y})")
+
+    tile_size = 256
+    mosaic_width = num_tiles_x * tile_size
+    mosaic_height = num_tiles_y * tile_size
+    # 使用RGBA模式，支持透明背景
+    mosaic = Image.new('RGBA', (mosaic_width, mosaic_height), (0, 0, 0, 0))
+
+    downloaded = 0
+    failed = 0
+    servers = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7']
+
+    for ty in range(tile_y_min, tile_y_max + 1):
+        for tx in range(tile_x_min, tile_x_max + 1):
+            server = servers[(tx + ty) % len(servers)]
+            cva_url = (
+                f"http://{server}.tianditu.gov.cn/cva_c/wmts?"
+                f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+                f"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
+                f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
+                f"&tk={tk}"
+            )
+            try:
+                resp = requests.get(cva_url, timeout=10)
+                if resp.status_code == 200 and len(resp.content) > 0:
+                    tile_cva = Image.open(BytesIO(resp.content)).convert('RGBA')
+                    paste_x = (tx - tile_x_min) * tile_size
+                    paste_y = (ty - tile_y_min) * tile_size
+                    mosaic.paste(tile_cva, (paste_x, paste_y), tile_cva)
+                    downloaded += 1
+                else:
+                    failed += 1
+                    print(f"[警告] 注记瓦片下载失败: {tx},{ty} - 状态码: {resp.status_code}")
+            except Exception as e:
+                failed += 1
+                print(f"[警告] 注记瓦片下载异常: {tx},{ty} - {e}")
+
+    print(f"[信息] 注记瓦片下载完成: 成功 {downloaded}, 失败 {failed}")
+
+    if downloaded == 0:
+        print("[错误] 没有成功下载任何注记瓦片")
+        return None
+
+    actual_lon_min = tile_x_to_lon(tile_x_min, zoom)
+    actual_lon_max = tile_x_to_lon(tile_x_max + 1, zoom)
+    actual_lat_max = tile_y_to_lat(tile_y_min, zoom)
+    actual_lat_min = tile_y_to_lat(tile_y_max + 1, zoom)
+
+    crop_left = int((extent.xMinimum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
+    crop_right = int((extent.xMaximum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
+    crop_top = int((actual_lat_max - extent.yMaximum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
+    crop_bottom = int((actual_lat_max - extent.yMinimum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
+
+    crop_left = max(0, min(mosaic_width - 1, crop_left))
+    crop_right = max(crop_left + 1, min(mosaic_width, crop_right))
+    crop_top = max(0, min(mosaic_height - 1, crop_top))
+    crop_bottom = max(crop_top + 1, min(mosaic_height, crop_bottom))
+
+    cropped = mosaic.crop((crop_left, crop_top, crop_right, crop_bottom))
+    final_image = cropped.resize((width_px, height_px), Image.LANCZOS)
+    final_image.save(output_path, 'PNG')
+    print(f"[信息] 注记底图已保存: {output_path}")
+
+    # 生成World文件
+    world_file_path = output_path.replace(".png", ".pgw")
+    x_res = (extent.xMaximum() - extent.xMinimum()) / width_px
+    y_res = (extent.yMaximum() - extent.yMinimum()) / height_px
+    with open(world_file_path, 'w') as f:
+        f.write(f"{x_res}\n0\n0\n{-y_res}\n{extent.xMinimum()}\n{extent.yMaximum()}\n")
+
+    raster_layer = QgsRasterLayer(output_path, "天地图注记", "gdal")
+    if raster_layer.isValid():
+        print("[信息] 成功加载注记栅格图层")
+        return raster_layer
+    else:
+        print("[错误] 无法加载注记栅格图层")
+        return None
+
+
+# ============================================================
+# 矢量图层加载与样式设置函数
+# ============================================================
+
+def load_vector_layer(shp_path, layer_name):
+    """
+    加载矢量图层（SHP文件）
+
+    参数:
+        shp_path (str): SHP文件路径（相对路径会自动转换为绝对路径）
+        layer_name (str): 图层名称
+
+    返回:
+        QgsVectorLayer或None
+    """
+    abs_path = resolve_path(shp_path)
+    if not os.path.exists(abs_path):
+        print(f"[错误] 矢量文件不存在: {abs_path}")
+        return None
+    layer = QgsVectorLayer(abs_path, layer_name, "ogr")
+    if not layer.isValid():
+        print(f"[错误] 无法加载矢量图层: {abs_path}")
+        return None
+    print(f"[信息] 成功加载矢量图层 '{layer_name}'")
+    return layer
+
+
+def style_province_layer(layer):
+    """
+    设置省界图层样式（深灰色实线+省名标注）
+
+    参数:
+        layer (QgsVectorLayer): 省界图层
+    """
+    fill_sl = QgsSimpleFillSymbolLayer()
+    fill_sl.setColor(QColor(0, 0, 0, 0))
+    fill_sl.setStrokeColor(PROVINCE_COLOR)
+    fill_sl.setStrokeWidth(PROVINCE_LINE_WIDTH_MM)
+    fill_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
+    fill_sl.setStrokeStyle(Qt.SolidLine)
+    symbol = QgsFillSymbol()
+    symbol.changeSymbolLayer(0, fill_sl)
+    layer.renderer().setSymbol(symbol)
+    _setup_province_labels(layer)
+    layer.triggerRepaint()
+    print("[信息] 省界图层样式设置完成")
+
+
+def _setup_province_labels(layer):
+    """
+    配置省界图层标注
+
+    参数:
+        layer (QgsVectorLayer): 省界图层
+    """
+    field_name = _find_name_field(layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
+    if not field_name:
+        print("[警告] 未找到省份名称字段，跳过标注设置")
+        return
+
+    settings = QgsPalLayerSettings()
+    settings.fieldName = field_name
+    settings.placement = Qgis.LabelPlacement.OverPoint
+    settings.displayAll = True
+
+    text_format = QgsTextFormat()
+    font = QFont("SimHei", PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setFont(font)
+    text_format.setSize(PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    text_format.setColor(PROVINCE_LABEL_COLOR)
+
+    buffer_settings = QgsTextBufferSettings()
+    buffer_settings.setEnabled(True)
+    buffer_settings.setSize(0.8)
+    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+    buffer_settings.setColor(QColor(255, 255, 255))
+    text_format.setBuffer(buffer_settings)
+
+    settings.setFormat(text_format)
+    labeling = QgsVectorLayerSimpleLabeling(settings)
+    layer.setLabelsEnabled(True)
+    layer.setLabeling(labeling)
+    print(f"[信息] 省界标注已配置，字段: {field_name}")
+
+
+def style_city_layer(layer):
+    """
+    设置市界图层样式（灰色虚线）
+
+    参数:
+        layer (QgsVectorLayer): 市界图层
+    """
+    symbol = QgsFillSymbol()
+    fill_sl = QgsSimpleFillSymbolLayer()
+    fill_sl.setColor(QColor(0, 0, 0, 0))
+    fill_sl.setStrokeColor(CITY_COLOR)
+    fill_sl.setStrokeWidth(CITY_LINE_WIDTH_MM)
+    fill_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
+    fill_sl.setStrokeStyle(Qt.CustomDashLine)
+    fill_sl.setPenJoinStyle(Qt.MiterJoin)
+    dash_pattern = [4.0, CITY_DASH_GAP_MM / CITY_LINE_WIDTH_MM]
+    if hasattr(fill_sl, 'setCustomDashVector'):
+        fill_sl.setCustomDashVector(dash_pattern)
+    else:
+        fill_sl.setStrokeStyle(Qt.DashLine)
+    symbol.changeSymbolLayer(0, fill_sl)
+    layer.renderer().setSymbol(symbol)
+    layer.triggerRepaint()
+    print("[信息] 市界图层样式设置完成")
+
+
+def style_county_layer(layer):
+    """
+    设置县界图层样式（浅灰色虚线）
+
+    参数:
+        layer (QgsVectorLayer): 县界图层
+    """
+    symbol = QgsFillSymbol()
+    fill_sl = QgsSimpleFillSymbolLayer()
+    fill_sl.setColor(QColor(0, 0, 0, 0))
+    fill_sl.setStrokeColor(COUNTY_COLOR)
+    fill_sl.setStrokeWidth(COUNTY_LINE_WIDTH_MM)
+    fill_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
+    fill_sl.setStrokeStyle(Qt.CustomDashLine)
+    fill_sl.setPenJoinStyle(Qt.MiterJoin)
+    dash_pattern = [7.0, COUNTY_DASH_GAP_MM / COUNTY_LINE_WIDTH_MM]
+    if hasattr(fill_sl, 'setCustomDashVector'):
+        fill_sl.setCustomDashVector(dash_pattern)
+    else:
+        fill_sl.setStrokeStyle(Qt.DashLine)
+    symbol.changeSymbolLayer(0, fill_sl)
+    layer.renderer().setSymbol(symbol)
+    layer.triggerRepaint()
+    print("[信息] 县界图层样式设置完成")
+
+
+# ============================================================
+# QGIS矢量图层创建函数
+# ============================================================
+
+def create_epicenter_layer(longitude, latitude):
+    """
+    创建震中标记图层（红色五角星+白边）
+
+    参数:
+        longitude (float): 震中经度
+        latitude (float): 震中纬度
+
+    返回:
+        QgsVectorLayer: 震中标记图层
+    """
+    layer = QgsVectorLayer("Point?crs=EPSG:4326", "震中", "memory")
+    provider = layer.dataProvider()
+    provider.addAttributes([QgsField("name", QVariant.String)])
+    layer.updateFields()
+
+    feat = QgsFeature(layer.fields())
+    feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(longitude, latitude)))
+    feat.setAttribute("name", "震中")
+    provider.addFeature(feat)
+    layer.updateExtents()
+
+    marker_sl = QgsSimpleMarkerSymbolLayer()
+    marker_sl.setShape(Qgis.MarkerShape.Star)
+    marker_sl.setColor(EPICENTER_COLOR)
+    marker_sl.setStrokeColor(EPICENTER_STROKE_COLOR)
+    marker_sl.setStrokeWidth(EPICENTER_STROKE_WIDTH_MM)
+    marker_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
+    marker_sl.setSize(EPICENTER_STAR_SIZE_MM)
+    marker_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+
+    symbol = QgsMarkerSymbol()
+    symbol.changeSymbolLayer(0, marker_sl)
+    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+    layer.triggerRepaint()
+
+    print(f"[信息] 创建震中图层: ({longitude}, {latitude})")
+    return layer
+
+
+def create_earthquake_layer(filtered_quakes):
+    """
+    创建历史地震圆点矢量图层（按震级等级分类渲染）
+
+    参数:
+        filtered_quakes (list): 筛选后的地震记录列表
+
+    返回:
+        QgsVectorLayer: 地震圆点图层
+    """
+    layer = QgsVectorLayer("Point?crs=EPSG:4326", "历史地震", "memory")
+    provider = layer.dataProvider()
+    provider.addAttributes([
+        QgsField("magnitude", QVariant.Double),
+        QgsField("level", QVariant.Int),
+    ])
+    layer.updateFields()
+
+    features = []
+    for eq in filtered_quakes:
         lv = get_earthquake_level(eq["magnitude"])
         if lv == 0:
             continue
-        color = get_level_color(lv)
-        size = get_level_size(lv)
-        px, py = geo_to_pixel(eq["lon"], eq["lat"], geo_extent, img_w, img_h)
-        if 0 <= px <= img_w and 0 <= py <= img_h:
-            h = size // 2
-            # 外层白色描边（加粗到3px，确保醒目）
-            draw.ellipse([px - h - 3, py - h - 3, px + h + 3, py + h + 3],
-                         fill=None, outline=(255, 255, 255, 255), width=3)
-            # 填充色圆点 + 黑色内描边（加粗到2px）
-            draw.ellipse([px - h, py - h, px + h, py + h],
-                         fill=color, outline=(0, 0, 0, 255), width=2)
-            count += 1
-    print(f"  绘制地震点: {count}")
-    return count
+        feat = QgsFeature(layer.fields())
+        feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(eq["lon"], eq["lat"])))
+        feat.setAttribute("magnitude", eq["magnitude"])
+        feat.setAttribute("level", lv)
+        features.append(feat)
+
+    provider.addFeatures(features)
+    layer.updateExtents()
+
+    # 按level字段分类渲染，不同等级使用不同大小和颜色
+    categories = []
+    for lv in sorted(EARTHQUAKE_LEVEL_CONFIG.keys()):
+        cfg = EARTHQUAKE_LEVEL_CONFIG[lv]
+        marker_sl = QgsSimpleMarkerSymbolLayer()
+        marker_sl.setShape(Qgis.MarkerShape.Circle)
+        marker_sl.setColor(cfg["color"])
+        marker_sl.setStrokeColor(QColor(0, 0, 0))
+        marker_sl.setStrokeWidth(0.15)
+        marker_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
+        marker_sl.setSize(cfg["size_mm"])
+        marker_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+        symbol = QgsMarkerSymbol()
+        symbol.changeSymbolLayer(0, marker_sl)
+        category = QgsRendererCategory(lv, symbol, cfg["label"])
+        categories.append(category)
+
+    renderer = QgsCategorizedSymbolRenderer("level", categories)
+    layer.setRenderer(renderer)
+    layer.triggerRepaint()
+
+    print(f"[信息] 创建地震圆点图层，共 {len(features)} 个点")
+    return layer
 
 
-def draw_epicenter(draw, center_lon, center_lat, geo_extent, img_w, img_h):
+def create_fault_layer(fault_lines, fault_type):
     """
-    绘制震中五角星（图层最高优先级）
+    根据断裂类型创建断裂线矢量图层（不同断层类型有不同线宽）
 
     参数:
-        draw: 绘图对象
-        center_lon, center_lat: 震中经纬度
-        geo_extent: 地理范围
-        img_w, img_h: 地图区域尺寸
+        fault_lines (list): 该类型的断裂线列表，每项为[(lon, lat),...]
+        fault_type (str): 断裂类型字符串
+
+    返回:
+        QgsVectorLayer或None
     """
-    px, py = geo_to_pixel(center_lon, center_lat, geo_extent, img_w, img_h)
-    draw_star(draw, px, py, EPICENTER_STAR_SIZE, EPICENTER_STAR_COLOR)
-    print(f"  震中: ({px}, {py})")
+    if not fault_lines:
+        return None
 
-
-# ============================================================
-# 【经纬度边框绘制】
-# ============================================================
-
-def draw_coordinate_border(final_draw, geo_extent, final_img_width, final_img_height):
-    """
-    在最终图片上绘制经纬度刻度边框。
-
-    参数:
-        final_draw (ImageDraw): 最终图片的绘图对象
-        geo_extent (dict): 地理范围
-        final_img_width (int): 最终图片总宽度
-        final_img_height (int): 最终图片总高度
-    """
-    try:
-        font_coord = ImageFont.truetype(FONT_PATH_NORMAL, 13)
-    except (IOError, OSError):
-        font_coord = ImageFont.load_default()
-
-    map_left = BORDER_LEFT
-    map_top = BORDER_TOP
-    map_right = BORDER_LEFT + MAP_WIDTH
-    map_bottom = BORDER_TOP + MAP_HEIGHT
-
-    draw_rect_outline(final_draw, map_left, map_top, map_right, map_bottom, (0, 0, 0, 255), 2)
-
-    min_lon = geo_extent["min_lon"]
-    max_lon = geo_extent["max_lon"]
-    min_lat = geo_extent["min_lat"]
-    max_lat = geo_extent["max_lat"]
-
-    lon_range = max_lon - min_lon
-    lat_range = max_lat - min_lat
-    lon_step = _choose_tick_step(lon_range, target_min=4, target_max=6)
-    lat_step = _choose_tick_step(lat_range, target_min=4, target_max=6)
-
-    tick_len = 8
-
-    # ========== 经度刻度（顶部和底部） ==========
-    lon_start = math.ceil(min_lon / lon_step) * lon_step
-    lon_val = lon_start
-    while lon_val <= max_lon:
-        frac = (lon_val - min_lon) / (max_lon - min_lon)
-        px = map_left + int(frac * MAP_WIDTH)
-
-        if map_left <= px <= map_right:
-            final_draw.line([(px, map_top), (px, map_top - tick_len)],
-                            fill=(0, 0, 0, 255), width=1)
-            final_draw.line([(px, map_bottom), (px, map_bottom + tick_len)],
-                            fill=(0, 0, 0, 255), width=1)
-
-            label = format_degree(lon_val, is_lon=True)
-            bb = final_draw.textbbox((0, 0), label, font=font_coord)
-            tw = bb[2] - bb[0]
-            final_draw.text((px - tw // 2, map_top - tick_len - 18),
-                            label, fill=(0, 0, 0, 255), font=font_coord)
-            final_draw.text((px - tw // 2, map_bottom + tick_len + 4),
-                            label, fill=(0, 0, 0, 255), font=font_coord)
-
-        lon_val += lon_step
-
-    # ========== 纬度刻度（左侧和右侧） ==========
-    lat_start = math.ceil(min_lat / lat_step) * lat_step
-    lat_val = lat_start
-    while lat_val <= max_lat:
-        frac = (max_lat - lat_val) / (max_lat - min_lat)
-        py = map_top + int(frac * MAP_HEIGHT)
-
-        if map_top <= py <= map_bottom:
-            final_draw.line([(map_left, py), (map_left - tick_len, py)],
-                            fill=(0, 0, 0, 255), width=1)
-            final_draw.line([(map_right, py), (map_right + tick_len, py)],
-                            fill=(0, 0, 0, 255), width=1)
-
-            label = format_degree(lat_val, is_lon=False)
-            bb = final_draw.textbbox((0, 0), label, font=font_coord)
-            tw = bb[2] - bb[0]
-            th = bb[3] - bb[1]
-            final_draw.text((map_left - tick_len - tw - 6, py - th // 2),
-                            label, fill=(0, 0, 0, 255), font=font_coord)
-            final_draw.text((map_right + tick_len + 6, py - th // 2),
-                            label, fill=(0, 0, 0, 255), font=font_coord)
-
-        lat_val += lat_step
-
-
-def draw_rect_outline(draw, x1, y1, x2, y2, color, width):
-    """绘制矩形外框"""
-    draw.line([(x1, y1), (x2, y1)], fill=color, width=width)
-    draw.line([(x2, y1), (x2, y2)], fill=color, width=width)
-    draw.line([(x2, y2), (x1, y2)], fill=color, width=width)
-    draw.line([(x1, y2), (x1, y1)], fill=color, width=width)
-
-
-def _choose_tick_step(range_deg, target_min=4, target_max=6):
-    """根据地理范围选择合适的刻度间隔"""
-    candidates = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
-    for step in candidates:
-        n_ticks = range_deg / step
-        if target_min <= n_ticks <= target_max:
-            return step
-    best_step = range_deg / 5.0
-    best_diff = float('inf')
-    for step in candidates:
-        n_ticks = range_deg / step
-        diff = abs(n_ticks - 5)
-        if diff < best_diff:
-            best_diff = diff
-            best_step = step
-    return best_step
-
-
-# ============================================================
-# 【指北针和比例尺（绘制在地图区域内）】
-# ============================================================
-
-def draw_north_arrow(draw, x, y, size=55):
-    """
-    【修改6】绘制指北针（增加灰色透明圆形背景）
-
-    参数:
-        draw: 绘图对象
-        x, y: 位置（指北针顶部中心）
-        size: 大小
-    """
-    # 计算指北针整体中心（偏下一点，因为包含N字母在上方）
-    center_x = x
-    center_y = y + size // 2
-
-    # 【修改6】绘制灰色半透明圆形背景
-    bg_radius = int(size * 0.85)
-    draw.ellipse(
-        [center_x - bg_radius, center_y - bg_radius - 8,
-         center_x + bg_radius, center_y + bg_radius - 8],
-        fill=(220, 220, 220, 130),
-        outline=(150, 150, 150, 200),
-        width=1
+    # 根据类型选择颜色、线宽和图层名称
+    style_map = {
+        "holocene": (FAULT_HOLOCENE_COLOR, FAULT_HOLOCENE_WIDTH_MM, "全新世断层"),
+        "late_pleistocene": (FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH_MM, "晚更新世断层"),
+        "early_pleistocene": (FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH_MM, "早中更新世断层"),
+        "default": (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH_MM, "其他断层"),
+    }
+    color, width_mm, layer_name = style_map.get(
+        fault_type, (FAULT_DEFAULT_COLOR, FAULT_DEFAULT_WIDTH_MM, "断层")
     )
 
-    # 指北针箭头
-    top = (x, y)
-    bl = (x - size // 4, y + size)
-    br = (x + size // 4, y + size)
-    cp = (x, int(y + size * 0.65))
-    draw.polygon([top, bl, cp], fill=(0, 0, 0, 255))
-    draw.polygon([top, br, cp], fill=(255, 255, 255, 255), outline=(0, 0, 0, 255))
-    draw.polygon([top, bl, cp], outline=(0, 0, 0, 255))
+    layer = QgsVectorLayer("LineString?crs=EPSG:4326", layer_name, "memory")
+    provider = layer.dataProvider()
+    provider.addAttributes([QgsField("type", QVariant.String)])
+    layer.updateFields()
 
-    # N字母
-    try:
-        fn = ImageFont.truetype(FONT_PATH_TITLE, size // 3)
-    except (IOError, OSError):
-        fn = ImageFont.load_default()
-    bb = draw.textbbox((0, 0), "N", font=fn)
-    draw.text((x - (bb[2] - bb[0]) // 2, y - size // 3 - 8), "N", fill=(0, 0, 0, 255), font=fn)
+    features = []
+    for line_coords in fault_lines:
+        if len(line_coords) < 2:
+            continue
+        points = [QgsPointXY(lon, lat) for lon, lat in line_coords]
+        geom = QgsGeometry.fromPolylineXY(points)
+        feat = QgsFeature(layer.fields())
+        feat.setGeometry(geom)
+        feat.setAttribute("type", fault_type)
+        features.append(feat)
 
+    provider.addFeatures(features)
+    layer.updateExtents()
 
-def draw_scale_bar(draw, x, y, scale_denom, map_width, geo_extent, center_lat):
-    """
-    【修改5】绘制比例尺（修复右侧展示不全问题）
-    - 增大右侧空间，确保末端数字完整显示
-    - 添加自动左移逻辑，确保不超出地图区域
+    line_sl = QgsSimpleLineSymbolLayer()
+    line_sl.setColor(color)
+    line_sl.setWidth(width_mm)
+    line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
+    line_sl.setPenStyle(Qt.SolidLine)
 
-    参数:
-        draw: 绘图对象
-        x, y: 位置
-        scale_denom: 比例尺分母
-        map_width: 地图区域宽度
-        geo_extent: 地理范围
-        center_lat: 中心纬度
-    """
-    lr = geo_extent["max_lon"] - geo_extent["min_lon"]
-    kpp = lr * 111.32 * math.cos(math.radians(center_lat)) / map_width
-    nice = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-    target = map_width * 0.15 * kpp
-    bar_km = nice[0]
-    for nd in nice:
-        if nd <= target * 1.2:
-            bar_km = nd
-        else:
-            break
-    bar_px = int(bar_km / kpp)
+    symbol = QgsLineSymbol()
+    symbol.changeSymbolLayer(0, line_sl)
+    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+    layer.triggerRepaint()
 
-    try:
-        fs = ImageFont.truetype(FONT_PATH_NORMAL, 14)
-    except (IOError, OSError):
-        fs = ImageFont.load_default()
-
-    el = f"{bar_km} km"
-    bb_el = draw.textbbox((0, 0), el, font=fs)
-    el_w = bb_el[2] - bb_el[0]
-
-    st = f"1:{scale_denom:,}"
-    bb_st = draw.textbbox((0, 0), st, font=fs)
-    st_w = bb_st[2] - bb_st[0]
-
-    # 【修改5】右侧额外空间 = 末端标注完整宽度 + 充足间距
-    right_extra = el_w + 20
-    box_w = max(bar_px + right_extra, st_w + 24)
-
-    # 【修改5】自动左移，确保整个比例尺在地图区域内
-    actual_x = min(x, map_width - box_w - 16)
-    actual_x = max(10, actual_x)  # 也不要太靠左
-
-    # 背景框
-    draw.rectangle([actual_x - 10, y - 30, actual_x + box_w + 10, y + 32],
-                   fill=(255, 255, 255, 220), outline=(0, 0, 0, 200))
-
-    # 黑白交替刻度条
-    bh, ns_seg = 8, 4
-    sw = bar_px // ns_seg
-    for i in range(ns_seg):
-        c = (0, 0, 0, 255) if i % 2 == 0 else (255, 255, 255, 255)
-        draw.rectangle([actual_x + i * sw, y, actual_x + (i + 1) * sw, y + bh],
-                       fill=c, outline=(0, 0, 0, 255))
-
-    # 起点 "0"
-    draw.text((actual_x, y + bh + 4), "0", fill=(0, 0, 0, 255), font=fs)
-
-    # 【修改5】末端距离标注（紧跟在比例尺条右端后面，留4px间距）
-    draw.text((actual_x + bar_px + 4, y + bh + 4), el, fill=(0, 0, 0, 255), font=fs)
-
-    # 比例尺分母居中在条的上方
-    draw.text((actual_x + bar_px // 2 - st_w // 2, y - 22), st, fill=(0, 0, 0, 255), font=fs)
+    print(f"[信息] 创建{layer_name}图层，共 {len(features)} 条线，线宽 {width_mm}mm")
+    return layer
 
 
 # ============================================================
-# 【图例 —— 左下角，每项增加前置留白】
-# ============================================================
-
-def draw_legend(draw, x, y, has_faults=True):
-    """
-    【修改4】绘制图例，每个图标前增加留白
-    【修改7】8.0级以上圆点在图例中也使用调整后的尺寸
-
-    参数:
-        draw: 绘图对象
-        x, y: 左上角坐标（地图区域内坐标）
-        has_faults: 是否含断裂图例
-    """
-    try:
-        ft = ImageFont.truetype(FONT_PATH_TITLE, 18)
-        fi = ImageFont.truetype(FONT_PATH_NORMAL, 14)
-    except (IOError, OSError):
-        ft = ImageFont.load_default()
-        fi = ImageFont.load_default()
-
-    item_h = 30
-    n_items = 1 + 3 + (3 if has_faults else 0) + 4
-    legend_h = 40 + n_items * item_h + 10
-    # 【修改4】增加图例宽度，容纳左侧留白
-    legend_w = 195
-
-    draw.rectangle([x, y, x + legend_w, y + legend_h],
-                   fill=(255, 255, 255, 240), outline=(0, 0, 0, 255), width=2)
-
-    # 标题居中
-    bb_title = draw.textbbox((0, 0), "图  例", font=ft)
-    title_w = bb_title[2] - bb_title[0]
-    draw.text((x + legend_w // 2 - title_w // 2, y + 10), "图  例", fill=(0, 0, 0, 255), font=ft)
-
-    cy = y + 42
-    # 【修改4】图标中心X增加左侧留白（从x+22 → x+32）
-    icx = x + 32
-    # 【修改4】线条图标起点（从x+6 → x+16）
-    line_start = x + 16
-    line_end = x + 48
-    # 【修改4】文字起始X增加（从x+45 → x+58）
-    tx = x + 58
-
-    # === 震中位置（大五角星，第一行） ===
-    draw_star(draw, icx, cy + 3, 14, EPICENTER_STAR_COLOR)
-    draw.text((tx, cy - 5), "震中位置", fill=(0, 0, 0, 255), font=fi)
-    cy += item_h
-
-    # === 省界（灰色实线，修改3后的颜色） ===
-    draw.line([(line_start, cy + 3), (line_end, cy + 3)],
-              fill=PROVINCE_BORDER_COLOR, width=PROVINCE_BORDER_WIDTH)
-    draw.text((tx, cy - 5), "省界", fill=(0, 0, 0, 255), font=fi)
-    cy += item_h
-
-    # === 市界（灰色虚线） ===
-    for dx in range(0, 32, 10):
-        draw.line([(line_start + dx, cy + 3), (line_start + dx + 6, cy + 3)],
-                  fill=CITY_BORDER_COLOR, width=CITY_BORDER_WIDTH)
-    draw.text((tx, cy - 5), "市界", fill=(0, 0, 0, 255), font=fi)
-    cy += item_h
-
-    # === 县界（浅灰色虚线） ===
-    for dx in range(0, 32, 8):
-        draw.line([(line_start + dx, cy + 3), (line_start + dx + 4, cy + 3)],
-                  fill=COUNTY_BORDER_COLOR, width=COUNTY_BORDER_WIDTH)
-    draw.text((tx, cy - 5), "县界", fill=(0, 0, 0, 255), font=fi)
-    cy += item_h
-
-    # === 断裂线 ===
-    if has_faults:
-        draw.line([(line_start, cy + 3), (line_end, cy + 3)],
-                  fill=FAULT_HOLOCENE_COLOR, width=FAULT_HOLOCENE_WIDTH)
-        draw.text((tx, cy - 5), "全新世断层", fill=(0, 0, 0, 255), font=fi)
-        cy += item_h
-
-        draw.line([(line_start, cy + 3), (line_end, cy + 3)],
-                  fill=FAULT_LATE_PLEISTOCENE_COLOR, width=FAULT_LATE_PLEISTOCENE_WIDTH)
-        draw.text((tx, cy - 5), "晚更新世断层", fill=(0, 0, 0, 255), font=fi)
-        cy += item_h
-
-        draw.line([(line_start, cy + 3), (line_end, cy + 3)],
-                  fill=FAULT_EARLY_PLEISTOCENE_COLOR, width=FAULT_EARLY_PLEISTOCENE_WIDTH)
-        draw.text((tx, cy - 5), "早中更新世断层", fill=(0, 0, 0, 255), font=fi)
-        cy += item_h
-
-    # === 地震圆点（从大到小排列） ===
-    for label, color, dot_size in [
-        ("8.0级以上", COLOR_LEVEL_4, SIZE_LEVEL_4),
-        ("7.0~7.9级", COLOR_LEVEL_3, SIZE_LEVEL_3),
-        ("6.0~6.9级", COLOR_LEVEL_2, SIZE_LEVEL_2),
-        ("4.7~5.9级", COLOR_LEVEL_1, SIZE_LEVEL_1),
-    ]:
-        h = dot_size // 2
-        draw.ellipse([icx - h, cy + 3 - h, icx + h, cy + 3 + h],
-                     fill=color, outline=(0, 0, 0, 180))
-        draw.text((tx, cy - 5), label, fill=(0, 0, 0, 255), font=fi)
-        cy += item_h
-
-# ============================================================
-# 【统计函数】
+# 统计函数
 # ============================================================
 
 def generate_statistics(filtered_quakes, radius_km):
     """
-    生成统计信息
+    生成历史地震统计信息
 
     参数:
         filtered_quakes (list): 筛选后地震记录
-        radius_km (float): 半径
+        radius_km (float): 筛选半径
+
     返回:
-        str: 统计文本
+        str: 统计信息文本
     """
     ct = len(filtered_quakes)
     c1 = sum(1 for e in filtered_quakes if 4.7 <= e["magnitude"] <= 5.9)
@@ -1392,183 +1303,844 @@ def generate_statistics(filtered_quakes, radius_km):
 
 
 # ============================================================
-# 【主函数】
+# 布局创建函数
+# ============================================================
+
+def create_print_layout(project, longitude, latitude, magnitude, extent, scale,
+                        map_height_mm, ordered_layers=None, has_faults=True):
+    """
+    创建QGIS打印布局
+
+    参数:
+        project (QgsProject): QGIS项目实例
+        longitude (float): 震中经度
+        latitude (float): 震中纬度
+        magnitude (float): 地震震级
+        extent (QgsRectangle): 地图范围
+        scale (int): 比例尺
+        map_height_mm (float): 地图高度（毫米）
+        ordered_layers (list): 按渲染顺序排列的图层列表（第一项在最上层）
+        has_faults (bool): 是否包含断裂线图例
+
+    返回:
+        QgsPrintLayout: 打印布局对象
+    """
+    layout = QgsPrintLayout(project)
+    layout.initializeDefaults()
+    layout.setName("历史地震分布图")
+    layout.setUnits(QgsUnitTypes.LayoutMillimeters)
+
+    output_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
+
+    # 设置页面尺寸
+    page = layout.pageCollection().page(0)
+    page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm,
+                                   QgsUnitTypes.LayoutMillimeters))
+
+    map_left = BORDER_LEFT_MM
+    map_top = BORDER_TOP_MM
+
+    # 添加地图项
+    map_item = QgsLayoutItemMap(layout)
+    map_item.attemptMove(QgsLayoutPoint(map_left, map_top, QgsUnitTypes.LayoutMillimeters))
+    map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, map_height_mm,
+                                         QgsUnitTypes.LayoutMillimeters))
+    map_item.setExtent(extent)
+    map_item.setCrs(CRS_WGS84)
+    map_item.setFrameEnabled(True)
+    map_item.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM,
+                                                      QgsUnitTypes.LayoutMillimeters))
+    map_item.setFrameStrokeColor(QColor(0, 0, 0))
+    map_item.setBackgroundEnabled(True)
+    map_item.setBackgroundColor(QColor(255, 255, 255))
+    layout.addLayoutItem(map_item)
+
+    # 设置地图渲染图层列表
+    layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
+    if layers_to_set:
+        map_item.setLayers(layers_to_set)
+    map_item.invalidateCache()
+
+    # 经纬度网格
+    _setup_map_grid(map_item, extent)
+    # 指北针（地图右上角）
+    _add_north_arrow(layout, map_height_mm)
+    # 比例尺（地图右下角）
+    _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
+    # 图例（底图左下角）
+    _add_legend(layout, map_left, map_top, map_height_mm, has_faults)
+
+    return layout
+
+
+def _setup_map_grid(map_item, extent):
+    """
+    配置地图经纬度网格
+
+    参数:
+        map_item (QgsLayoutItemMap): 地图布局项
+        extent (QgsRectangle): 地图范围
+    """
+    grid = QgsLayoutItemMapGrid("经纬度网格", map_item)
+    grid.setEnabled(True)
+    grid.setCrs(CRS_WGS84)
+
+    lon_range = extent.xMaximum() - extent.xMinimum()
+    lat_range = extent.yMaximum() - extent.yMinimum()
+    lon_step = _choose_tick_step(lon_range, target_min=3, target_max=6)
+    lat_step = _choose_tick_step(lat_range, target_min=3, target_max=5)
+
+    grid.setIntervalX(lon_step)
+    grid.setIntervalY(lat_step)
+    grid.setStyle(QgsLayoutItemMapGrid.FrameAnnotationsOnly)
+    grid.setAnnotationEnabled(True)
+
+    # 顶部和左侧显示经纬度标注
+    grid.setAnnotationDisplay(QgsLayoutItemMapGrid.ShowAll, QgsLayoutItemMapGrid.Top)
+    grid.setAnnotationDisplay(QgsLayoutItemMapGrid.ShowAll, QgsLayoutItemMapGrid.Left)
+    grid.setAnnotationDisplay(QgsLayoutItemMapGrid.HideAll, QgsLayoutItemMapGrid.Bottom)
+    grid.setAnnotationDisplay(QgsLayoutItemMapGrid.HideAll, QgsLayoutItemMapGrid.Right)
+
+    grid.setAnnotationPosition(QgsLayoutItemMapGrid.OutsideMapFrame, QgsLayoutItemMapGrid.Top)
+    grid.setAnnotationPosition(QgsLayoutItemMapGrid.OutsideMapFrame, QgsLayoutItemMapGrid.Left)
+    grid.setAnnotationDirection(QgsLayoutItemMapGrid.Horizontal, QgsLayoutItemMapGrid.Top)
+    grid.setAnnotationDirection(QgsLayoutItemMapGrid.Vertical, QgsLayoutItemMapGrid.Left)
+
+    annot_format = QgsTextFormat()
+    annot_font = QFont("Times New Roman", LONLAT_FONT_SIZE_PT)
+    annot_format.setFont(annot_font)
+    annot_format.setSize(LONLAT_FONT_SIZE_PT)
+    annot_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    annot_format.setColor(QColor(0, 0, 0))
+    grid.setAnnotationTextFormat(annot_format)
+
+    grid.setAnnotationFormat(QgsLayoutItemMapGrid.DegreeMinute)
+    grid.setAnnotationPrecision(0)
+    grid.setFrameStyle(QgsLayoutItemMapGrid.InteriorTicks)
+    grid.setFrameWidth(1.5)
+    grid.setFramePenSize(0.3)
+    grid.setFramePenColor(QColor(0, 0, 0))
+
+    map_item.grids().addGrid(grid)
+    print("[信息] 经纬度网格设置完成")
+
+
+def _add_north_arrow(layout, map_height_mm):
+    """
+    添加指北针（地图右上角）
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        map_height_mm (float): 地图高度（毫米）
+    """
+    map_right = BORDER_LEFT_MM + MAP_WIDTH_MM
+    map_top = BORDER_TOP_MM
+    arrow_x = map_right - NORTH_ARROW_WIDTH_MM
+    arrow_y = map_top
+
+    # 指北针背景白色矩形
+    bg_shape = QgsLayoutItemShape(layout)
+    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+    bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
+    bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
+                                         QgsUnitTypes.LayoutMillimeters))
+    bg_symbol = QgsFillSymbol.createSimple({
+        'color': '255,255,255,255',
+        'outline_color': '0,0,0,255',
+        'outline_width': str(BORDER_WIDTH_MM),
+        'outline_width_unit': 'MM',
+    })
+    bg_shape.setSymbol(bg_symbol)
+    bg_shape.setFrameEnabled(True)
+    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+    layout.addLayoutItem(bg_shape)
+
+    # 创建指北针SVG并添加图片项
+    svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_map_temp.svg")
+    create_north_arrow_svg(svg_path)
+
+    north_arrow = QgsLayoutItemPicture(layout)
+    north_arrow.setPicturePath(svg_path)
+    padding_x = 1.0
+    padding_y = 0.5
+    north_arrow.attemptMove(QgsLayoutPoint(arrow_x + padding_x, arrow_y + padding_y,
+                                           QgsUnitTypes.LayoutMillimeters))
+    north_arrow.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM - padding_x * 2,
+                                            NORTH_ARROW_HEIGHT_MM - padding_y * 2,
+                                            QgsUnitTypes.LayoutMillimeters))
+    north_arrow.setFrameEnabled(False)
+    north_arrow.setBackgroundEnabled(False)
+    layout.addLayoutItem(north_arrow)
+    print("[信息] 指北针添加完成")
+
+
+def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
+    """
+    添加比例尺（地图右下角）
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        map_item (QgsLayoutItemMap): 地图布局项
+        scale (int): 比例尺
+        extent (QgsRectangle): 地图范围
+        center_lat (float): 中心纬度
+        map_height_mm (float): 地图高度（毫米）
+    """
+    map_left = BORDER_LEFT_MM
+    map_top = BORDER_TOP_MM
+    map_right = map_left + MAP_WIDTH_MM
+    map_bottom = map_top + map_height_mm
+
+    lon_range_deg = extent.xMaximum() - extent.xMinimum()
+    map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
+    km_per_mm = map_total_km / MAP_WIDTH_MM
+    target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
+
+    nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+    bar_km = nice_values[0]
+    for nv in nice_values:
+        if nv <= target_bar_km * 1.5:
+            bar_km = nv
+        else:
+            break
+
+    bar_length_mm = bar_km / km_per_mm
+    bar_length_mm = max(bar_length_mm, 20.0)
+    num_segments = 4
+
+    sb_width = bar_length_mm + 16.0
+    sb_height = 14.0
+    sb_x = map_right - sb_width
+    sb_y = map_bottom - sb_height
+
+    # 比例尺背景白色矩形
+    bg_shape = QgsLayoutItemShape(layout)
+    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+    bg_shape.attemptMove(QgsLayoutPoint(sb_x, sb_y, QgsUnitTypes.LayoutMillimeters))
+    bg_shape.attemptResize(QgsLayoutSize(sb_width, sb_height, QgsUnitTypes.LayoutMillimeters))
+    bg_symbol = QgsFillSymbol.createSimple({
+        'color': '255,255,255,255',
+        'outline_color': '0,0,0,255',
+        'outline_width': str(BORDER_WIDTH_MM),
+        'outline_width_unit': 'MM',
+    })
+    bg_shape.setSymbol(bg_symbol)
+    bg_shape.setFrameEnabled(True)
+    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+    layout.addLayoutItem(bg_shape)
+
+    # 比例尺分母标签
+    scale_label = QgsLayoutItemLabel(layout)
+    scale_label.setText(f"1:{scale:,}")
+    label_format = QgsTextFormat()
+    label_format.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
+    label_format.setSize(SCALE_FONT_SIZE_PT)
+    label_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    label_format.setColor(QColor(0, 0, 0))
+    scale_label.setTextFormat(label_format)
+    scale_label.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
+    scale_label.attemptResize(QgsLayoutSize(sb_width, 4.5, QgsUnitTypes.LayoutMillimeters))
+    scale_label.setHAlign(Qt.AlignHCenter)
+    scale_label.setVAlign(Qt.AlignVCenter)
+    scale_label.setFrameEnabled(False)
+    scale_label.setBackgroundEnabled(False)
+    layout.addLayoutItem(scale_label)
+
+    # 黑白交替刻度条
+    bar_start_x = sb_x + (sb_width - bar_length_mm) / 2.0
+    bar_y = sb_y + 5.5
+    bar_h = 1.8
+    seg_width_mm = bar_length_mm / num_segments
+
+    for i in range(num_segments):
+        seg_shape = QgsLayoutItemShape(layout)
+        seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+        seg_x = bar_start_x + i * seg_width_mm
+        seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
+        seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h, QgsUnitTypes.LayoutMillimeters))
+        fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
+        seg_symbol = QgsFillSymbol.createSimple({
+            'color': fill_color,
+            'outline_color': '0,0,0,255',
+            'outline_width': '0.15',
+            'outline_width_unit': 'MM',
+        })
+        seg_shape.setSymbol(seg_symbol)
+        seg_shape.setFrameEnabled(False)
+        layout.addLayoutItem(seg_shape)
+
+    # 刻度标签
+    label_y = bar_y + bar_h + 0.3
+    label_h = 3.5
+    tick_format = QgsTextFormat()
+    tick_format.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
+    tick_format.setSize(SCALE_FONT_SIZE_PT)
+    tick_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    tick_format.setColor(QColor(0, 0, 0))
+
+    lbl_0 = QgsLayoutItemLabel(layout)
+    lbl_0.setText("0")
+    lbl_0.setTextFormat(tick_format)
+    lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y, QgsUnitTypes.LayoutMillimeters))
+    lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
+    lbl_0.setHAlign(Qt.AlignHCenter)
+    lbl_0.setVAlign(Qt.AlignTop)
+    lbl_0.setFrameEnabled(False)
+    lbl_0.setBackgroundEnabled(False)
+    layout.addLayoutItem(lbl_0)
+
+    mid_km = bar_km // 2
+    if mid_km > 0:
+        lbl_mid = QgsLayoutItemLabel(layout)
+        lbl_mid.setText(str(mid_km))
+        lbl_mid.setTextFormat(tick_format)
+        mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
+        lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
+        lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_mid.setHAlign(Qt.AlignHCenter)
+        lbl_mid.setVAlign(Qt.AlignTop)
+        lbl_mid.setFrameEnabled(False)
+        lbl_mid.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_mid)
+
+    lbl_end = QgsLayoutItemLabel(layout)
+    lbl_end.setText(f"{bar_km} km")
+    lbl_end.setTextFormat(tick_format)
+    end_x = bar_start_x + bar_length_mm - 4.0
+    lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
+    lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
+    lbl_end.setHAlign(Qt.AlignHCenter)
+    lbl_end.setVAlign(Qt.AlignTop)
+    lbl_end.setFrameEnabled(False)
+    lbl_end.setBackgroundEnabled(False)
+    layout.addLayoutItem(lbl_end)
+
+    print(f"[信息] 比例尺添加完成，1:{scale:,}")
+
+
+def _add_legend(layout, map_left_mm, map_top_mm, map_height_mm, has_faults=True):
+    """
+    添加图例（位于底图左下角）
+    - 图例左边框与底图左边框对齐
+    - 图例下边框与底图下边框对齐
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        map_left_mm (float): 底图左边界X坐标（毫米）
+        map_top_mm (float): 底图顶部Y坐标（毫米）
+        map_height_mm (float): 底图高度（毫米）
+        has_faults (bool): 是否包含断裂线图例
+    """
+    # 构建图例项列表（顺序与原来保持一致）
+    legend_items = []
+    legend_items.append(("震中位置", "star"))
+    legend_items.append(("省界", "solid_line_province"))
+    legend_items.append(("市界", "dash_line_city"))
+    legend_items.append(("县界", "dash_line_county"))
+    if has_faults:
+        legend_items.append(("全新世断层", "solid_line_holocene"))
+        legend_items.append(("晚更新世断层", "solid_line_late_pleistocene"))
+        legend_items.append(("早中更新世断层", "solid_line_early_pleistocene"))
+    # 地震等级从大到小排列
+    legend_items.append(("8.0级以上", "circle_lv4"))
+    legend_items.append(("7.0~7.9级", "circle_lv3"))
+    legend_items.append(("6.0~6.9级", "circle_lv2"))
+    legend_items.append(("4.7~5.9级", "circle_lv1"))
+
+    n_items = len(legend_items)
+    # 计算图例总高度
+    title_height_mm = 6.0
+    legend_height_mm = title_height_mm + n_items * LEGEND_ROW_HEIGHT_MM + LEGEND_PADDING_MM * 2
+
+    # 图例位置：左边框=底图左边框，下边框=底图下边框
+    legend_x = map_left_mm
+    legend_y = map_top_mm + map_height_mm - legend_height_mm
+
+    # 图例背景矩形（半透明白色）
+    legend_bg = QgsLayoutItemShape(layout)
+    legend_bg.setShapeType(QgsLayoutItemShape.Rectangle)
+    legend_bg.attemptMove(QgsLayoutPoint(legend_x, legend_y, QgsUnitTypes.LayoutMillimeters))
+    legend_bg.attemptResize(QgsLayoutSize(LEGEND_WIDTH_MM, legend_height_mm,
+                                           QgsUnitTypes.LayoutMillimeters))
+    legend_bg_symbol = QgsFillSymbol.createSimple({
+        'color': '255,255,255,230',
+        'outline_color': '0,0,0,255',
+        'outline_width': str(BORDER_WIDTH_MM),
+        'outline_width_unit': 'MM',
+    })
+    legend_bg.setSymbol(legend_bg_symbol)
+    legend_bg.setFrameEnabled(True)
+    legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+    layout.addLayoutItem(legend_bg)
+
+    # 图例标题 "图  例"
+    title_format = QgsTextFormat()
+    title_format.setFont(QFont("SimHei", LEGEND_TITLE_FONT_SIZE_PT))
+    title_format.setSize(LEGEND_TITLE_FONT_SIZE_PT)
+    title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    title_format.setColor(QColor(0, 0, 0))
+
+    title_label = QgsLayoutItemLabel(layout)
+    title_label.setText("图  例")
+    title_label.setTextFormat(title_format)
+    title_label.attemptMove(QgsLayoutPoint(legend_x, legend_y + LEGEND_PADDING_MM,
+                                           QgsUnitTypes.LayoutMillimeters))
+    title_label.attemptResize(QgsLayoutSize(LEGEND_WIDTH_MM, title_height_mm - 1.0,
+                                            QgsUnitTypes.LayoutMillimeters))
+    title_label.setHAlign(Qt.AlignHCenter)
+    title_label.setVAlign(Qt.AlignVCenter)
+    title_label.setFrameEnabled(False)
+    title_label.setBackgroundEnabled(False)
+    layout.addLayoutItem(title_label)
+
+    # 图例项文本格式
+    item_format = QgsTextFormat()
+    item_format.setFont(QFont("SimSun", LEGEND_ITEM_FONT_SIZE_PT))
+    item_format.setSize(LEGEND_ITEM_FONT_SIZE_PT)
+    item_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    item_format.setColor(QColor(0, 0, 0))
+
+    item_start_y = legend_y + LEGEND_PADDING_MM + title_height_mm
+    icon_x = legend_x + LEGEND_PADDING_MM
+    icon_center_offset = LEGEND_ROW_HEIGHT_MM / 2.0
+
+    for idx, (label, draw_type) in enumerate(legend_items):
+        item_y = item_start_y + idx * LEGEND_ROW_HEIGHT_MM
+        icon_center_y = item_y + icon_center_offset
+
+        # 根据类型绘制对应图标
+        if draw_type == "star":
+            _draw_legend_star(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                              LEGEND_ROW_HEIGHT_MM * 0.8)
+        elif draw_type == "solid_line_province":
+            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                              PROVINCE_COLOR, PROVINCE_LINE_WIDTH_MM)
+        elif draw_type == "dash_line_city":
+            _draw_legend_dash_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                                   CITY_COLOR, CITY_LINE_WIDTH_MM, CITY_DASH_GAP_MM)
+        elif draw_type == "dash_line_county":
+            _draw_legend_dash_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                                   COUNTY_COLOR, COUNTY_LINE_WIDTH_MM, COUNTY_DASH_GAP_MM)
+        elif draw_type == "solid_line_holocene":
+            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                              FAULT_HOLOCENE_COLOR, FAULT_HOLOCENE_WIDTH_MM)
+        elif draw_type == "solid_line_late_pleistocene":
+            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                              FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH_MM)
+        elif draw_type == "solid_line_early_pleistocene":
+            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                              FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH_MM)
+        elif draw_type == "circle_lv4":
+            _draw_legend_circle(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                                EARTHQUAKE_LEVEL_CONFIG[4]["color"],
+                                EARTHQUAKE_LEVEL_CONFIG[4]["size_mm"])
+        elif draw_type == "circle_lv3":
+            _draw_legend_circle(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                                EARTHQUAKE_LEVEL_CONFIG[3]["color"],
+                                EARTHQUAKE_LEVEL_CONFIG[3]["size_mm"])
+        elif draw_type == "circle_lv2":
+            _draw_legend_circle(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                                EARTHQUAKE_LEVEL_CONFIG[2]["color"],
+                                EARTHQUAKE_LEVEL_CONFIG[2]["size_mm"])
+        elif draw_type == "circle_lv1":
+            _draw_legend_circle(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                                EARTHQUAKE_LEVEL_CONFIG[1]["color"],
+                                EARTHQUAKE_LEVEL_CONFIG[1]["size_mm"])
+
+        # 绘制文字标签
+        text_x = icon_x + LEGEND_ICON_WIDTH_MM + LEGEND_ICON_TEXT_GAP_MM
+        text_width = LEGEND_WIDTH_MM - LEGEND_PADDING_MM - LEGEND_ICON_WIDTH_MM - LEGEND_ICON_TEXT_GAP_MM - 1.0
+        text_label = QgsLayoutItemLabel(layout)
+        text_label.setText(label)
+        text_label.setTextFormat(item_format)
+        text_label.attemptMove(QgsLayoutPoint(text_x, item_y, QgsUnitTypes.LayoutMillimeters))
+        text_label.attemptResize(QgsLayoutSize(text_width, LEGEND_ROW_HEIGHT_MM,
+                                               QgsUnitTypes.LayoutMillimeters))
+        text_label.setHAlign(Qt.AlignLeft)
+        text_label.setVAlign(Qt.AlignVCenter)
+        text_label.setFrameEnabled(False)
+        text_label.setBackgroundEnabled(False)
+        layout.addLayoutItem(text_label)
+
+    print(f"[信息] 图例添加完成，共 {n_items} 项")
+
+
+def _draw_legend_star(layout, x, center_y, width, height):
+    """
+    在图例中绘制红色五角星图标
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        x (float): 起始X坐标
+        center_y (float): 中心Y坐标
+        width (float): 图标宽度
+        height (float): 图标高度
+    """
+    star_label = QgsLayoutItemLabel(layout)
+    star_label.setText("★")
+    star_format = QgsTextFormat()
+    star_format.setFont(QFont("SimSun", LEGEND_TITLE_FONT_SIZE_PT))
+    star_format.setSize(LEGEND_TITLE_FONT_SIZE_PT)
+    star_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    star_format.setColor(EPICENTER_COLOR)
+    star_label.setTextFormat(star_format)
+    star_label.attemptMove(QgsLayoutPoint(x, center_y - height / 2.0,
+                                          QgsUnitTypes.LayoutMillimeters))
+    star_label.attemptResize(QgsLayoutSize(width, height, QgsUnitTypes.LayoutMillimeters))
+    star_label.setHAlign(Qt.AlignHCenter)
+    star_label.setVAlign(Qt.AlignVCenter)
+    star_label.setFrameEnabled(False)
+    star_label.setBackgroundEnabled(False)
+    layout.addLayoutItem(star_label)
+
+
+def _draw_legend_line(layout, x, center_y, width, color, line_width_mm):
+    """
+    在图例中绘制实线图标
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        x (float): 起始X坐标
+        center_y (float): 中心Y坐标
+        width (float): 图标宽度
+        color (QColor): 线条颜色
+        line_width_mm (float): 线宽（毫米）
+    """
+    line_height = max(line_width_mm, 0.5)
+    line_shape = QgsLayoutItemShape(layout)
+    line_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+    line_shape.attemptMove(QgsLayoutPoint(x, center_y - line_height / 2.0,
+                                          QgsUnitTypes.LayoutMillimeters))
+    line_shape.attemptResize(QgsLayoutSize(width, line_height, QgsUnitTypes.LayoutMillimeters))
+    color_str = f"{color.red()},{color.green()},{color.blue()},255"
+    line_symbol = QgsFillSymbol.createSimple({
+        'color': color_str,
+        'outline_style': 'no',
+    })
+    line_shape.setSymbol(line_symbol)
+    line_shape.setFrameEnabled(False)
+    layout.addLayoutItem(line_shape)
+
+
+def _draw_legend_dash_line(layout, x, center_y, width, color, line_width_mm, dash_gap_mm):
+    """
+    在图例中绘制虚线图标
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        x (float): 起始X坐标
+        center_y (float): 中心Y坐标
+        width (float): 图标总宽度
+        color (QColor): 线条颜色
+        line_width_mm (float): 线宽（毫米）
+        dash_gap_mm (float): 虚线间隔（毫米）
+    """
+    line_height = max(line_width_mm, 0.5)
+    color_str = f"{color.red()},{color.green()},{color.blue()},255"
+    dash_length_mm = max(dash_gap_mm * 3.5, 0.8)
+    pattern_length = dash_length_mm + dash_gap_mm
+
+    current_x = x
+    while current_x < x + width:
+        actual_dash = min(dash_length_mm, x + width - current_x)
+        if actual_dash <= 0:
+            break
+        dash_shape = QgsLayoutItemShape(layout)
+        dash_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+        dash_shape.attemptMove(QgsLayoutPoint(current_x, center_y - line_height / 2.0,
+                                              QgsUnitTypes.LayoutMillimeters))
+        dash_shape.attemptResize(QgsLayoutSize(actual_dash, line_height,
+                                               QgsUnitTypes.LayoutMillimeters))
+        dash_symbol = QgsFillSymbol.createSimple({
+            'color': color_str,
+            'outline_style': 'no',
+        })
+        dash_shape.setSymbol(dash_symbol)
+        dash_shape.setFrameEnabled(False)
+        layout.addLayoutItem(dash_shape)
+        current_x += pattern_length
+
+
+def _draw_legend_circle(layout, x, center_y, width, color, size_mm):
+    """
+    在图例中绘制圆形图标
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        x (float): 起始X坐标
+        center_y (float): 中心Y坐标
+        width (float): 图标区域宽度
+        color (QColor): 圆形填充颜色
+        size_mm (float): 地图上的圆点大小（毫米），图例中适当缩放
+    """
+    # 图例中圆点大小限制在行高的80%以内
+    circle_size = min(size_mm, LEGEND_ROW_HEIGHT_MM * 0.8)
+    center_x = x + width / 2.0
+
+    circle_shape = QgsLayoutItemShape(layout)
+    circle_shape.setShapeType(QgsLayoutItemShape.Ellipse)
+    circle_shape.attemptMove(QgsLayoutPoint(center_x - circle_size / 2.0,
+                                            center_y - circle_size / 2.0,
+                                            QgsUnitTypes.LayoutMillimeters))
+    circle_shape.attemptResize(QgsLayoutSize(circle_size, circle_size,
+                                              QgsUnitTypes.LayoutMillimeters))
+    color_str = f"{color.red()},{color.green()},{color.blue()},255"
+    circle_symbol = QgsFillSymbol.createSimple({
+        'color': color_str,
+        'outline_color': '0,0,0,255',
+        'outline_width': '0.15',
+        'outline_width_unit': 'MM',
+    })
+    circle_shape.setSymbol(circle_symbol)
+    circle_shape.setFrameEnabled(False)
+    layout.addLayoutItem(circle_shape)
+
+
+# ============================================================
+# PNG导出函数
+# ============================================================
+
+def export_layout_to_png(layout, output_path, dpi=150):
+    """
+    将打印布局导出为PNG图片
+
+    参数:
+        layout (QgsPrintLayout): 打印布局对象
+        output_path (str): 输出文件路径
+        dpi (int): 输出分辨率（默认150）
+
+    返回:
+        str: 成功时返回输出文件路径，失败返回None
+    """
+    out_dir = os.path.dirname(os.path.abspath(output_path))
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+
+    exporter = QgsLayoutExporter(layout)
+    settings = QgsLayoutExporter.ImageExportSettings()
+    settings.dpi = dpi
+    settings.cropToContents = False
+
+    abs_path = os.path.abspath(output_path)
+    result = exporter.exportToImage(abs_path, settings)
+
+    if result == QgsLayoutExporter.Success:
+        print(f"[信息] PNG导出成功: {abs_path}")
+        return abs_path
+    else:
+        error_map = {
+            QgsLayoutExporter.FileError: "文件错误",
+            QgsLayoutExporter.MemoryError: "内存错误",
+            QgsLayoutExporter.SvgLayerError: "SVG图层错误",
+            QgsLayoutExporter.PrintError: "打印错误",
+            QgsLayoutExporter.Canceled: "已取消",
+        }
+        msg = error_map.get(result, f"未知错误(代码:{result})")
+        print(f"[错误] PNG导出失败: {msg}")
+        return None
+
+
+# ============================================================
+# 主函数
 # ============================================================
 
 def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
                             output_path, csv_encoding="gbk"):
     """
-    生成历史地震分布图（含经纬度边框、行政边��、断裂线图层）
+    生成历史地震分布图（基于QGIS 3.40.15）
 
-    修改说明：
-        1. 矢量底图拼接底色改为浅蓝色(海洋色)，注记LANCZOS重采样更清晰
-        2. 地震圆点增大+加粗描边，确保可见
-        3. 省界改为灰色，比市界深一点
-        4. 图例每项图标前增加留白
-        5. 比例尺修复右侧展示不全
-        6. 指北针增加灰色透明背景
-        7. 8.0级以上圆点缩小，仅比7.0级稍大
+    包含内容：
+    - 天地图矢量底图（vec_c）+ 矢量注记（cva_c）
+    - 省界、市界、县界图层
+    - 断裂线图层（全新世/晚更新世/早中更新世，不同线宽）
+    - 历史地震圆点（按震级分4级，不同大小和颜色）
+    - 震中五角星
+    - 经纬度网格、指北针、比例尺
+    - 图例（底图左下角，左/下边框与底图对齐）
 
     参数:
         center_lon (float): 震中经度
         center_lat (float): 震中纬度
         magnitude (float): 震级
-        csv_path (str): CSV路径
-        output_path (str): 输出路径
-        csv_encoding (str): CSV编码
+        csv_path (str): 历史地震CSV文件路径
+        output_path (str): 输出PNG文件路径
+        csv_encoding (str): CSV文件编码
+
     返回:
-        str: 统计信息
+        str: 统计信息文本
     """
     print("=" * 65)
-    print("  历 史 地 震 分 布 图 生 成 工 具")
+    print("  历 史 地 震 分 布 图 生 成 工 具（QGIS版）")
     print("=" * 65)
     print(f"  震中: {center_lon}°E, {center_lat}°N, M{magnitude}")
 
-    radius_km, span_km, scale_denom = get_range_params(magnitude)
-    half_span_km = span_km / 2.0
-    print(f"  范围: {radius_km}km, 比例尺: 1:{scale_denom:,}\n")
+    config = get_magnitude_config(magnitude)
+    half_size_km = config["map_size_km"] / 2.0
+    radius_km = config["radius_km"]
+    scale = config["scale"]
+    print(f"  范围: {config['map_size_km']}km, 半径: {radius_km}km, 比例尺: 1:{scale:,}\n")
 
-    # [1/7] 读取CSV
-    print("[1/7] 读取历史地震数据...")
+    # [1/8] 读取历史地震CSV
+    print("[1/8] 读取历史地震数据...")
     if not os.path.exists(csv_path):
         print(f"  *** CSV不存在: {csv_path} ***")
         return ""
     earthquakes = read_earthquake_csv(csv_path, encoding=csv_encoding)
     print()
 
-    # [2/7] 筛选
-    print("[2/7] 筛选范围内地震...")
+    # [2/8] 筛选范围内地震
+    print("[2/8] 筛选范围内地震...")
     filtered = filter_earthquakes(earthquakes, center_lon, center_lat, radius_km)
     print()
 
-    # [3/7] 底图（矢量底图 + 矢量注记）
-    print("[3/7] 获取天地图矢量底图+矢量注记...")
-    basemap, geo_extent = fetch_basemap(center_lon, center_lat, half_span_km,
-                                        scale_denom, MAP_WIDTH, MAP_HEIGHT)
-    print()
+    # [3/8] 计算地图范围
+    print("[3/8] 计算地图范围...")
+    extent = calculate_extent(center_lon, center_lat, half_size_km)
+    map_height_mm = calculate_map_height_from_extent(extent, MAP_WIDTH_MM)
+    print(f"  地图范围: {extent.toString()}")
+    print(f"  地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm\n")
 
-    # [4/7] 行政边界
-    print("[4/7] 读取行政边界SHP...")
-    print("  --- 省界 ---")
-    province_lines = read_shapefile_lines(SHP_PROVINCE_PATH, geo_extent)
-    print("  --- 市界 ---")
-    city_lines = read_shapefile_lines(SHP_CITY_PATH, geo_extent)
-    print("  --- 县界 ---")
-    county_lines = read_shapefile_lines(SHP_COUNTY_PATH, geo_extent)
-    print()
+    # 初始化QGIS应用
+    if not QgsApplication.instance():
+        qgs_app = QgsApplication([], False)
+        qgs_app.initQgis()
+        print("[信息] QGIS应用初始化完成")
 
-    # [5/7] 断裂
-    print("[5/7] 读取断裂KMZ...")
-    fault_data = parse_kmz_faults(KMZ_FAULT_PATH, geo_extent)
-    has_faults = any(len(v) > 0 for v in fault_data.values())
-    print()
+    project = QgsProject.instance()
+    project.clear()
+    project.setCrs(CRS_WGS84)
 
-    # [6/7] 绘制所有图层
-    print("[6/7] 绘制图层要素...")
-    map_img = basemap.convert("RGBA")
+    # 临时文件路径
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    temp_basemap_path = os.path.join(script_dir, "_temp_basemap_earthquake.png")
+    temp_annotation_path = os.path.join(script_dir, "_temp_annotation_earthquake.png")
+    svg_temp_path = os.path.join(script_dir, "_north_arrow_map_temp.svg")
 
-    # --- 图层1: 行政边界 ---
-    bd_layer = Image.new("RGBA", map_img.size, (0, 0, 0, 0))
-    draw_bd = ImageDraw.Draw(bd_layer)
-
-    # 县界：浅灰色虚线（最细）
-    if county_lines:
-        print("  绘制县界...")
-        draw_dashed_lines(draw_bd, county_lines, geo_extent,
-                          MAP_WIDTH, MAP_HEIGHT,
-                          COUNTY_BORDER_COLOR, COUNTY_BORDER_WIDTH,
-                          COUNTY_BORDER_DASH)
-
-    # 市界：灰色虚线（中等）
-    if city_lines:
-        print("  绘制市界...")
-        draw_dashed_lines(draw_bd, city_lines, geo_extent,
-                          MAP_WIDTH, MAP_HEIGHT,
-                          CITY_BORDER_COLOR, CITY_BORDER_WIDTH,
-                          CITY_BORDER_DASH)
-
-    # 【修改3】省界：深灰色实线（比市界深一点，不再纯黑粗线）
-    if province_lines:
-        print("  绘制省界...")
-        draw_solid_lines(draw_bd, province_lines, geo_extent,
-                         MAP_WIDTH, MAP_HEIGHT,
-                         PROVINCE_BORDER_COLOR, PROVINCE_BORDER_WIDTH)
-
-    map_img = Image.alpha_composite(map_img, bd_layer)
-
-    # --- 图层2: 断裂线（加粗+黑色衬底） ---
-    if has_faults:
-        ft_layer = Image.new("RGBA", map_img.size, (0, 0, 0, 0))
-        draw_ft = ImageDraw.Draw(ft_layer)
-        draw_fault_lines(draw_ft, fault_data, geo_extent, MAP_WIDTH, MAP_HEIGHT)
-        map_img = Image.alpha_composite(map_img, ft_layer)
-
-    # --- 图层3: 历史地震圆点（加粗描边，确保可见） ---
-    eq_layer = Image.new("RGBA", map_img.size, (0, 0, 0, 0))
-    draw_eq = ImageDraw.Draw(eq_layer)
-    draw_earthquake_points(draw_eq, filtered, geo_extent, MAP_WIDTH, MAP_HEIGHT)
-    map_img = Image.alpha_composite(map_img, eq_layer)
-
-    # --- 图层4: 震中五角星（最顶层） ---
-    epi_layer = Image.new("RGBA", map_img.size, (0, 0, 0, 0))
-    draw_epi = ImageDraw.Draw(epi_layer)
-    draw_epicenter(draw_epi, center_lon, center_lat, geo_extent, MAP_WIDTH, MAP_HEIGHT)
-    map_img = Image.alpha_composite(map_img, epi_layer)
-
-    # --- 装饰要素（在地图区域内绘制） ---
-    draw_map = ImageDraw.Draw(map_img)
-
-    # 【修改6】右上角指北针（带灰色透明背景）
-    draw_north_arrow(draw_map, MAP_WIDTH - 50, 20, size=50)
-
-    # 【修改5】右下角比例尺（位置往左移更多，确保完整展示）
-    draw_scale_bar(draw_map, MAP_WIDTH - 280, MAP_HEIGHT - 45,
-                   scale_denom, MAP_WIDTH, geo_extent, center_lat)
-
-    # 【修改4】左下角图例：图标前有留白
-    item_h = 30
-    n_items = 1 + 3 + (3 if has_faults else 0) + 4
-    legend_h = 40 + n_items * item_h + 10
-    legend_x = 0
-    legend_y = MAP_HEIGHT - legend_h
-    draw_legend(draw_map, legend_x, legend_y, has_faults=has_faults)
-
-    # 顶部居中标题
+    result_path = None
     try:
-        font_title = ImageFont.truetype(FONT_PATH_TITLE, 22)
-    except (IOError, OSError):
-        font_title = ImageFont.load_default()
+        # [4/8] 下载天地图矢量底图（vec_c）+ 矢量注记（cva_c）
+        print("[4/8] 下载天地图矢量底图+矢量注记...")
+        width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
+        height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
+        basemap_raster = download_tianditu_basemap_tiles(extent, width_px, height_px, temp_basemap_path)
+        annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px,
+                                                               temp_annotation_path)
+        print()
 
-    title_text = f"历史地震分布图（震中{int(radius_km)}km范围）"
-    bbox_t = draw_map.textbbox((0, 0), title_text, font=font_title)
-    title_w = bbox_t[2] - bbox_t[0]
-    title_h = bbox_t[3] - bbox_t[1]
-    title_x = MAP_WIDTH // 2 - title_w // 2
-    title_y = 8
-    draw_map.rectangle(
-        [title_x - 12, title_y - 4, title_x + title_w + 12, title_y + title_h + 6],
-        fill=(255, 255, 255, 210), outline=(0, 0, 0, 200)
-    )
-    draw_map.text((title_x, title_y), title_text, fill=(0, 0, 0, 255), font=font_title)
-    print()
+        # [5/8] 加载行政边界图层
+        print("[5/8] 加载行政边界图层...")
+        county_layer = load_vector_layer(SHP_COUNTY_PATH, "县界")
+        if county_layer:
+            style_county_layer(county_layer)
+            project.addMapLayer(county_layer)
 
-    # [7/7] 组装最终图片
-    print("[7/7] 组装经纬度边框并保存...")
+        city_layer = load_vector_layer(SHP_CITY_PATH, "市界")
+        if city_layer:
+            style_city_layer(city_layer)
+            project.addMapLayer(city_layer)
 
-    final_img = Image.new("RGBA", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (255, 255, 255, 255))
-    final_img.paste(map_img, (BORDER_LEFT, BORDER_TOP))
+        province_layer = load_vector_layer(SHP_PROVINCE_PATH, "省界")
+        if province_layer:
+            style_province_layer(province_layer)
+            project.addMapLayer(province_layer)
+        print()
 
-    final_draw = ImageDraw.Draw(final_img)
-    draw_coordinate_border(final_draw, geo_extent, OUTPUT_WIDTH, OUTPUT_HEIGHT)
+        # [6/8] 解析断裂KMZ并创建QGIS图层
+        print("[6/8] 解析断裂KMZ并创建图层...")
+        kmz_abs_path = resolve_path(KMZ_FAULT_PATH)
+        geo_extent_dict = {
+            "min_lon": extent.xMinimum(), "max_lon": extent.xMaximum(),
+            "min_lat": extent.yMinimum(), "max_lat": extent.yMaximum(),
+        }
+        fault_data = parse_kmz_faults(kmz_abs_path, geo_extent_dict)
+        has_faults = any(len(v) > 0 for v in fault_data.values())
 
-    output_rgb = final_img.convert("RGB")
-    output_rgb.save(output_path, dpi=(OUTPUT_DPI, OUTPUT_DPI), quality=95)
-    fsize = os.path.getsize(output_path) / 1024
-    print(f"  已保存: {output_path}")
-    print(f"  大小: {fsize:.1f} KB")
-    print(f"  尺寸: {OUTPUT_WIDTH}x{OUTPUT_HEIGHT}px")
-    print(f"  地图区域: {MAP_WIDTH}x{MAP_HEIGHT}px")
-    print(f"  边框: 左={BORDER_LEFT} 右={BORDER_RIGHT} 上={BORDER_TOP} 下={BORDER_BOTTOM}px\n")
+        fault_layers = {}
+        # 按从旧到新的顺序添加到项目，确保全新世断层在最上层渲染
+        for ftype in ["default", "early_pleistocene", "late_pleistocene", "holocene"]:
+            lines = fault_data.get(ftype, [])
+            if lines:
+                fl = create_fault_layer(lines, ftype)
+                if fl:
+                    fault_layers[ftype] = fl
+                    project.addMapLayer(fl)
+        print()
+
+        # [7/8] 创建地震圆点和震中图层
+        print("[7/8] 创建地震圆点和震中图层...")
+        earthquake_layer = None
+        if filtered:
+            earthquake_layer = create_earthquake_layer(filtered)
+            if earthquake_layer:
+                project.addMapLayer(earthquake_layer)
+
+        epicenter_layer = create_epicenter_layer(center_lon, center_lat)
+        if epicenter_layer:
+            project.addMapLayer(epicenter_layer)
+
+        if basemap_raster:
+            project.addMapLayer(basemap_raster)
+        if annotation_raster:
+            project.addMapLayer(annotation_raster)
+        print()
+
+        # 按渲染顺序排列图层（列表第一项在最上层渲染）
+        # 图层顺序：震中 -> 注记 -> 地震点 -> 断裂线 -> 行政边界 -> 底图
+        ordered_layers = []
+        # 震中五角星（最顶层）
+        if epicenter_layer:
+            ordered_layers.append(epicenter_layer)
+        # 天地图矢量注记
+        if annotation_raster:
+            ordered_layers.append(annotation_raster)
+        # 历史地震圆点
+        if earthquake_layer:
+            ordered_layers.append(earthquake_layer)
+        # 断裂线（全新世在最上，早中更新世在下）
+        for ftype in ["holocene", "late_pleistocene", "early_pleistocene", "default"]:
+            if ftype in fault_layers:
+                ordered_layers.append(fault_layers[ftype])
+        # 行政边界（省界 -> 市界 -> 县界）
+        if province_layer:
+            ordered_layers.append(province_layer)
+        if city_layer:
+            ordered_layers.append(city_layer)
+        if county_layer:
+            ordered_layers.append(county_layer)
+        # 天地图矢量底图（最底层）
+        if basemap_raster:
+            ordered_layers.append(basemap_raster)
+
+        # [8/8] 创建打印布局并导出PNG
+        print("[8/8] 创建布局并导出PNG...")
+        layout = create_print_layout(
+            project, center_lon, center_lat, magnitude,
+            extent, scale, map_height_mm,
+            ordered_layers=ordered_layers,
+            has_faults=has_faults,
+        )
+        result_path = export_layout_to_png(layout, output_path, OUTPUT_DPI)
+
+    finally:
+        # 清理临时文件
+        for tmp_path in [temp_basemap_path, temp_annotation_path]:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                    pgw = tmp_path.replace(".png", ".pgw")
+                    if os.path.exists(pgw):
+                        os.remove(pgw)
+                except OSError:
+                    pass
+        # 清理指北针临时SVG文件
+        if os.path.exists(svg_temp_path):
+            try:
+                os.remove(svg_temp_path)
+            except OSError:
+                pass
+
+    if result_path:
+        print(f"  输出: {result_path}")
 
     stat_text = generate_statistics(filtered, radius_km)
     print("=" * 65)
@@ -1579,7 +2151,7 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
 
 
 # ============================================================
-# 【脚本入口】
+# 脚本入口
 # ============================================================
 
 if __name__ == "__main__":
@@ -1600,6 +2172,5 @@ if __name__ == "__main__":
         magnitude=INPUT_MAGNITUDE,
         csv_path=INPUT_CSV_PATH,
         output_path=OUTPUT_PATH,
-        csv_encoding="gbk"
+        csv_encoding="gbk",
     )
-
