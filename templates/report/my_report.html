@@ -34,15 +34,28 @@
 <!-- 任务状态列渲染模板 -->
 <script type="text/html" id="statusTpl">
     {{#
+         if(d.task_status == null || d.task_status == ''){
+            return '';
+        }
         var s = String(d.task_status);
         var statusText, color;
-        if (s === '0')      { statusText = '刚创建';   color = '#999';    }
-        else if (s === '1') { statusText = '正在执行'; color = '#1E9FFF'; }
-        else if (s === '2') { statusText = '执行成功'; color = '#5FB878'; }
-        else if (s === '3') { statusText = '执行失败'; color = '#FF5722'; }
-        else                { statusText = s;          color = '';        }
+        if (s === '0')      { statusText = '刚创建';   color = '#999';
+              return  '<span style="color:#070606">' + statusText + '</span>';
+        }
+        else if (s === '1') { statusText = '正在执行'; color = '#1E9FFF';
+            return  '<span style="color:#1E9FFF">' + statusText + '</span>';
+        }
+        else if (s === '2') { statusText = '执行成功'; color = '#5FB878';
+             return  '<span style="color:#5FB878">' + statusText + '</span>';
+        }
+        else if (s === '3') { statusText = '执行失败'; color = '#FF5722';
+             return  '<span style="color:#FF5722">' + statusText + '</span>';
+        }
+        else                { statusText = s;          color = '';      
+            return  '<span>' + statusText + '</span>';
+        }
     }}
-    <span style="color:{{ color }}">{{ statusText }}</span>
+    
 </script>
 
 <script src="/static/layui/layui/layui.js"></script>
