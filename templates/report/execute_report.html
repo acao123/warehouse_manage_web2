@@ -47,7 +47,7 @@
 
     <!-- ===== 任务创建区 ===== -->
     <div class="report-block">
-        <div class="report-block-title">任务创建区</div>
+        {% comment %}<div class="report-block-title">任务创建区</div>{% endcomment %}
 
         <!-- 第一块：基本信息 -->
         <div class="report-block">
@@ -56,20 +56,20 @@
                 <div class="layui-form-item">
                     <div class="layui-inline">
                         <label class="layui-form-label" style="width:100px;">经度</label>
-                        <div class="layui-input-inline" style="width:160px;">
-                            <input type="text" id="longitude" placeholder="选填，非负数" class="layui-input">
+                        <div class="layui-input-inline" style="width:220px;">
+                            <input type="text" id="longitude" placeholder="103.36" class="layui-input">
                         </div>
                     </div>
                     <div class="layui-inline">
                         <label class="layui-form-label" style="width:100px;">纬度</label>
                         <div class="layui-input-inline" style="width:160px;">
-                            <input type="text" id="latitude" placeholder="选填，非负数" class="layui-input">
+                            <input type="text" id="latitude" placeholder="34.09" class="layui-input">
                         </div>
                     </div>
                     <div class="layui-inline">
                         <label class="layui-form-label" style="width:100px;">震级</label>
-                        <div class="layui-input-inline" style="width:160px;">
-                            <input type="text" id="magnitude" placeholder="选填，非负数" class="layui-input">
+                        <div class="layui-input-inline" style="width:100px;">
+                            <input type="text" id="magnitude" placeholder="7.0" class="layui-input">
                         </div>
                     </div>
                 </div>
@@ -139,10 +139,10 @@
                             <label class="layui-form-label" style="width:120px;">插值算法</label>
                             <div class="layui-input-inline" style="width:200px;">
                                 <select id="interp_method" class="layui-select">
-                                    <option value="scipy_idw" selected>scipy_idw</option>
-                                    <option value="kriging">kriging</option>
-                                    <option value="qgis_idw">qgis_idw</option>
-                                    <option value="qgis_tin">qgis_tin</option>
+                                    <option value="qgis_tin" selected>qgis_tin</option>
+                                       <option value="qgis_idw">qgis_idw</option>
+                                     <option value="kriging">kriging</option>
+                                    <option value="scipy_idw" >scipy_idw</option>
                                 </select>
                             </div>
                         </div>
@@ -150,13 +150,13 @@
                     <div class="layui-form-item">
                         <div class="layui-inline">
                             <label class="layui-form-label" style="width:120px;">等值线采样间隔</label>
-                            <div class="layui-input-inline" style="width:160px;">
+                            <div class="layui-input-inline" style="width:200px;">
                                 <input type="text" id="sample_interval" placeholder="选填，正整数，默认1" class="layui-input">
                             </div>
                         </div>
                         <div class="layui-inline">
                             <label class="layui-form-label" style="width:120px;">最大采样点数</label>
-                            <div class="layui-input-inline" style="width:160px;">
+                            <div class="layui-input-inline" style="width:200px;">
                                 <input type="text" id="max_sample_points" placeholder="选填，正整数，默认10000" class="layui-input">
                             </div>
                         </div>

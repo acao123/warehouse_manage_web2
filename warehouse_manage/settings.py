@@ -84,7 +84,7 @@ WSGI_APPLICATION = 'warehouse_manage.wsgi.application'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 # 数据库配置：可以通过修改USE_MYSQL来切换SQLite和MySQL
 
-USE_MYSQL = True
+USE_MYSQL = False
 
 if USE_MYSQL:
     # MySQL数据库配置（生产环境）
@@ -170,7 +170,7 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB
 
 # 报告文件基础存储路径
-FILE_BASE_PATH = os.path.join(BASE_DIR, 'data', 'report')
+FILE_BASE_PATH = 'E:/data/report/'
 
 # ============================================================
 # 企业级日志配置

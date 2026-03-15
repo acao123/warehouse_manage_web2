@@ -174,38 +174,29 @@ def create_task_view(request):
         return JsonResponse({'code': 1, 'msg': 'PGA KML文件大小不能超过1G'})
 
     # ---- 当基本信息有任何一项为空时，从爬虫获取 ----
-    if longitude is None or latitude is None or magnitude is None or not address:
+    if longitude is None or latitude is None or magnitude is None or not address or not ori_time_str:
         logger.info('基本信息不完整，尝试通过爬虫获取地震数据')
         try:
             from spider.earthquake_fetcher import EarthquakeFetcher
             fetcher = EarthquakeFetcher()
             earthquake_info = fetcher.fetch_first()
             if earthquake_info:
-                if longitude is None:
-                    longitude = earthquake_info.epi_lon
-                if latitude is None:
-                    latitude = earthquake_info.epi_lat
-                if magnitude is None:
-                    magnitude = earthquake_info.magnitude
-                if not address:
-                    address = earthquake_info.loc_name
-                if not ori_time_str:
-                    ori_time_str = earthquake_info.ori_time.strftime('%Y-%m-%d %H:%M:%S')
+                longitude = earthquake_info.epi_lon
+                latitude = earthquake_info.epi_lat
+                magnitude = earthquake_info.magnitude
+                address = earthquake_info.loc_name
+                ori_time_str = earthquake_info.ori_time.strftime('%Y-%m-%d %H:%M:%S')
                 logger.info('通过爬虫获取地震数据成功: %s', earthquake_info)
             else:
                 logger.warning('爬虫未返回地震数据')
+                return JsonResponse({'code': 1, 'msg': '爬虫未返回地震数据'})
         except Exception as e:
             logger.error('爬虫获取地震数据失败: %s', e, exc_info=True)
+            return JsonResponse({'code': 1, 'msg': '爬取信息失败!'})
 
     # 填充默认值（爬虫也没拿到的字段）
-    if longitude is None:
-        longitude = 0.0
-    if latitude is None:
-        latitude = 0.0
-    if magnitude is None:
-        magnitude = 0.0
-    if not address:
-        address = '未知位置'
+    if longitude is None or latitude is None or magnitude is None or not address or not ori_time_str:
+        return JsonResponse({'code': 1, 'msg': '基本信息不全!'})
 
     # 解析发震时刻
     ori_time = None
@@ -217,12 +208,12 @@ def create_task_view(request):
             except ValueError:
                 continue
     if not ori_time:
-        ori_time = datetime.now()
+        return JsonResponse({'code': 1, 'msg': '发震时刻不能为空!'})
 
     # 校验插值算法取值
     valid_methods = [m[0] for m in ReportTask.INTERP_METHOD_CHOICES]
     if interp_method not in valid_methods:
-        interp_method = 'scipy_idw'
+        interp_method = 'scipy_tin'
 
     # ---- 保存上传文件 ----
     try:
