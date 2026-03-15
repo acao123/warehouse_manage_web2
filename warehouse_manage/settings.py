@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'system',  # 系统管理模块
     'ac_data',  # AC栅格数据管理模块
+    'report',   # 报告管理模块
 ]
 
 MIDDLEWARE = [
@@ -167,3 +168,101 @@ X_FRAME_OPTIONS = 'SAMEORIGIN'
 # 文件上传配置
 DATA_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB
+
+# 报告文件基础存储路径
+FILE_BASE_PATH = os.path.join(BASE_DIR, 'data', 'report')
+
+# ============================================================
+# 企业级日志配置
+# ============================================================
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,  # 保留已有日志器
+
+    # 格式化器
+    'formatters': {
+        'verbose': {
+            # 详细格式：时间 级别 进程 线程 模块 消息
+            'format': '[%(asctime)s] %(levelname)-8s %(process)d %(thread)d %(name)s:%(lineno)d - %(message)s',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+        'simple': {
+            'format': '[%(asctime)s] %(levelname)-8s %(name)s - %(message)s',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+    },
+
+    # 过滤器（可按需扩展）
+    'filters': {},
+
+    # 处理器
+    'handlers': {
+        # 控制台输出（开发/生产均保留）
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+            'level': 'DEBUG',
+        },
+        # 应用总日志文件（按天轮转，保留30天）
+        'file_app': {
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'app.log'),
+            'when': 'midnight',      # 按天切割
+            'backupCount': 30,       # 保留最近30个文件
+            'encoding': 'utf-8',
+            'formatter': 'verbose',
+            'level': 'INFO',
+        },
+        # 报告模块专用日志文件
+        'file_report': {
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'report.log'),
+            'when': 'midnight',
+            'backupCount': 30,
+            'encoding': 'utf-8',
+            'formatter': 'verbose',
+            'level': 'DEBUG',
+        },
+        # 错误日志文件
+        'file_error': {
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'error.log'),
+            'when': 'midnight',
+            'backupCount': 30,
+            'encoding': 'utf-8',
+            'formatter': 'verbose',
+            'level': 'ERROR',
+        },
+    },
+
+    # 日志器
+    'loggers': {
+        # 根日志器
+        '': {
+            'handlers': ['console', 'file_app', 'file_error'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        # 报告管理模块日志器
+        'report': {
+            'handlers': ['console', 'file_report', 'file_error'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        # Django 框架日志
+        'django': {
+            'handlers': ['console', 'file_app'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        # Django 请求日志
+        'django.request': {
+            'handlers': ['file_error'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+    },
+}

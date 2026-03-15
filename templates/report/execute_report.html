@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>执行报告</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+    <style>
+        .report-block {
+            border: 1px solid #e2e2e2;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 15px;
+            background: #fafafa;
+        }
+        .report-block-title {
+            font-size: 14px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 12px;
+            border-left: 3px solid #1E9FFF;
+            padding-left: 8px;
+        }
+        /* 折叠块 */
+        .collapse-content {
+            display: none;
+        }
+        .collapse-content.active {
+            display: block;
+        }
+        /* 进度条区域 */
+        .progress-section {
+            margin-top: 15px;
+            padding: 15px;
+            border: 1px solid #e2e2e2;
+            border-radius: 4px;
+            background: #fafafa;
+            display: none;
+        }
+        .progress-section.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+<div style="padding: 15px;">
+
+    <!-- ===== 任务创建区 ===== -->
+    <div class="report-block">
+        <div class="report-block-title">任务创建区</div>
+
+        <!-- 第一块：基本信息 -->
+        <div class="report-block">
+            <div class="report-block-title">基本信息</div>
+            <div class="layui-form">
+                <div class="layui-form-item">
+                    <div class="layui-inline">
+                        <label class="layui-form-label" style="width:100px;">经度</label>
+                        <div class="layui-input-inline" style="width:160px;">
+                            <input type="text" id="longitude" placeholder="选填，非负数" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-inline">
+                        <label class="layui-form-label" style="width:100px;">纬度</label>
+                        <div class="layui-input-inline" style="width:160px;">
+                            <input type="text" id="latitude" placeholder="选填，非负数" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-inline">
+                        <label class="layui-form-label" style="width:100px;">震级</label>
+                        <div class="layui-input-inline" style="width:160px;">
+                            <input type="text" id="magnitude" placeholder="选填，非负数" class="layui-input">
+                        </div>
+                    </div>
+                </div>
+                <div class="layui-form-item">
+                    <div class="layui-inline">
+                        <label class="layui-form-label" style="width:100px;">参考位置</label>
+                        <div class="layui-input-inline" style="width:220px;">
+                            <input type="text" id="address" placeholder="选填" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-inline">
+                        <label class="layui-form-label" style="width:100px;">发震时刻</label>
+                        <div class="layui-input-inline" style="width:200px;">
+                            <input type="datetime-local" id="ori_time" class="layui-input">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 第二块：基本文件 -->
+        <div class="report-block">
+            <div class="report-block-title">基本文件</div>
+            <div class="layui-form">
+                <div class="layui-form-item">
+                    <label class="layui-form-label" style="width:160px;">历史地震CSV文件</label>
+                    <div class="layui-input-block">
+                        <input type="file" id="history_record" accept=".csv" style="display:none;">
+                        <button type="button" class="layui-btn layui-btn-sm" onclick="document.getElementById('history_record').click()">
+                            <i class="layui-icon layui-icon-upload"></i> 选择文件
+                        </button>
+                        <span id="history_record_name" style="margin-left:10px;color:#666;font-size:12px;">未选择文件</span>
+                    </div>
+                </div>
+                <div class="layui-form-item">
+                    <label class="layui-form-label" style="width:160px;">烈度KML文件</label>
+                    <div class="layui-input-block">
+                        <input type="file" id="intensity_kml" accept=".kml" style="display:none;">
+                        <button type="button" class="layui-btn layui-btn-sm" onclick="document.getElementById('intensity_kml').click()">
+                            <i class="layui-icon layui-icon-upload"></i> 选择文件
+                        </button>
+                        <span id="intensity_kml_name" style="margin-left:10px;color:#666;font-size:12px;">未选择文件</span>
+                    </div>
+                </div>
+                <div class="layui-form-item">
+                    <label class="layui-form-label" style="width:160px;">PGA KML文件</label>
+                    <div class="layui-input-block">
+                        <input type="file" id="pga_kml" accept=".kml" style="display:none;">
+                        <button type="button" class="layui-btn layui-btn-sm" onclick="document.getElementById('pga_kml').click()">
+                            <i class="layui-icon layui-icon-upload"></i> 选择文件
+                        </button>
+                        <span id="pga_kml_name" style="margin-left:10px;color:#666;font-size:12px;">未选择文件</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 第三块：插值算法（默认折叠） -->
+        <div class="report-block">
+            <button type="button" class="layui-btn layui-btn-sm layui-btn-primary" id="toggleInterp">
+                ﹀ 插值算法
+            </button>
+            <div class="collapse-content" id="interpContent" style="margin-top:12px;">
+                <div class="layui-form">
+                    <div class="layui-form-item">
+                        <div class="layui-inline">
+                            <label class="layui-form-label" style="width:120px;">插值算法</label>
+                            <div class="layui-input-inline" style="width:200px;">
+                                <select id="interp_method" class="layui-select">
+                                    <option value="scipy_idw" selected>scipy_idw</option>
+                                    <option value="kriging">kriging</option>
+                                    <option value="qgis_idw">qgis_idw</option>
+                                    <option value="qgis_tin">qgis_tin</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="layui-form-item">
+                        <div class="layui-inline">
+                            <label class="layui-form-label" style="width:120px;">等值线采样间隔</label>
+                            <div class="layui-input-inline" style="width:160px;">
+                                <input type="text" id="sample_interval" placeholder="选填，正整数，默认1" class="layui-input">
+                            </div>
+                        </div>
+                        <div class="layui-inline">
+                            <label class="layui-form-label" style="width:120px;">最大采样点数</label>
+                            <div class="layui-input-inline" style="width:160px;">
+                                <input type="text" id="max_sample_points" placeholder="选填，正整数，默认10000" class="layui-input">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 创建按钮 -->
+        <div style="text-align:center;margin-top:10px;">
+            <button type="button" class="layui-btn" id="createTaskBtn" onclick="createTask()">
+                <i class="layui-icon layui-icon-add-1"></i> 创建任务
+            </button>
+        </div>
+    </div>
+
+    <!-- ===== 正在执行的任务 table ===== -->
+    <div class="report-block">
+        <div class="report-block-title">正在执行的任务</div>
+        <table class="layui-hide" id="runningTable" lay-filter="runningTable"></table>
+    </div>
+
+    <!-- ===== 任务进度条 ===== -->
+    <div class="progress-section" id="progressSection">
+        <div class="report-block-title">任务进度</div>
+        <div class="layui-progress layui-progress-big" lay-showpercent="true" lay-filter="progressBar">
+            <div class="layui-progress-bar" lay-percent="0%"></div>
+        </div>
+        <p id="progressText" style="color:#666;font-size:13px;margin-top:8px;">等待任务执行...</p>
+    </div>
+
+</div>
+
+<!-- 操作列按钮模板 -->
+<script type="text/html" id="runningToolbar">
+    <a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="stop">结束任务</a>
+</script>
+
+<script src="/static/layui/layui/layui.js"></script>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script>
+    // ---- CSRF Token 配置 ----
+    function getCookie(name) {
+        var cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            var cookies = document.cookie.split(';');
+            for (var i = 0; i < cookies.length; i++) {
+                var cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+    $.ajaxSetup({
+        beforeSend: function(xhr, settings) {
+            if (!/^(GET|HEAD|OPTIONS|TRACE)$/i.test(settings.type)) {
+                xhr.setRequestHeader("X-CSRFToken", getCookie('csrftoken'));
+            }
+        }
+    });
+
+    layui.use(['table', 'layer', 'element', 'form'], function(){
+        var table  = layui.table;
+        var layer  = layui.layer;
+        var element = layui.element;
+
+        // 渲染正在执行任务表格
+        var runningTable = table.render({
+            elem: '#runningTable',
+            url: '/report/task/running/',
+            page: true,
+            height: 'auto',
+            cols: [[
+                {field: 'ori_time',          title: '发震时刻',       width: 160},
+                {field: 'longitude',         title: '经度',           width: 120},
+                {field: 'latitude',          title: '纬度',           width: 120},
+                {field: 'magnitude',         title: '震级',           width: 80},
+                {field: 'address',           title: '参考位置',        minWidth: 150},
+                {field: 'created_at',        title: '创建时间',        width: 160},
+                {field: 'interp_method',     title: '插值算法',        width: 120},
+                {field: 'sample_interval',   title: '等值线采样间隔',   width: 130},
+                {field: 'max_sample_points', title: '最大采样点数',    width: 120},
+                {fixed: 'right', title: '操作', toolbar: '#runningToolbar', width: 100}
+            ]]
+        });
+
+        // 监听结束任务操作
+        table.on('tool(runningTable)', function(obj){
+            var data = obj.data;
+            if(obj.event === 'stop'){
+                layer.confirm('确定要结束该任务吗？', {icon: 3, title: '结束确认'}, function(index){
+                    $.post('/report/task/stop/', {task_id: data.id}, function(res){
+                        if(res.code === 0){
+                            layer.msg('任务已结束');
+                            runningTable.reload();
+                            hideProgress();
+                        } else {
+                            layer.msg(res.msg || '操作失败');
+                        }
+                    });
+                    layer.close(index);
+                });
+            }
+        });
+
+        // ---- 插值算法折叠/展开 ----
+        var interpExpanded = false;
+        document.getElementById('toggleInterp').onclick = function(){
+            interpExpanded = !interpExpanded;
+            var content = document.getElementById('interpContent');
+            if(interpExpanded){
+                content.classList.add('active');
+                this.textContent = '︿ 插值算法';
+            } else {
+                content.classList.remove('active');
+                this.textContent = '﹀ 插值算法';
+            }
+        };
+
+        // ---- 文件选择显示文件名 ----
+        ['history_record', 'intensity_kml', 'pga_kml'].forEach(function(id){
+            document.getElementById(id).addEventListener('change', function(){
+                var nameEl = document.getElementById(id + '_name');
+                nameEl.textContent = this.files.length > 0 ? this.files[0].name : '未选择文件';
+            });
+        });
+    });
+
+    // ---- 前端校验 ----
+    function validateForm() {
+        var longitude = $('#longitude').val().trim();
+        var latitude  = $('#latitude').val().trim();
+        var magnitude = $('#magnitude').val().trim();
+        var sample_interval    = $('#sample_interval').val().trim();
+        var max_sample_points  = $('#max_sample_points').val().trim();
+
+        // 校验经度
+        if(longitude !== ''){
+            var lon = parseFloat(longitude);
+            if(isNaN(lon) || lon < 0){
+                layer.msg('经度必须为非负整数或小数'); return false;
+            }
+        }
+        // 校验纬度
+        if(latitude !== ''){
+            var lat = parseFloat(latitude);
+            if(isNaN(lat) || lat < 0){
+                layer.msg('纬度必须为非负整数或小数'); return false;
+            }
+        }
+        // 校验震级
+        if(magnitude !== ''){
+            var mag = parseFloat(magnitude);
+            if(isNaN(mag) || mag < 0){
+                layer.msg('震级必须为非负整数或小数'); return false;
+            }
+        }
+        // 校验文件
+        var historyFile   = document.getElementById('history_record').files[0];
+        var intensityFile = document.getElementById('intensity_kml').files[0];
+        var pgaFile       = document.getElementById('pga_kml').files[0];
+
+        if(!historyFile){ layer.msg('请上传历史地震CSV文件'); return false; }
+        if(!intensityFile){ layer.msg('请上传烈度KML文件'); return false; }
+        if(!pgaFile){ layer.msg('请上传PGA KML文件'); return false; }
+
+        if(!historyFile.name.toLowerCase().endsWith('.csv')){
+            layer.msg('历史地震文件后缀必须为 .csv'); return false;
+        }
+        if(!intensityFile.name.toLowerCase().endsWith('.kml')){
+            layer.msg('烈度KML文件后缀必须为 .kml'); return false;
+        }
+        if(!pgaFile.name.toLowerCase().endsWith('.kml')){
+            layer.msg('PGA KML文件后缀必须为 .kml'); return false;
+        }
+
+        var maxSize = 1 * 1024 * 1024 * 1024;
+        if(historyFile.size > maxSize){ layer.msg('历史地震CSV文件大小不能超过1G'); return false; }
+        if(intensityFile.size > maxSize){ layer.msg('烈度KML文件大小不能超过1G'); return false; }
+        if(pgaFile.size > maxSize){ layer.msg('PGA KML文件大小不能超过1G'); return false; }
+
+        // 校验等值线采样间隔
+        if(sample_interval !== ''){
+            var si = parseInt(sample_interval);
+            if(isNaN(si) || si <= 0 || String(si) !== sample_interval){
+                layer.msg('等值线采样间隔必须为正整数'); return false;
+            }
+        }
+        // 校验最大采样点数
+        if(max_sample_points !== ''){
+            var mp = parseInt(max_sample_points);
+            if(isNaN(mp) || mp <= 0 || String(mp) !== max_sample_points){
+                layer.msg('最大采样点数必须为正整数'); return false;
+            }
+        }
+        return true;
+    }
+
+    // ---- 创建任务 ----
+    function createTask() {
+        if(!validateForm()) return;
+
+        var formData = new FormData();
+        formData.append('longitude',         $('#longitude').val().trim());
+        formData.append('latitude',          $('#latitude').val().trim());
+        formData.append('magnitude',         $('#magnitude').val().trim());
+        formData.append('address',           $('#address').val().trim());
+        formData.append('ori_time',          $('#ori_time').val().trim());
+        formData.append('interp_method',     $('#interp_method').val());
+        formData.append('sample_interval',   $('#sample_interval').val().trim());
+        formData.append('max_sample_points', $('#max_sample_points').val().trim());
+        formData.append('history_record',    document.getElementById('history_record').files[0]);
+        formData.append('intensity_kml',     document.getElementById('intensity_kml').files[0]);
+        formData.append('pga_kml',           document.getElementById('pga_kml').files[0]);
+
+        var loadIdx = layer.load(1, {shade: [0.3, '#000']});
+        $('#createTaskBtn').prop('disabled', true);
+
+        $.ajax({
+            url: '/report/task/create/',
+            type: 'POST',
+            data: formData,
+            processData: false,
+            contentType: false,
+            headers: {'X-CSRFToken': getCookie('csrftoken')},
+            success: function(res){
+                layer.close(loadIdx);
+                $('#createTaskBtn').prop('disabled', false);
+                if(res.code === 0){
+                    layer.msg('任务创建成功');
+                    // 刷新正在执行的任务列表
+                    layui.table.reload('runningTable');
+                    showProgress();
+                } else {
+                    layer.alert(res.msg || '创建失败', {icon: 2});
+                }
+            },
+            error: function(){
+                layer.close(loadIdx);
+                $('#createTaskBtn').prop('disabled', false);
+                layer.alert('请求失败，请检查网络或联系管理员', {icon: 2});
+            }
+        });
+    }
+
+    // ---- 进度条逻辑 ----
+    function showProgress(){
+        var section = document.getElementById('progressSection');
+        section.classList.add('active');
+        // 模拟进度条（实际进度需后端推送）
+        var pct = 0;
+        var timer = setInterval(function(){
+            pct = Math.min(pct + Math.floor(Math.random() * 5 + 1), 90);
+            layui.element.progress('progressBar', pct + '%');
+            document.getElementById('progressText').textContent = '任务执行中... ' + pct + '%';
+        }, 1500);
+        section._timer = timer;
+    }
+
+    function hideProgress(){
+        var section = document.getElementById('progressSection');
+        if(section._timer) clearInterval(section._timer);
+        section.classList.remove('active');
+        layui.element.progress('progressBar', '0%');
+        document.getElementById('progressText').textContent = '等待任务执行...';
+    }
+</script>
+</body>
+</html>
