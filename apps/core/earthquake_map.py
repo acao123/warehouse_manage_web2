@@ -565,16 +565,8 @@ def _parse_kml_faults(kml_data, ext, result):
         for lc in _extract_ls_coords(pm, nsmap, ns):
             if len(lc) < 2:
                 continue
-            cur = []
-            for lon, lat in lc:
-                if ext[0] <= lon <= ext[1] and ext[2] <= lat <= ext[3]:
-                    cur.append((lon, lat))
-                else:
-                    if len(cur) >= 2:
-                        result[ftype].append(cur)
-                    cur = []
-            if len(cur) >= 2:
-                result[ftype].append(cur)
+            if any(ext[0] <= lon <= ext[1] and ext[2] <= lat <= ext[3] for lon, lat in lc):
+                result[ftype].append(lc)
 
 
 def _ft(elem, tag, nsmap, ns):
@@ -1272,33 +1264,64 @@ def create_fault_layer(fault_lines, fault_type):
 # 统计函数
 # ============================================================
 
-def generate_statistics(filtered_quakes, radius_km):
+def generate_statistics(filtered_quakes, radius_km, current_lon=None, current_lat=None,
+                        current_magnitude=None):
     """
     生成历史地震统计信息
 
     参数:
         filtered_quakes (list): 筛选后地震记录
         radius_km (float): 筛选半径
+        current_lon (float): 本次地震震中经度（可选）
+        current_lat (float): 本次地震震中纬度（可选）
+        current_magnitude (float): 本次地震震级（可选）
 
     返回:
         str: 统计信息文本
     """
-    ct = len(filtered_quakes)
-    c1 = sum(1 for e in filtered_quakes if 4.7 <= e["magnitude"] <= 5.9)
-    c2 = sum(1 for e in filtered_quakes if 6.0 <= e["magnitude"] <= 6.9)
-    c3 = sum(1 for e in filtered_quakes if 7.0 <= e["magnitude"] <= 7.9)
-    c4 = sum(1 for e in filtered_quakes if e["magnitude"] >= 8.0)
-    mx = max(filtered_quakes, key=lambda e: e["magnitude"]) if filtered_quakes else None
+    # 将本次地震合并到统计列表中
+    # 本次地震无历史日期和地名信息，year/month/day 置0、location 置空，仅用于震级计数
+    all_quakes = list(filtered_quakes)
+    if current_magnitude is not None:
+        current_entry = {
+            "magnitude": current_magnitude,
+            "year": 0,
+            "month": 0,
+            "day": 0,
+            "location": "",
+        }
+        all_quakes.append(current_entry)
+
+    ct = len(all_quakes)
+    c1 = sum(1 for e in all_quakes if 4.7 <= e["magnitude"] <= 5.9)
+    c2 = sum(1 for e in all_quakes if 6.0 <= e["magnitude"] <= 6.9)
+    c3 = sum(1 for e in all_quakes if 7.0 <= e["magnitude"] <= 7.9)
+    c4 = sum(1 for e in all_quakes if e["magnitude"] >= 8.0)
+    mx = max(all_quakes, key=lambda e: e["magnitude"]) if all_quakes else None
 
     txt = (f"自1900年以来，本次地震震中{int(radius_km)}km范围内"
            f"曾发生{ct}次4.7级以上地震，"
            f"其中4.7~5.9级地震{c1}次，6.0~6.9级地震{c2}次，"
            f"7.0~7.9级地震{c3}次，8.0级以上地震{c4}次。")
     if mx:
-        y_s = str(mx.get("year", 0)) if mx.get("year", 0) > 0 else "未知"
-        m_s = str(mx.get("month", 0)) if mx.get("month", 0) > 0 else "未知"
-        d_s = str(mx.get("day", 0)) if mx.get("day", 0) > 0 else "未知"
-        txt += f"最大地震为{y_s}年{m_s}月{d_s}日{mx.get('location', '')}{mx['magnitude']}级地震"
+        y = mx.get("year", 0)
+        m = mx.get("month", 0)
+        d = mx.get("day", 0)
+        if y > 0:
+            if m > 0 and d > 0:
+                date_s = f"{y}年{m}月{d}日"
+            elif m > 0:
+                date_s = f"{y}年{m}月"
+            else:
+                date_s = f"{y}年"
+        else:
+            date_s = ""
+        location_s = mx.get("location", "")
+        # 仅在有日期或地名时才输出"最大地震为…"前缀，避免空白信息
+        if date_s or location_s:
+            txt += f"最大地震为{date_s}{location_s}{mx['magnitude']}级地震"
+        else:
+            txt += f"最大震级为{mx['magnitude']}级"
     return txt
 
 
@@ -1779,8 +1802,9 @@ def _draw_legend_star(layout, x, center_y, width, height):
     star_label = QgsLayoutItemLabel(layout)
     star_label.setText("★")
     star_format = QgsTextFormat()
-    star_format.setFont(QFont("SimSun", LEGEND_TITLE_FONT_SIZE_PT))
-    star_format.setSize(LEGEND_TITLE_FONT_SIZE_PT)
+    _star_font_size_pt = LEGEND_TITLE_FONT_SIZE_PT + 6
+    star_format.setFont(QFont("SimSun", _star_font_size_pt))
+    star_format.setSize(_star_font_size_pt)
     star_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     star_format.setColor(EPICENTER_COLOR)
     star_label.setTextFormat(star_format)
@@ -2142,7 +2166,9 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
     if result_path:
         print(f"  输出: {result_path}")
 
-    stat_text = generate_statistics(filtered, radius_km)
+    stat_text = generate_statistics(filtered, radius_km,
+                                    current_lon=center_lon, current_lat=center_lat,
+                                    current_magnitude=magnitude)
     print("=" * 65)
     print("【统计信息】")
     print(stat_text)
