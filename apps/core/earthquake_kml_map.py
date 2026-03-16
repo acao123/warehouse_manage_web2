@@ -135,6 +135,8 @@ LEGEND_ITEM_FONT_SIZE_PT = 9
 DATE_FONT_SIZE_PT = 9
 INTENSITY_LABEL_FONT_SIZE_PT = 10
 SCALE_FONT_SIZE_PT = 8
+# 比例尺缩小时字体最小值（磅）
+MIN_SCALE_FONT_SIZE_PT = 4
 
 # ============================================================
 # 【行政边界线样式】
@@ -155,17 +157,18 @@ COUNTY_DASH_GAP_MM = 0.2
 # ============================================================
 # 【断裂线样式】
 # ============================================================
-FAULT_HOLOCENE_COLOR = QColor(255, 50, 50)
+# 全新世断层：红色，最粗
+FAULT_HOLOCENE_COLOR = QColor(255, 0, 0)
 FAULT_HOLOCENE_WIDTH_MM = 0.5
-
-FAULT_LATE_PLEISTOCENE_COLOR = QColor(255, 0, 255)
+# 晚更新世断层：品红色，中等
+FAULT_LATE_PLEISTOCENE_COLOR = QColor(255, 53, 255)
 FAULT_LATE_PLEISTOCENE_WIDTH_MM = 0.35
-
-FAULT_EARLY_PLEISTOCENE_COLOR = QColor(0, 255, 150)
+# 早中更新世断层：绿色，最细
+FAULT_EARLY_PLEISTOCENE_COLOR = QColor(16, 136, 16)
 FAULT_EARLY_PLEISTOCENE_WIDTH_MM = 0.2
-
-FAULT_DEFAULT_COLOR = QColor(255, 200, 50)
-FAULT_DEFAULT_WIDTH_MM = 0.25
+# 其他断层
+FAULT_DEFAULT_COLOR = QColor(0, 0, 0)
+FAULT_DEFAULT_WIDTH_MM = 0.15
 
 # ============================================================
 # 【烈度圈颜色配置】
@@ -652,7 +655,7 @@ def _get_parent_folder_type(pm, folder_types, nsmap, ns):
 
 
 def _parse_kml_styles(root, nsmap, ns):
-    """解析KML样式"""
+    """解析KML样式（含StyleMap）"""
     sc = {}
     for tag in [f'kml:Style', f'{{{ns}}}Style', 'Style']:
         try:
@@ -679,11 +682,32 @@ def _parse_kml_styles(root, nsmap, ns):
                         sc['#' + sid] = ce.text.strip()
                         break
                 break
+    for tag in [f'kml:StyleMap', f'{{{ns}}}StyleMap', 'StyleMap']:
+        try:
+            smaps = root.findall('.//' + tag, nsmap) if 'kml:' in tag else root.findall('.//' + tag)
+        except Exception:
+            smaps = []
+        for sm in smaps:
+            sid = sm.get('id', '')
+            if not sid:
+                continue
+            for pt in [f'kml:Pair', f'{{{ns}}}Pair', 'Pair']:
+                try:
+                    pairs = sm.findall(pt, nsmap) if 'kml:' in pt else sm.findall(pt)
+                except Exception:
+                    pairs = []
+                for pair in pairs:
+                    key_text = _get_element_text(pair, 'key', nsmap, ns)
+                    if key_text == 'normal':
+                        su = _get_element_text(pair, 'styleUrl', nsmap, ns)
+                        if su in sc:
+                            sc['#' + sid] = sc[su]
+                        break
     return sc
 
 
 def _classify_fault_enhanced(name, style_url, description, style_colors, parent_folder_type):
-    """增强的断裂分类函数"""
+    """增强的断裂分类函数（含颜色推断）"""
     if parent_folder_type:
         return parent_folder_type
     combined = (name + " " + description).lower()
@@ -693,6 +717,21 @@ def _classify_fault_enhanced(name, style_url, description, style_colors, parent_
         return "late_pleistocene"
     if any(k in name or k in description for k in ["早中更新世", "早更新世", "中更新世"]):
         return "early_pleistocene"
+    cs = style_colors.get(style_url, "").lower().replace("#", "")
+    if len(cs) >= 6:
+        try:
+            if len(cs) == 8:
+                bb, gg, rr = int(cs[2:4], 16), int(cs[4:6], 16), int(cs[6:8], 16)
+            else:
+                bb, gg, rr = int(cs[0:2], 16), int(cs[2:4], 16), int(cs[4:6], 16)
+            if rr > 180 and gg < 100 and bb < 100:
+                return "holocene"
+            if rr > 150 and gg < 100 and bb > 150:
+                return "late_pleistocene"
+            if gg > 100 and rr < 100 and bb < 100:
+                return "early_pleistocene"
+        except ValueError:
+            pass
     return "default"
 
 
@@ -1131,10 +1170,10 @@ def create_intensity_layer(intensity_data):
     renderer = QgsCategorizedSymbolRenderer("intensity", categories)
     layer.setRenderer(renderer)
 
-    # 设置标注
+    # 设置标注（沿线标注）
     settings = QgsPalLayerSettings()
     settings.fieldName = "label"
-    settings.placement = Qgis.LabelPlacement.Line
+    settings.placement = Qgis.LabelPlacement.Curved
 
     text_format = QgsTextFormat()
     font = QFont(FONT_PATH_TIMES, INTENSITY_LABEL_FONT_SIZE_PT)
@@ -1424,17 +1463,51 @@ def _add_north_arrow(layout, map_left, map_top, map_width):
     print("[信息] 指北针添加完成")
 
 
+def _wrap_text_for_panel(text, panel_width_mm, font_size_pt, left_margin_mm=2.0, right_margin_mm=1.0):
+    """
+    根据面板宽度对中文文本进行自动折行处理。
+
+    参数:
+        text (str): 原始文本
+        panel_width_mm (float): 面板宽度（毫米）
+        font_size_pt (float): 字体大小（磅）
+        left_margin_mm (float): 左边距（毫米）
+        right_margin_mm (float): 右边距（毫米）
+    返回:
+        str: 折行后的文本
+    """
+    # 中文字符为等宽字，宽度 ≈ 字号 × (25.4/72) mm/pt ≈ 字号 × 0.353mm/pt
+    char_width_mm = font_size_pt * 0.353
+    available_mm = panel_width_mm - left_margin_mm - right_margin_mm
+    chars_per_line = max(1, int(available_mm / char_width_mm))
+
+    result_lines = []
+    for paragraph in text.split('\n'):
+        if not paragraph:
+            result_lines.append('')
+            continue
+        line = ''
+        for char in paragraph:
+            line += char
+            if len(line) >= chars_per_line:
+                result_lines.append(line)
+                line = ''
+        if line:
+            result_lines.append(line)
+    return '\n'.join(result_lines)
+
+
 def _add_info_panel(layout, x, y, width, height, description_text, scale, extent):
     """
-    添加右侧说明文字面板
+    添加右侧说明文字面板（含折行文字和比例尺）
 
     参数:
         layout: 布局对象
         x, y: 左上角坐标
         width, height: 宽高
         description_text: 说明文字
-        scale: 比例尺
-        extent: 地图范围
+        scale: 比例尺分母
+        extent: 地图范围（QgsRectangle）
     """
     # 白色背景
     bg_shape = QgsLayoutItemShape(layout)
@@ -1450,22 +1523,36 @@ def _add_info_panel(layout, x, y, width, height, description_text, scale, extent
     bg_shape.setSymbol(bg_symbol)
     layout.addLayoutItem(bg_shape)
 
-    # 说明文字
+    # 说明文字（右侧边框留 1mm ≥ 5px@150DPI，即 5×25.4/150≈0.85mm，取整为 1mm）
+    LEFT_MARGIN_MM = 2.0
+    RIGHT_MARGIN_MM = 1.0
+
+    # 处理首行缩进并自动折行
+    indent = "　　"  # 两个全角空格缩进
+    indented_text = indent + description_text.replace("\n", "\n" + indent)
+    wrapped_text = _wrap_text_for_panel(
+        indented_text, width, INFO_TEXT_FONT_SIZE_PT,
+        left_margin_mm=LEFT_MARGIN_MM, right_margin_mm=RIGHT_MARGIN_MM
+    )
+
     text_format = QgsTextFormat()
     text_format.setFont(QFont(FONT_PATH_SONGTI, INFO_TEXT_FONT_SIZE_PT))
     text_format.setSize(INFO_TEXT_FONT_SIZE_PT)
     text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     text_format.setColor(QColor(0, 0, 0))
 
-    # 处理首行缩进
-    indent = "　　"  # 两个全角空格
-    formatted_text = indent + description_text.replace("\n", "\n" + indent)
+    # 底部预留：比例尺区域 + 日期 ≈ 30mm
+    BOTTOM_RESERVED_MM = 30.0
+    text_area_height = max(5.0, height - BOTTOM_RESERVED_MM - 2.0)
 
     text_label = QgsLayoutItemLabel(layout)
-    text_label.setText(formatted_text)
+    text_label.setText(wrapped_text)
     text_label.setTextFormat(text_format)
-    text_label.attemptMove(QgsLayoutPoint(x + 2, y + 2, QgsUnitTypes.LayoutMillimeters))
-    text_label.attemptResize(QgsLayoutSize(width - 4, height - 30, QgsUnitTypes.LayoutMillimeters))
+    text_label.attemptMove(QgsLayoutPoint(x + LEFT_MARGIN_MM, y + 2.0,
+                                          QgsUnitTypes.LayoutMillimeters))
+    text_label.attemptResize(QgsLayoutSize(width - LEFT_MARGIN_MM - RIGHT_MARGIN_MM,
+                                           text_area_height,
+                                           QgsUnitTypes.LayoutMillimeters))
     text_label.setHAlign(Qt.AlignLeft)
     text_label.setVAlign(Qt.AlignTop)
     text_label.setFrameEnabled(False)
@@ -1473,25 +1560,157 @@ def _add_info_panel(layout, x, y, width, height, description_text, scale, extent
     text_label.setMode(QgsLayoutItemLabel.ModeFont)
     layout.addLayoutItem(text_label)
 
-    # 比例尺
-    scale_format = QgsTextFormat()
-    scale_format.setFont(QFont(FONT_PATH_TIMES, SCALE_FONT_SIZE_PT))
-    scale_format.setSize(SCALE_FONT_SIZE_PT)
-    scale_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    scale_format.setColor(QColor(0, 0, 0))
+    # ----------------------------------------------------------------
+    # 比例尺（参考 earthquake_map.py _add_scale_bar，适配面板宽度）
+    # ----------------------------------------------------------------
+    center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
+    lon_range_deg = extent.xMaximum() - extent.xMinimum()
+    map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
+    km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
+    target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
 
-    scale_label = QgsLayoutItemLabel(layout)
-    scale_label.setText(f"比例尺 1:{scale:,}")
-    scale_label.setTextFormat(scale_format)
-    scale_label.attemptMove(QgsLayoutPoint(x + 2, y + height - 22, QgsUnitTypes.LayoutMillimeters))
-    scale_label.attemptResize(QgsLayoutSize(width - 4, 8, QgsUnitTypes.LayoutMillimeters))
-    scale_label.setHAlign(Qt.AlignLeft)
-    scale_label.setVAlign(Qt.AlignVCenter)
-    scale_label.setFrameEnabled(False)
-    scale_label.setBackgroundEnabled(False)
-    layout.addLayoutItem(scale_label)
+    nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+    bar_km = nice_values[0]
+    for nv in nice_values:
+        if nv <= target_bar_km * 1.5:
+            bar_km = nv
+        else:
+            break
 
+    bar_length_mm = bar_km / km_per_mm if km_per_mm > 0 else 20.0
+    bar_length_mm = max(bar_length_mm, 20.0)
+    num_segments = 4
+
+    # 标准尺寸
+    std_bar_width = bar_length_mm + 16.0
+    std_bar_height = 14.0
+
+    # 面板内可用宽度（左右各留 2mm）
+    avail_width = width - 4.0
+    if std_bar_width > avail_width:
+        scale_factor = avail_width / std_bar_width
+        std_bar_width = avail_width
+        bar_length_mm *= scale_factor
+        std_bar_height *= scale_factor
+    else:
+        scale_factor = 1.0
+
+    # 比例尺垂直位置：位于日期标签上方，紧靠底部
+    DATE_SECTION_MM = 12.0
+    sb_height = std_bar_height
+    sb_y = y + height - DATE_SECTION_MM - sb_height - 2.0
+    sb_x = x + (width - std_bar_width) / 2.0
+
+    # 比例尺背景
+    sb_bg = QgsLayoutItemShape(layout)
+    sb_bg.setShapeType(QgsLayoutItemShape.Rectangle)
+    sb_bg.attemptMove(QgsLayoutPoint(sb_x, sb_y, QgsUnitTypes.LayoutMillimeters))
+    sb_bg.attemptResize(QgsLayoutSize(std_bar_width, sb_height, QgsUnitTypes.LayoutMillimeters))
+    sb_bg_symbol = QgsFillSymbol.createSimple({
+        'color': '255,255,255,255',
+        'outline_color': '0,0,0,255',
+        'outline_width': str(BORDER_WIDTH_MM),
+        'outline_width_unit': 'MM',
+    })
+    sb_bg.setSymbol(sb_bg_symbol)
+    sb_bg.setFrameEnabled(True)
+    sb_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+    layout.addLayoutItem(sb_bg)
+
+    # 比例尺分母文字
+    scale_font_size = max(MIN_SCALE_FONT_SIZE_PT, int(SCALE_FONT_SIZE_PT * scale_factor))
+    scale_tf = QgsTextFormat()
+    scale_tf.setFont(QFont(FONT_PATH_TIMES, scale_font_size))
+    scale_tf.setSize(scale_font_size)
+    scale_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+    scale_tf.setColor(QColor(0, 0, 0))
+
+    lbl_scale = QgsLayoutItemLabel(layout)
+    lbl_scale.setText(f"1:{scale:,}")
+    lbl_scale.setTextFormat(scale_tf)
+    lbl_scale.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
+    lbl_scale.attemptResize(QgsLayoutSize(std_bar_width, 4.5 * scale_factor,
+                                          QgsUnitTypes.LayoutMillimeters))
+    lbl_scale.setHAlign(Qt.AlignHCenter)
+    lbl_scale.setVAlign(Qt.AlignVCenter)
+    lbl_scale.setFrameEnabled(False)
+    lbl_scale.setBackgroundEnabled(False)
+    layout.addLayoutItem(lbl_scale)
+
+    # 黑白交替刻度条
+    bar_start_x = sb_x + (std_bar_width - bar_length_mm) / 2.0
+    bar_y = sb_y + 5.5 * scale_factor
+    bar_h = 1.8 * scale_factor
+    seg_width_mm = bar_length_mm / num_segments
+
+    for i in range(num_segments):
+        seg_shape = QgsLayoutItemShape(layout)
+        seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+        seg_x = bar_start_x + i * seg_width_mm
+        seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
+        seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h, QgsUnitTypes.LayoutMillimeters))
+        fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
+        seg_symbol = QgsFillSymbol.createSimple({
+            'color': fill_color,
+            'outline_color': '0,0,0,255',
+            'outline_width': '0.15',
+            'outline_width_unit': 'MM',
+        })
+        seg_shape.setSymbol(seg_symbol)
+        seg_shape.setFrameEnabled(False)
+        layout.addLayoutItem(seg_shape)
+
+    # 刻度标签
+    tick_font_size = max(MIN_SCALE_FONT_SIZE_PT, int(SCALE_FONT_SIZE_PT * scale_factor))
+    tick_tf = QgsTextFormat()
+    tick_tf.setFont(QFont(FONT_PATH_TIMES, tick_font_size))
+    tick_tf.setSize(tick_font_size)
+    tick_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+    tick_tf.setColor(QColor(0, 0, 0))
+
+    label_y = bar_y + bar_h + 0.3
+    label_h = 3.5 * scale_factor
+
+    lbl_0 = QgsLayoutItemLabel(layout)
+    lbl_0.setText("0")
+    lbl_0.setTextFormat(tick_tf)
+    lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y, QgsUnitTypes.LayoutMillimeters))
+    lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
+    lbl_0.setHAlign(Qt.AlignHCenter)
+    lbl_0.setVAlign(Qt.AlignTop)
+    lbl_0.setFrameEnabled(False)
+    lbl_0.setBackgroundEnabled(False)
+    layout.addLayoutItem(lbl_0)
+
+    mid_km = bar_km // 2
+    if mid_km > 0:
+        lbl_mid = QgsLayoutItemLabel(layout)
+        lbl_mid.setText(str(mid_km))
+        lbl_mid.setTextFormat(tick_tf)
+        mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
+        lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
+        lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_mid.setHAlign(Qt.AlignHCenter)
+        lbl_mid.setVAlign(Qt.AlignTop)
+        lbl_mid.setFrameEnabled(False)
+        lbl_mid.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_mid)
+
+    lbl_end = QgsLayoutItemLabel(layout)
+    lbl_end.setText(f"{bar_km} km")
+    lbl_end.setTextFormat(tick_tf)
+    end_x = bar_start_x + bar_length_mm - 4.0
+    lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
+    lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
+    lbl_end.setHAlign(Qt.AlignHCenter)
+    lbl_end.setVAlign(Qt.AlignTop)
+    lbl_end.setFrameEnabled(False)
+    lbl_end.setBackgroundEnabled(False)
+    layout.addLayoutItem(lbl_end)
+
+    # ----------------------------------------------------------------
     # 制图日期
+    # ----------------------------------------------------------------
     date_format = QgsTextFormat()
     date_format.setFont(QFont(FONT_PATH_SONGTI, DATE_FONT_SIZE_PT))
     date_format.setSize(DATE_FONT_SIZE_PT)
@@ -1504,20 +1723,26 @@ def _add_info_panel(layout, x, y, width, height, description_text, scale, extent
     date_label = QgsLayoutItemLabel(layout)
     date_label.setText(date_text)
     date_label.setTextFormat(date_format)
-    date_label.attemptMove(QgsLayoutPoint(x + 2, y + height - 12, QgsUnitTypes.LayoutMillimeters))
-    date_label.attemptResize(QgsLayoutSize(width - 4, 8, QgsUnitTypes.LayoutMillimeters))
+    date_label.attemptMove(QgsLayoutPoint(x + LEFT_MARGIN_MM, y + height - 10.0,
+                                          QgsUnitTypes.LayoutMillimeters))
+    date_label.attemptResize(QgsLayoutSize(width - LEFT_MARGIN_MM - RIGHT_MARGIN_MM, 8.0,
+                                           QgsUnitTypes.LayoutMillimeters))
     date_label.setHAlign(Qt.AlignLeft)
     date_label.setVAlign(Qt.AlignVCenter)
     date_label.setFrameEnabled(False)
     date_label.setBackgroundEnabled(False)
     layout.addLayoutItem(date_label)
 
-    print("[信息] 右侧说明面板添加完成")
+    print(f"[信息] 右侧说明面板添加完成，比例尺 1:{scale:,}")
 
 
 def _add_legend(layout, x, y, width, height, intensity_data, has_faults=True):
     """
-    添加底部图例（三行四列布局）
+    添加底部图例（动态行列布局）
+    布局规则：
+      - 烈度圈 ≤ 3 个时：两行五列
+      - 烈度圈 ≤ 8 个时：三行五列
+      - 烈度圈 > 8 个时：三行五列，仅展示烈度最大的 8 个
 
     参数:
         layout: 布局对象
@@ -1558,33 +1783,39 @@ def _add_legend(layout, x, y, width, height, intensity_data, has_faults=True):
     title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(title_label)
 
+    # 确定行列数和烈度显示数量
+    n_intensities = len(intensity_data)
+    if n_intensities <= 3:
+        rows = 2
+    else:
+        rows = 3
+    cols = 5
+
+    # 按烈度从大到小排序，超过 8 个时只保留最大的 8 个
+    sorted_intensities = sorted(intensity_data.keys(), reverse=True)
+    if n_intensities > 8:
+        sorted_intensities = sorted_intensities[:8]
+
     # 收集图例项
     legend_items = []
     legend_items.append(("震中", "epicenter"))
 
-    # 烈度圈（按烈度从大到小排序）
-    sorted_intensities = sorted(intensity_data.keys(), reverse=True)
     for intensity in sorted_intensities:
         roman = int_to_roman(intensity)
         legend_items.append((f"{roman}度区", "intensity", intensity))
 
-    # 断裂
     if has_faults:
         legend_items.append(("全新世断层", "fault_holocene"))
         legend_items.append(("晚更新世断层", "fault_late"))
         legend_items.append(("早中更新世断层", "fault_early"))
 
-    # 行政边界
     legend_items.append(("省界", "province"))
     legend_items.append(("市界", "city"))
     legend_items.append(("县界", "county"))
 
-    # 限制最多12项
-    legend_items = legend_items[:12]
+    # 裁剪到可用格数
+    legend_items = legend_items[:rows * cols]
 
-    # 三行四列布局
-    cols = 4
-    rows = 3
     col_width = width / cols
     row_height = (height - 8) / rows
     start_y = y + 8
@@ -1650,7 +1881,7 @@ def _add_legend(layout, x, y, width, height, intensity_data, has_faults=True):
         text_label.setBackgroundEnabled(False)
         layout.addLayoutItem(text_label)
 
-    print(f"[信息] 图例添加完成，共 {len(legend_items)} 项")
+    print(f"[信息] 图例添加完成，{rows}行{cols}列，共 {len(legend_items)} 项")
 
 
 def _draw_legend_line(layout, x, center_y, width, color, line_width_mm):
