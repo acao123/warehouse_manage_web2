@@ -129,10 +129,10 @@ FONT_PATH_TIMES = "Times New Roman"
 # ============================================================
 # 【字体大小常量】
 # ============================================================
-INFO_TEXT_FONT_SIZE_PT = 9
+INFO_TEXT_FONT_SIZE_PT = 10
 LEGEND_TITLE_FONT_SIZE_PT = 12
-LEGEND_ITEM_FONT_SIZE_PT = 9
-DATE_FONT_SIZE_PT = 9
+LEGEND_ITEM_FONT_SIZE_PT = 10
+DATE_FONT_SIZE_PT = 10
 INTENSITY_LABEL_FONT_SIZE_PT = 10
 SCALE_FONT_SIZE_PT = 8
 # 比例尺缩小时字体最小值（磅）
@@ -2275,7 +2275,7 @@ if __name__ == "__main__":
         "综合考虑震中附近地质构造背景、地震波衰减特性，"
         "估计了本次地震的地震动预测图。"
     )
-    INPUT_MAGNITUDE = 5.5
+    INPUT_MAGNITUDE = 3.5
     OUTPUT_PATH = r"../../data/geology/output_earthquake_kml_map_qgis.png"
 
     if not os.path.exists(INPUT_KML_PATH):
