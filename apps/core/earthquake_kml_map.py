@@ -2109,11 +2109,9 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
     print("\n[3/9] 计算烈度面积...")
     areas = calculate_intensity_areas(intensity_data)
 
-    # 初始化QGIS应用
-    if not QgsApplication.instance():
-        qgs_app = QgsApplication([], False)
-        qgs_app.initQgis()
-        print("[信息] QGIS应用初始化完成")
+    # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
+    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()
     project.clear()

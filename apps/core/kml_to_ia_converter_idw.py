@@ -38,32 +38,10 @@ import numpy as np
 from typing import Iterator, List, Literal, Optional, Tuple
 from xml.etree import ElementTree as ET
 
-# ==================== QGIS 初始化（必须在导入其他 QGIS 模块前执行）====================
+# ==================== QGIS 核心模块（延迟初始化，不在模块级别初始化 QgsApplication）====================
+# QGIS Application 的初始化由 QGISManager 统一管理，模块级别仅导入类定义，
+# 不在导入时执行 setPrefixPath / initQgis 等副作用操作。
 from qgis.core import QgsApplication
-
-QGIS_PREFIX = r"D:\App\dev\QGIS3.40.15"
-
-# 设置 QGIS 安装路径（根据实际安装位置修改）
-# Windows 示例路径，Linux/Mac 需相应调整
-QGIS_PREFIX_PATH = os.environ.get(
-    'QGIS_PREFIX_PATH',
-    r'D:\App\dev\QGIS3.40.15\apps\qgis-ltr'
-)
-
-# 初始化 QGIS Application（无 GUI 模式）
-QgsApplication.setPrefixPath(QGIS_PREFIX_PATH, True)
-qgs = QgsApplication([], False)
-qgs.initQgis()
-
-# 初始化 Processing 框架
-sys.path.append(os.path.join(QGIS_PREFIX, "apps", "qgis-ltr", "python", "plugins"))
-from processing.core.Processing import Processing
-Processing.initialize()
-
-# ==================== GDAL/OGR 模块 ====================
-from osgeo import gdal, osr, ogr
-
-# ==================== QGIS 核心模块 ====================
 from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsFeature,
@@ -75,7 +53,13 @@ from qgis.core import (
 )
 from PyQt5.QtCore import QVariant
 
+QGIS_PREFIX = r"D:\App\dev\QGIS3.40.15"  # 仅用于文档说明，实际路径由 QGISManager 的 QGIS_PREFIX_PATH 环境变量控制
+
+# ==================== GDAL/OGR 模块 ====================
+from osgeo import gdal, osr, ogr
+
 # ==================== QGIS Processing ====================
+# Processing 框架在首次使用时按需初始化（见 _ensure_processing()）
 import processing
 
 # ==================== 启用GDAL异常处理 ====================
@@ -190,6 +174,30 @@ class KmlToIaConverter:
         self._geo_transform: Optional[tuple] = None
         self._n_cols: int = 0
         self._n_rows: int = 0
+
+    # ==================== QGIS / Processing 延迟初始化 ====================
+
+    @staticmethod
+    def _ensure_processing():
+        """
+        按需初始化 QGIS Application 和 Processing 框架。
+
+        模块导入时不再执行副作用操作；首次调用 run() 时通过此方法
+        确保 QGIS 已就绪，避免在 Web 进程导入期间意外创建多个
+        QgsApplication 实例或占用不必要的系统资源。
+        """
+        from core.qgis_manager import get_qgis_manager
+        get_qgis_manager().ensure_initialized()
+
+        # 初始化 Processing 框架（若尚未初始化）
+        try:
+            from processing.core.Processing import Processing as _Processing
+            _Processing.initialize()
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                'Processing 框架初始化异常（可能已经初始化或环境不支持）: %s', exc
+            )
 
     # ==================== KML 解析 ====================
 
@@ -818,6 +826,9 @@ class KmlToIaConverter:
         print(f"插值方法: {self.interp_method.upper()}")
         print(f"输出PGA.tif: {'是' if self.export_pga else '否'}")
         print("=" * 60)
+
+        # 确保 QGIS Application 和 Processing 框架已就绪
+        self._ensure_processing()
 
         # 1. 检查输入文件
         if not os.path.exists(self.kml_path):

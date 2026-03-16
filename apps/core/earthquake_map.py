@@ -2146,11 +2146,9 @@ def _generate_earthquake_map_impl(center_lon, center_lat, magnitude, csv_path,
     print(f"  地图范围: {extent.toString()}")
     print(f"  地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm\n")
 
-    # 初始化QGIS应用
-    if not QgsApplication.instance():
-        qgs_app = QgsApplication([], False)
-        qgs_app.initQgis()
-        print("[信息] QGIS应用初始化完成")
+    # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
+    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()
     project.clear()
