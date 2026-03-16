@@ -13,6 +13,7 @@
 import os
 import sys
 import math
+import unicodedata
 import zipfile
 import requests
 import re
@@ -1465,7 +1466,7 @@ def _add_north_arrow(layout, map_left, map_top, map_width):
 
 def _wrap_text_for_panel(text, panel_width_mm, font_size_pt, left_margin_mm=2.0, right_margin_mm=1.0):
     """
-    根据面板宽度对中文文本进行自动折行处理。
+    根据面板宽度对混合文本（汉字、英文、数字、经纬度符号等）进行自动折行处理。
 
     参数:
         text (str): 原始文本
@@ -1476,10 +1477,19 @@ def _wrap_text_for_panel(text, panel_width_mm, font_size_pt, left_margin_mm=2.0,
     返回:
         str: 折行后的文本
     """
-    # 中文字符为等宽字，宽度 ≈ 字号 × (25.4/72) mm/pt ≈ 字号 × 0.353mm/pt
-    char_width_mm = font_size_pt * 0.353
+    # 全角字符（汉字等）宽度 ≈ 字号 × (25.4/72) mm/pt ≈ 字号 × 0.353mm/pt
+    # 半角字符（数字、英文字母、标点符号，含 ° 等 ASCII 符号）宽度约为全角字符的一半
+    full_char_width_mm = font_size_pt * 0.353
+    half_char_width_mm = full_char_width_mm * 0.5
     available_mm = panel_width_mm - left_margin_mm - right_margin_mm
-    chars_per_line = max(1, int(available_mm / char_width_mm))
+
+    def _char_width(ch):
+        """根据 Unicode 东亚字符宽度属性返回显示宽度（毫米）。
+        'W'(Wide) 和 'F'(Fullwidth) 为全角字符（汉字、全角符号等），其余为半角。"""
+        eaw = unicodedata.east_asian_width(ch)
+        if eaw in ('W', 'F'):
+            return full_char_width_mm
+        return half_char_width_mm
 
     result_lines = []
     for paragraph in text.split('\n'):
@@ -1487,11 +1497,16 @@ def _wrap_text_for_panel(text, panel_width_mm, font_size_pt, left_margin_mm=2.0,
             result_lines.append('')
             continue
         line = ''
+        line_width = 0.0
         for char in paragraph:
-            line += char
-            if len(line) >= chars_per_line:
+            cw = _char_width(char)
+            if line_width + cw > available_mm and line:
                 result_lines.append(line)
-                line = ''
+                line = char
+                line_width = cw
+            else:
+                line += char
+                line_width += cw
         if line:
             result_lines.append(line)
     return '\n'.join(result_lines)
@@ -1600,22 +1615,6 @@ def _add_info_panel(layout, x, y, width, height, description_text, scale, extent
     sb_height = std_bar_height
     sb_y = y + height - DATE_SECTION_MM - sb_height - 2.0
     sb_x = x + (width - std_bar_width) / 2.0
-
-    # 比例尺背景
-    sb_bg = QgsLayoutItemShape(layout)
-    sb_bg.setShapeType(QgsLayoutItemShape.Rectangle)
-    sb_bg.attemptMove(QgsLayoutPoint(sb_x, sb_y, QgsUnitTypes.LayoutMillimeters))
-    sb_bg.attemptResize(QgsLayoutSize(std_bar_width, sb_height, QgsUnitTypes.LayoutMillimeters))
-    sb_bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    sb_bg.setSymbol(sb_bg_symbol)
-    sb_bg.setFrameEnabled(True)
-    sb_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(sb_bg)
 
     # 比例尺分母文字
     scale_font_size = max(MIN_SCALE_FONT_SIZE_PT, int(SCALE_FONT_SIZE_PT * scale_factor))
