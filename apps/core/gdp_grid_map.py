@@ -16,7 +16,23 @@ import sys
 import math
 import re
 import struct
+import logging
 from xml.etree import ElementTree as ET
+
+# ============================================================
+# Django settings 导入（可选）
+# ============================================================
+try:
+    from django.conf import settings as _django_settings
+    _DJANGO_AVAILABLE = True
+except ImportError:
+    _django_settings = None
+    _DJANGO_AVAILABLE = False
+
+# ============================================================
+# 日志配置
+# ============================================================
+logger = logging.getLogger('report.core.gdp_grid_map')
 
 # ============================================================
 # QGIS 相关模块导入
@@ -78,24 +94,40 @@ from qgis.PyQt.QtGui import QColor, QFont, QGradient, QLinearGradient
 # 常量定义
 # ============================================================
 
-# GDP数据文件路径（相对于脚本所在目录）
-GDP_DIS_TIF_PATH = "../../data/geology/图7/gdp2020.tif"
+# 数据文件路径（优先从 Django settings 读取）
+_DEFAULT_BASE = "../../data/geology/"
+
+# GDP数据文件路径
+GDP_DIS_TIF_PATH = (
+    getattr(_django_settings, 'GDP_TIF_PATH', _DEFAULT_BASE + '图7/gdp2020.tif')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '图7/gdp2020.tif'
+)
 
 # 省市县边界数据路径
 PROVINCE_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国省份行政区划数据/省级行政区划/省.shp"
+    getattr(_django_settings, 'PROVINCE_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
 )
 CITY_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国市级行政区划数据/市级行政区划/市.shp"
+    getattr(_django_settings, 'CITY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
 )
 COUNTY_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国县级行政区划数据/县级行政区划/县.shp"
+    getattr(_django_settings, 'COUNTY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
 )
 # 地级市点位数据
-CITY_POINTS_SHP_PATH = "../../data/geology/2023地级市点位数据/地级市点位数据.shp"
+CITY_POINTS_SHP_PATH = (
+    getattr(_django_settings, 'CITY_POINTS_SHP_PATH',
+            _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
+)
 
 # === 布局尺寸常量 ===
 MAP_TOTAL_WIDTH_MM = 220.0
@@ -1877,6 +1909,17 @@ def generate_gdp_grid_map(longitude, latitude, magnitude,
     返回:
         str: 输出文件的绝对路径，失败返回None
     """
+    logger.info('开始生成GDP网格图: lon=%.4f lat=%.4f M=%.1f output=%s',
+                longitude, latitude, magnitude, output_path)
+    try:
+        return _generate_gdp_grid_map_impl(longitude, latitude, magnitude, output_path, kml_path)
+    except Exception as exc:
+        logger.error('生成GDP网格图失败: %s', exc, exc_info=True)
+        raise
+
+
+def _generate_gdp_grid_map_impl(longitude, latitude, magnitude, output_path, kml_path):
+    """generate_gdp_grid_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成GDP公里网格分布图")
     print(f"  震中: ({longitude}, {latitude}), 震级: M{magnitude}")

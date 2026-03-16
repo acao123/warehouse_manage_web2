@@ -6,9 +6,16 @@
 公式: log(Dn) = 1.299 + 1.076*log(Ia) - 12.197*a_c + 5.434*a_c*log(Ia)
 """
 
+import logging
+
 from osgeo import gdal, osr
 import numpy as np
 import math
+
+# ============================================================
+# 日志配置
+# ============================================================
+logger = logging.getLogger('report.core.ac_ia_to_dn')
 
 
 def get_search_radius(magnitude):
@@ -281,7 +288,21 @@ def calculate_dn_optimized(ac_tif_path, ia_tif_path, output_path, epicenter_lon,
         epicenter_lat: 震中纬度
         magnitude: 震级
     """
+    logger.info('开始计算Dn.tif: ac=%s ia=%s output=%s lon=%.4f lat=%.4f M=%.1f',
+                ac_tif_path, ia_tif_path, output_path, epicenter_lon, epicenter_lat, magnitude)
+    try:
+        _calculate_dn_optimized_impl(
+            ac_tif_path, ia_tif_path, output_path, epicenter_lon, epicenter_lat, magnitude
+        )
+        logger.info('Dn.tif 计算完成: %s', output_path)
+    except Exception as exc:
+        logger.error('Dn.tif 计算失败: %s', exc, exc_info=True)
+        raise
 
+
+def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
+                                   epicenter_lon, epicenter_lat, magnitude):
+    """calculate_dn_optimized 的实际实现。"""
     # 获取搜索半径
     radius_km = get_search_radius(magnitude)
     print(f"震级: {magnitude}, 搜索半径: {radius_km} km")

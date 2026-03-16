@@ -27,7 +27,23 @@ import sys
 import math
 import re
 import struct
+import logging
 from xml.etree import ElementTree as ET
+
+# ============================================================
+# Django settings 导入（可选）
+# ============================================================
+try:
+    from django.conf import settings as _django_settings
+    _DJANGO_AVAILABLE = True
+except ImportError:
+    _django_settings = None
+    _DJANGO_AVAILABLE = False
+
+# ============================================================
+# 日志配置
+# ============================================================
+logger = logging.getLogger('report.core.earthquake_land_use_map')
 
 # ============================================================
 # QGIS 相关模块导入
@@ -85,25 +101,41 @@ from qgis.PyQt.QtGui import QColor, QFont
 # 常量定义
 # ============================================================
 
-# 数据文件路径（相对于脚本所在目录）
+# 数据文件路径（优先从 Django settings 读取）
+_DEFAULT_BASE = "../../data/geology/"
+
 # 土地利用类型TIF文件路径
-LAND_USE_TIF_PATH = "../../data/geology/图5/全国土壤利用分类.tif"
+LAND_USE_TIF_PATH = (
+    getattr(_django_settings, 'LAND_USE_TIF_PATH',
+            _DEFAULT_BASE + '图5/全国土壤利用分类.tif')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '图5/全国土壤利用分类.tif'
+)
 
 # 省市县边界数据路径
 PROVINCE_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国省份行政区划数据/省级行政区划/省.shp"
+    getattr(_django_settings, 'PROVINCE_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
 )
 CITY_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国市级行政区划数据/市级行政区划/市.shp"
+    getattr(_django_settings, 'CITY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
 )
 COUNTY_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国县级行政区划数据/县级行政区划/县.shp"
+    getattr(_django_settings, 'COUNTY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
 )
 # 地级市点位数据
-CITY_POINTS_SHP_PATH = "../../data/geology/2023地级市点位数据/地级市点位数据.shp"
+CITY_POINTS_SHP_PATH = (
+    getattr(_django_settings, 'CITY_POINTS_SHP_PATH',
+            _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
+)
 
 # === 布局尺寸常量 ===
 MAP_TOTAL_WIDTH_MM = 220.0  # 总宽度(mm)
@@ -1998,6 +2030,20 @@ def generate_earthquake_land_use_map(longitude, latitude, magnitude,
     返回:
         str - 输出文件的绝对路径，失败返回None
     """
+    logger.info('开始生成土地利用类型图: lon=%.4f lat=%.4f M=%.1f output=%s',
+                longitude, latitude, magnitude, output_path)
+    try:
+        return _generate_earthquake_land_use_map_impl(
+            longitude, latitude, magnitude, output_path, kml_path
+        )
+    except Exception as exc:
+        logger.error('生成土地利用类型图失败: %s', exc, exc_info=True)
+        raise
+
+
+def _generate_earthquake_land_use_map_impl(longitude, latitude, magnitude,
+                                            output_path, kml_path):
+    """generate_earthquake_land_use_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震土地利用类型图")
     print(f"  震中: ({longitude}, {latitude}), 震级: M{magnitude}")

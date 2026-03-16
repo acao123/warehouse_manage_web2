@@ -17,10 +17,26 @@ import csv
 import math
 import zipfile
 import datetime
+import logging
 import requests
 from io import BytesIO
 from lxml import etree
 from PIL import Image
+
+# ============================================================
+# Django settings 导入（QGIS脚本可在Django项目外独立运行，因此做可选导入）
+# ============================================================
+try:
+    from django.conf import settings as _django_settings
+    _DJANGO_AVAILABLE = True
+except ImportError:
+    _django_settings = None
+    _DJANGO_AVAILABLE = False
+
+# ============================================================
+# 日志配置
+# ============================================================
+logger = logging.getLogger('report.core.earthquake_map')
 
 # ============================================================
 # QGIS 相关模块导入
@@ -68,7 +84,10 @@ from qgis.PyQt.QtGui import QColor, QFont
 # ============================================================
 # 天地图配置
 # ============================================================
-TIANDITU_TK = "1ef76ef90c6eb961cb49618f9b1a399d"
+TIANDITU_TK = (
+    getattr(_django_settings, 'TIANDITU_TK', '1ef76ef90c6eb961cb49618f9b1a399d')
+    if _DJANGO_AVAILABLE else '1ef76ef90c6eb961cb49618f9b1a399d'
+)
 
 # ============================================================
 # 布局尺寸常量（参考 earthquake_elevation_map.py）
@@ -198,21 +217,34 @@ MAGNITUDE_CONFIG = {
 }
 
 # ============================================================
-# 数据文件路径（相对于脚本所在目录）
+# 数据文件路径（优先从 Django settings 读取，否则使用内置默认值）
 # ============================================================
+_DEFAULT_BASE = "../../data/geology/"
+
 SHP_PROVINCE_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国省份行政区划数据/省级行政区划/省.shp"
+    getattr(_django_settings, 'PROVINCE_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
 )
 SHP_CITY_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国市级行政区划数据/市级行政区划/市.shp"
+    getattr(_django_settings, 'CITY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
 )
 SHP_COUNTY_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国县级行政区划数据/县级行政区划/县.shp"
+    getattr(_django_settings, 'COUNTY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
 )
-KMZ_FAULT_PATH = "../../data/geology/断层/全国六代图断裂.KMZ"
+KMZ_FAULT_PATH = (
+    getattr(_django_settings, 'FAULT_KMZ_PATH',
+            _DEFAULT_BASE + '断层/全国六代图断裂.KMZ')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '断层/全国六代图断裂.KMZ'
+)
 
 # WGS84坐标系
 CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -2059,6 +2091,20 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
     返回:
         str: 统计信息文本
     """
+    logger.info('开始生成历史地震分布图: lon=%.4f lat=%.4f M=%.1f csv=%s output=%s',
+                center_lon, center_lat, magnitude, csv_path, output_path)
+    try:
+        return _generate_earthquake_map_impl(
+            center_lon, center_lat, magnitude, csv_path, output_path, csv_encoding
+        )
+    except Exception as exc:
+        logger.error('生成历史地震分布图失败: %s', exc, exc_info=True)
+        raise
+
+
+def _generate_earthquake_map_impl(center_lon, center_lat, magnitude, csv_path,
+                                   output_path, csv_encoding):
+    """generate_earthquake_map 的实际实现（由 generate_earthquake_map 调用）。"""
     print("=" * 65)
     print("  历 史 地 震 分 布 图 生 成 工 具（QGIS版）")
     print("=" * 65)

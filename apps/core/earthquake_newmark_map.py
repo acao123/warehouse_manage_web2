@@ -24,12 +24,28 @@ import os
 import sys
 import math
 import re
+import logging
 import tempfile
 import shutil
 import requests
 from xml.etree import ElementTree as ET
 from PIL import Image
 from io import BytesIO
+
+# ============================================================
+# Django settings 导入（可选）
+# ============================================================
+try:
+    from django.conf import settings as _django_settings
+    _DJANGO_AVAILABLE = True
+except ImportError:
+    _django_settings = None
+    _DJANGO_AVAILABLE = False
+
+# ============================================================
+# 日志配置
+# ============================================================
+logger = logging.getLogger('report.core.earthquake_newmark_map')
 
 # ============================================================
 # QGIS 相关模块导入
@@ -91,24 +107,39 @@ except ImportError:
 # ============================================================
 
 # 天地图配置
-TIANDITU_TK = "1ef76ef90c6eb961cb49618f9b1a399d"
+TIANDITU_TK = (
+    getattr(_django_settings, 'TIANDITU_TK', '1ef76ef90c6eb961cb49618f9b1a399d')
+    if _DJANGO_AVAILABLE else '1ef76ef90c6eb961cb49618f9b1a399d'
+)
 
-# 数据文件路径（相对于脚本所在目录）
-DN_TIF_PATH = "../../data/geology/Ia/Dn.tif"
+# 数据文件路径（优先从 Django settings 读取）
+_DEFAULT_BASE = "../../data/geology/"
+
+DN_TIF_PATH = _DEFAULT_BASE + 'Ia/Dn.tif'
 PROVINCE_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国省份行政区划数据/省级行政区划/省.shp"
+    getattr(_django_settings, 'PROVINCE_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
 )
 CITY_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国市级行政区划数据/市级行政区划/市.shp"
+    getattr(_django_settings, 'CITY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
 )
 COUNTY_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国县级行政区划数据/县级行政区划/县.shp"
+    getattr(_django_settings, 'COUNTY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
 )
 # 地级市点位数据
-CITY_POINTS_SHP_PATH = "../../data/geology/2023地级市点位数据/地级市点位数据.shp"
+CITY_POINTS_SHP_PATH = (
+    getattr(_django_settings, 'CITY_POINTS_SHP_PATH',
+            _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
+)
 
 # === 布局尺寸常量 ===
 MAP_TOTAL_WIDTH_MM = 220.0
@@ -2271,6 +2302,20 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
                                     output_path="output_newmark_map.png",
                                     kml_path=None, dn_tif_path=None):
     """生成地震Newmark位移分布图（主入口函数）"""
+    logger.info('开始生成Newmark位移分布图: lon=%.4f lat=%.4f M=%.1f output=%s',
+                longitude, latitude, magnitude, output_path)
+    try:
+        return _generate_earthquake_newmark_map_impl(
+            longitude, latitude, magnitude, output_path, kml_path, dn_tif_path
+        )
+    except Exception as exc:
+        logger.error('生成Newmark位移分布图失败: %s', exc, exc_info=True)
+        raise
+
+
+def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
+                                           output_path, kml_path, dn_tif_path):
+    """generate_earthquake_newmark_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震Newmark位移分布图")
     print(f"  震中: ({longitude}, {latitude}), 震级: M{magnitude}")
