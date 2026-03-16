@@ -552,7 +552,7 @@ def execute_report_task(task_id: int) -> None:
         # 最终强制释放所有 QGIS 资源，防止内存积累
         try:
             from core.qgis_manager import get_qgis_manager
-            get_qgis_manager()._cleanup_session(task_id)
+            get_qgis_manager().cleanup_session(task_id)
         except Exception as cleanup_exc:
             logger.warning('[任务 %s] 最终资源清理异常: %s', task_id, cleanup_exc)
         gc.collect()

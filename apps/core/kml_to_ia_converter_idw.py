@@ -53,7 +53,7 @@ from qgis.core import (
 )
 from PyQt5.QtCore import QVariant
 
-QGIS_PREFIX = r"D:\App\dev\QGIS3.40.15"
+QGIS_PREFIX = r"D:\App\dev\QGIS3.40.15"  # 仅用于文档说明，实际路径由 QGISManager 的 QGIS_PREFIX_PATH 环境变量控制
 
 # ==================== GDAL/OGR 模块 ====================
 from osgeo import gdal, osr, ogr
@@ -193,8 +193,11 @@ class KmlToIaConverter:
         try:
             from processing.core.Processing import Processing as _Processing
             _Processing.initialize()
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                'Processing 框架初始化异常（可能已经初始化或环境不支持）: %s', exc
+            )
 
     # ==================== KML 解析 ====================
 

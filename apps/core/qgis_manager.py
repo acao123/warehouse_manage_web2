@@ -172,6 +172,18 @@ class QGISManager:
                 logger.debug('%s 释放 QGIS 资源，剩余会话数: %d', log_prefix, self._active_sessions)
                 self._resource_lock.release()
 
+    def cleanup_session(self, task_id: Optional[int] = None):
+        """
+        清理单次会话的 QGIS 资源（公共接口）。
+
+        在外部代码（如任务执行器）需要手动触发资源清理时调用，
+        例如在 ``finally`` 块中确保任务结束后释放图层和布局。
+
+        参数:
+            task_id: 任务 ID（用于日志追踪）
+        """
+        self._cleanup_session(task_id)
+
     def _cleanup_session(self, task_id: Optional[int] = None):
         """清理单次会话的资源"""
         log_prefix = f'[任务 {task_id}]' if task_id else '[QGIS]'
