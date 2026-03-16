@@ -36,6 +36,8 @@ class ReportTask(models.Model):
         max_digits=11, decimal_places=7, verbose_name='纬度'
     )
     magnitude = models.FloatField(verbose_name='震级')
+    foc_depth = models.FloatField(default=10.0, verbose_name='震源深度')
+    cache_base_map = models.SmallIntegerField(default=0, verbose_name='天地图缓存')
     address = models.CharField(max_length=100, verbose_name='参考位置')
     ori_time = models.DateTimeField(verbose_name='发震时刻')
     interp_method = models.CharField(

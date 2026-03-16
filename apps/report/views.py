@@ -84,6 +84,8 @@ def create_task_view(request):
     longitude_str = request.POST.get('longitude', '').strip()
     latitude_str = request.POST.get('latitude', '').strip()
     magnitude_str = request.POST.get('magnitude', '').strip()
+    foc_depth_str = request.POST.get('foc_depth', '').strip()
+    cache_base_map_str = request.POST.get('cache_base_map', '0').strip()
     address = request.POST.get('address', '').strip()
     ori_time_str = request.POST.get('ori_time', '').strip()
 
@@ -127,6 +129,24 @@ def create_task_view(request):
                 return JsonResponse({'code': 1, 'msg': '震级不能为负数'})
         except ValueError:
             return JsonResponse({'code': 1, 'msg': '震级格式错误，请输入整数或小数'})
+
+    # 校验震源深度
+    foc_depth = None
+    if foc_depth_str:
+        try:
+            foc_depth = float(foc_depth_str)
+            if foc_depth < 0:
+                return JsonResponse({'code': 1, 'msg': '震源深度不能为负数'})
+        except ValueError:
+            return JsonResponse({'code': 1, 'msg': '震源深度格式错误，请输入整数或小数'})
+
+    # 解析天地图缓存选项
+    try:
+        cache_base_map = int(cache_base_map_str)
+        if cache_base_map not in (0, 1):
+            cache_base_map = 0
+    except (ValueError, TypeError):
+        cache_base_map = 0
 
     # 校验等值线采样间隔
     sample_interval = 1
@@ -198,6 +218,10 @@ def create_task_view(request):
     if longitude is None or latitude is None or magnitude is None or not address or not ori_time_str:
         return JsonResponse({'code': 1, 'msg': '基本信息不全!'})
 
+    # 震源深度默认值
+    if foc_depth is None:
+        foc_depth = 10.0
+
     # 解析发震时刻
     ori_time = None
     if ori_time_str:
@@ -238,6 +262,8 @@ def create_task_view(request):
             longitude=longitude,
             latitude=latitude,
             magnitude=magnitude,
+            foc_depth=foc_depth,
+            cache_base_map=cache_base_map,
             address=address,
             ori_time=ori_time,
             interp_method=interp_method,
@@ -498,6 +524,8 @@ def _task_to_dict(task: ReportTask) -> dict:
         'longitude': str(task.longitude),
         'latitude': str(task.latitude),
         'magnitude': task.magnitude,
+        'foc_depth': task.foc_depth,
+        'cache_base_map': task.cache_base_map,
         'address': task.address,
         'ori_time': task.ori_time.strftime('%Y-%m-%d %H:%M:%S') if task.ori_time else '',
         'interp_method': task.interp_method,
