@@ -265,7 +265,7 @@ LOGGING = {
         },
         # 应用总日志文件（按天轮转，保留30天）
         'file_app': {
-            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'class': 'concurrent_log_handler.ConcurrentTimedRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'app.log'),
             'when': 'midnight',      # 按天切割
             'backupCount': 30,       # 保留最近30个文件
@@ -275,7 +275,7 @@ LOGGING = {
         },
         # 报告模块专用日志文件
         'file_report': {
-            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'class': 'concurrent_log_handler.ConcurrentTimedRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'report.log'),
             'when': 'midnight',
             'backupCount': 30,
@@ -285,7 +285,7 @@ LOGGING = {
         },
         # 错误日志文件
         'file_error': {
-            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'class': 'concurrent_log_handler.ConcurrentTimedRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'error.log'),
             'when': 'midnight',
             'backupCount': 30,
