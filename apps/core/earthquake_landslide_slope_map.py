@@ -17,6 +17,7 @@ import os
 import sys
 import math
 import re
+import logging
 from xml.etree import ElementTree as ET
 
 # ============================================================
@@ -67,31 +68,70 @@ from qgis.PyQt.QtGui import QImage, QPainter
 
 
 # ============================================================
+# Django settings 导入（可选）
+# ============================================================
+try:
+    from django.conf import settings as _django_settings
+    _DJANGO_AVAILABLE = True
+except ImportError:
+    _django_settings = None
+    _DJANGO_AVAILABLE = False
+
+# ============================================================
+# 日志配置
+# ============================================================
+logger = logging.getLogger('report.core.earthquake_landslide_slope_map')
+
+# ============================================================
 # 常量定义
 # ============================================================
 
 # 天地图配置
-TIANDITU_TK = "1ef76ef90c6eb961cb49618f9b1a399d"
+TIANDITU_TK = (
+    getattr(_django_settings, 'TIANDITU_TK', '1ef76ef90c6eb961cb49618f9b1a399d')
+    if _DJANGO_AVAILABLE else '1ef76ef90c6eb961cb49618f9b1a399d'
+)
 
-# 滑坡和斜坡数据文件路径（相对于脚本所在目录）
-LANDSLIDE_SHP_PATH = "../../data/geology/滑坡和危险斜坡/滑坡.shp"
-SLOPE_SHP_PATH = "../../data/geology/滑坡和危险斜坡/斜坡.shp"
+# 数据文件路径（优先从 Django settings 读取）
+_DEFAULT_BASE = "../../data/geology/"
+
+# 滑坡和斜坡数据文件路径
+LANDSLIDE_SHP_PATH = (
+    getattr(_django_settings, 'LANDSLIDE_SHP_PATH',
+            _DEFAULT_BASE + '滑坡和危险斜坡/滑坡.shp')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '滑坡和危险斜坡/滑坡.shp'
+)
+SLOPE_SHP_PATH = (
+    getattr(_django_settings, 'SLOPE_SHP_PATH',
+            _DEFAULT_BASE + '滑坡和危险斜坡/斜坡.shp')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '滑坡和危险斜坡/斜坡.shp'
+)
 
 # 省市边界数据路径
 PROVINCE_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国省份行政区划数据/省级行政区划/省.shp"
+    getattr(_django_settings, 'PROVINCE_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
 )
 CITY_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国市级行政区划数据/市级行政区划/市.shp"
+    getattr(_django_settings, 'CITY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
 )
 COUNTY_SHP_PATH = (
-    "../../data/geology/省市边界/全国行政区划数据最高乡镇级别"
-    "/全国县级行政区划数据/县级行政区划/县.shp"
+    getattr(_django_settings, 'COUNTY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
 )
 # 地级市点位数据
-CITY_POINTS_SHP_PATH = "../../data/geology/2023地级市点位数据/地级市点位数据.shp"
+CITY_POINTS_SHP_PATH = (
+    getattr(_django_settings, 'CITY_POINTS_SHP_PATH',
+            _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
+)
 
 # === 布局尺寸常量 ===
 # 由于图例在主图内部左下角，不需要单独的图例区域宽度
@@ -2211,6 +2251,20 @@ def generate_earthquake_landslide_slope_map(longitude, latitude, magnitude,
     返回:
         tuple, (str或None, str), 成功返回(输出文件路径, 统计信息)，失败返回(None, 统计信息)
     """
+    logger.info('开始生成滑坡斜坡分布图: lon=%.4f lat=%.4f M=%.1f output=%s',
+                longitude, latitude, magnitude, output_path)
+    try:
+        return _generate_earthquake_landslide_slope_map_impl(
+            longitude, latitude, magnitude, output_path, kml_path
+        )
+    except Exception as exc:
+        logger.error('生成滑坡斜坡分布图失败: %s', exc, exc_info=True)
+        raise
+
+
+def _generate_earthquake_landslide_slope_map_impl(longitude, latitude, magnitude,
+                                                   output_path, kml_path):
+    """generate_earthquake_landslide_slope_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震震中历史滑坡、斜坡分布图")
     print(f"  震中: ({longitude}, {latitude}), 震级: M{magnitude}")

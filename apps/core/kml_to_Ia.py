@@ -54,6 +54,7 @@ QGIS版本: 3.40.15
 """
 
 import gc
+import logging
 import math
 import os
 import random
@@ -65,6 +66,21 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 from osgeo import gdal, ogr, osr
+
+# ============================================================
+# Django settings 导入（可选）
+# ============================================================
+try:
+    from django.conf import settings as _django_settings
+    _DJANGO_AVAILABLE = True
+except ImportError:
+    _django_settings = None
+    _DJANGO_AVAILABLE = False
+
+# ============================================================
+# 日志配置
+# ============================================================
+logger = logging.getLogger('report.core.kml_to_Ia')
 
 # ==================== QGIS 插值相关模块 ====================
 # 以下模块在 QGIS 3.40.15 Python 环境中内置
@@ -1568,6 +1584,21 @@ class KmlToIaConverter:
             无论是否发生异常，finally块都会调用 cleanup() 释放资源。
             异常会在清理后重新抛出。
         """
+        logger.info('KmlToIaConverter.run() 开始: kml=%s method=%s',
+                    self.kml_path, self.interp_method)
+        try:
+            result = self._run_impl()
+            if result:
+                logger.info('KmlToIaConverter.run() 成功: ia=%s', self.ia_output_path)
+            else:
+                logger.error('KmlToIaConverter.run() 返回 False')
+            return result
+        except Exception as exc:
+            logger.error('KmlToIaConverter.run() 失败: %s', exc, exc_info=True)
+            raise
+
+    def _run_impl(self) -> bool:
+        """run() 的实际实现。"""
         print("=" * 60)
         print("KML → Ia 栅格处理程序（QGIS 3.40.15，内存优化重构版）")
         print(f"插值方法: {self.interp_method}")

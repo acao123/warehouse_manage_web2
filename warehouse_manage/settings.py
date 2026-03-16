@@ -173,6 +173,63 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB
 FILE_BASE_PATH = 'E:/data/report/'
 
 # ============================================================
+# 地图底图数据路径配置
+# ============================================================
+MAP_DATA_BASE_PATH = 'E:/data/geology/'  # 地图数据基础路径
+
+# 省市县边界数据
+PROVINCE_SHP_PATH = (
+    MAP_DATA_BASE_PATH
+    + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
+)
+CITY_SHP_PATH = (
+    MAP_DATA_BASE_PATH
+    + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
+)
+COUNTY_SHP_PATH = (
+    MAP_DATA_BASE_PATH
+    + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
+)
+
+# 地级市点位数据
+CITY_POINTS_SHP_PATH = MAP_DATA_BASE_PATH + '2023地级市点位数据/地级市点位数据.shp'
+
+# 断层数据（SHP分类版）
+FAULT_HOLOCENE_SHP_PATH = MAP_DATA_BASE_PATH + '断层/活动断裂-全新世.shp'
+FAULT_LATE_SHP_PATH = MAP_DATA_BASE_PATH + '断层/活动断裂-晚更新世.shp'
+FAULT_EARLY_SHP_PATH = MAP_DATA_BASE_PATH + '断层/活动断裂-早中更新世.shp'
+# 断层数据（KMZ合并版，供 earthquake_map / earthquake_kml_map 使用）
+FAULT_KMZ_PATH = MAP_DATA_BASE_PATH + '断层/全国六代图断裂.KMZ'
+
+# 地质构造数据
+GEOLOGY_TIF_PATH = MAP_DATA_BASE_PATH + '图3/地质构造/地质构造底图.tif'
+
+# 数字高程数据
+ELEVATION_TIF_PATH = MAP_DATA_BASE_PATH + '图4/全国DEM整合/全国DEM整合.tif'
+
+# 土地利用数据
+LAND_USE_TIF_PATH = MAP_DATA_BASE_PATH + '图5/土地利用/Globeland30.tif'
+
+# 人口分布数据
+POPULATION_TIF_PATH = MAP_DATA_BASE_PATH + '图6/人口公里网格分布/人口公里网格.tif'
+
+# GDP数据
+GDP_TIF_PATH = MAP_DATA_BASE_PATH + '图7/gdp2020.tif'
+
+# 道路数据
+ROAD_DATA_PATH = MAP_DATA_BASE_PATH + '全国道路网shp数据/全国道路网/'
+
+# 滑坡斜坡数据
+LANDSLIDE_SHP_PATH = MAP_DATA_BASE_PATH + '滑坡和危险斜坡/滑坡.shp'
+SLOPE_SHP_PATH = MAP_DATA_BASE_PATH + '滑坡和危险斜坡/斜坡.shp'
+
+# AC 临界加速度栅格
+AC_TIF_PATH = 'C:/地质/ac/ac分割版/ac2.TIF'
+
+# 天地图 Key
+TIANDITU_TK = '8a7eff89e30c5ecc97bee999d39fc1e1'
+
+# ============================================================
 # 企业级日志配置
 # ============================================================
 LOG_DIR = os.path.join(BASE_DIR, 'logs')

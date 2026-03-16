@@ -277,6 +277,12 @@ def create_task_view(request):
         return JsonResponse({'code': 1, 'msg': f'任务创建失败: {str(e)}'})
 
     # TODO: 异步执行报告生成任务
+    try:
+        from .tasks import start_task_async
+        start_task_async(task.id)
+        logger.info('已异步启动报告任务 task_id=%s', task.id)
+    except Exception as e:
+        logger.error('启动异步任务失败 task_id=%s: %s', task.id, e, exc_info=True)
 
     return JsonResponse({'code': 0, 'msg': '任务创建成功', 'task_id': task.id})
 
