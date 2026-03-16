@@ -78,7 +78,7 @@ def create_task_view(request):
     ).first()
     if running_task:
         logger.info('用户 %s 已有正在执行的任务 id=%s，禁止重复创建', user_id, running_task.id)
-        return JsonResponse({'code': 1, 'msg': '您有正在执行的任务，请在"所有报告"中结束后再创建'})
+        return JsonResponse({'code': 1, 'msg': '您有正在执行的任务，请点击结束后再创建'})
 
     # ---- 读取表单基本信息字段 ----
     longitude_str = request.POST.get('longitude', '').strip()
@@ -194,7 +194,7 @@ def create_task_view(request):
         return JsonResponse({'code': 1, 'msg': 'PGA KML文件大小不能超过1G'})
 
     # ---- 当基本信息有任何一项为空时，从爬虫获取 ----
-    if longitude is None or latitude is None or magnitude is None or not address or not ori_time_str:
+    if longitude is None or latitude is None or magnitude is None or not address or not ori_time_str or foc_depth is None:
         logger.info('基本信息不完整，尝试通过爬虫获取地震数据')
         try:
             from spider.earthquake_fetcher import EarthquakeFetcher
@@ -206,6 +206,7 @@ def create_task_view(request):
                 magnitude = earthquake_info.magnitude
                 address = earthquake_info.loc_name
                 ori_time_str = earthquake_info.ori_time.strftime('%Y-%m-%d %H:%M:%S')
+                foc_depth = earthquake_info.foc_depth
                 logger.info('通过爬虫获取地震数据成功: %s', earthquake_info)
             else:
                 logger.warning('爬虫未返回地震数据')
@@ -215,12 +216,8 @@ def create_task_view(request):
             return JsonResponse({'code': 1, 'msg': '爬取信息失败!'})
 
     # 填充默认值（爬虫也没拿到的字段）
-    if longitude is None or latitude is None or magnitude is None or not address or not ori_time_str:
+    if longitude is None or latitude is None or magnitude is None or not address or not ori_time_str or foc_depth is None:
         return JsonResponse({'code': 1, 'msg': '基本信息不全!'})
-
-    # 震源深度默认值
-    if foc_depth is None:
-        foc_depth = 10.0
 
     # 解析发震时刻
     ori_time = None

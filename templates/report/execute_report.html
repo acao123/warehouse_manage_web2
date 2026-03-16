@@ -55,45 +55,45 @@
             <div class="layui-form">
                 <div class="layui-form-item">
                     <div class="layui-inline">
-                        <label class="layui-form-label" style="width:100px;">经度</label>
+                        <label class="layui-form-label" style="width:57px;">经度</label>
                         <div class="layui-input-inline" style="width:200px;">
                             <input type="text" id="longitude" placeholder="103.36" class="layui-input">
                         </div>
                     </div>
                     <div class="layui-inline">
-                        <label class="layui-form-label" style="width:100px;">纬度</label>
-                        <div class="layui-input-inline" style="width:180px;">
+                        <label class="layui-form-label" style="width:57px;">纬度</label>
+                        <div class="layui-input-inline" style="width:160px;">
                             <input type="text" id="latitude" placeholder="34.09" class="layui-input">
                         </div>
                     </div>
                     <div class="layui-inline">
-                        <label class="layui-form-label" style="width:100px;">震级</label>
-                        <div class="layui-input-inline" style="width:100px;">
+                        <label class="layui-form-label" style="width:57px;">震级</label>
+                        <div class="layui-input-inline" style="width:80px;">
                             <input type="text" id="magnitude" placeholder="7.0" class="layui-input">
                         </div>
                     </div>
                     <div class="layui-inline">
-                        <label class="layui-form-label" style="width:100px;">震源深度</label>
-                        <div class="layui-input-inline" style="width:100px;">
+                        <label class="layui-form-label" style="width:57px;">震源深度</label>
+                        <div class="layui-input-inline" style="width:80px;">
                             <input type="text" id="foc_depth" placeholder="10.0" class="layui-input">
                         </div>
                     </div>
                 </div>
                 <div class="layui-form-item">
                     <div class="layui-inline">
-                        <label class="layui-form-label" style="width:100px;">参考位置</label>
+                        <label class="layui-form-label" style="width:57px;">参考位置</label>
                         <div class="layui-input-inline" style="width:200px;">
                             <input type="text" id="address" placeholder="选填" class="layui-input">
                         </div>
                     </div>
                     <div class="layui-inline">
-                        <label class="layui-form-label" style="width:100px;">发震时刻</label>
-                        <div class="layui-input-inline" style="width:180px;">
+                        <label class="layui-form-label" style="width:57px;">发震时刻</label>
+                        <div class="layui-input-inline" style="width:160px;">
                             <input type="datetime-local" id="ori_time" class="layui-input">
                         </div>
                     </div>
                     <div class="layui-inline">
-                        <label class="layui-form-label" style="width:100px;">天地图缓存</label>
+                        <label class="layui-form-label" style="width:57px;">天地图</label>
                         <div class="layui-input-inline" style="width:200px;">
                             <input type="radio" name="cache_base_map" value="0" title="每次都下载" checked>
                             <input type="radio" name="cache_base_map" value="1" title="使用缓存底图">
@@ -156,10 +156,10 @@
                             <label class="layui-form-label" style="width:120px;">插值算法</label>
                             <div class="layui-input-inline" style="width:200px;">
                                 <select id="interp_method" class="layui-select">
-                                    <option value="qgis_tin" selected>qgis_tin</option>
-                                       <option value="qgis_idw">qgis_idw</option>
-                                     <option value="kriging">kriging</option>
-                                    <option value="scipy_idw" >scipy_idw</option>
+                                    <option value="qgis_tin" selected>不规则三角网(qgis)</option>
+                                       <option value="qgis_idw">反距离加权(qgis)</option>
+                                     <option value="kriging">克里金</option>
+                                    <option value="scipy_idw" >反距离加权(scipy)</option>
                                 </select>
                             </div>
                         </div>
