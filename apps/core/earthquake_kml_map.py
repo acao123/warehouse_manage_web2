@@ -191,10 +191,10 @@ INTENSITY_LINE_WIDTH_MM = 0.6
 # ============================================================
 # 【震中标记样式】
 # ============================================================
+EPICENTER_STAR_SIZE_MM = 6.0
 EPICENTER_COLOR = QColor(255, 0, 0)
-EPICENTER_SIZE_MM = 4.0
 EPICENTER_STROKE_COLOR = QColor(255, 255, 255)
-EPICENTER_STROKE_WIDTH_MM = 0.3
+EPICENTER_STROKE_WIDTH_MM = 0.4
 
 # WGS84坐标系
 CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -1082,7 +1082,7 @@ def style_county_layer(layer):
 
 def create_epicenter_layer(longitude, latitude):
     """
-    创建震中标记图层（红色实心圆点）
+    创建震中标记图层（红色五角星+白边）
 
     参数:
         longitude (float): 震中经度
@@ -1102,12 +1102,12 @@ def create_epicenter_layer(longitude, latitude):
     layer.updateExtents()
 
     marker_sl = QgsSimpleMarkerSymbolLayer()
-    marker_sl.setShape(Qgis.MarkerShape.Circle)
+    marker_sl.setShape(Qgis.MarkerShape.Star)
     marker_sl.setColor(EPICENTER_COLOR)
     marker_sl.setStrokeColor(EPICENTER_STROKE_COLOR)
     marker_sl.setStrokeWidth(EPICENTER_STROKE_WIDTH_MM)
     marker_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
-    marker_sl.setSize(EPICENTER_SIZE_MM)
+    marker_sl.setSize(EPICENTER_STAR_SIZE_MM)
     marker_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
 
     symbol = QgsMarkerSymbol()
@@ -1840,8 +1840,8 @@ def _add_legend(layout, x, y, width, height, intensity_data, has_faults=True):
 
         # 绘制图标
         if item_type == "epicenter":
-            _draw_legend_circle(layout, cell_x, cell_y, 3.0, EPICENTER_COLOR)
-            text_x = cell_x + 4 + text_gap
+            _draw_legend_star(layout, cell_x, cell_y, icon_width, row_height * 0.8)
+            text_x = cell_x + icon_width + text_gap
         elif item_type == "intensity":
             intensity = item[2]
             color = INTENSITY_COLORS.get(intensity, QColor(255, 0, 0))
@@ -1881,6 +1881,36 @@ def _add_legend(layout, x, y, width, height, intensity_data, has_faults=True):
         layout.addLayoutItem(text_label)
 
     print(f"[信息] 图例添加完成，{rows}行{cols}列，共 {len(legend_items)} 项")
+
+
+def _draw_legend_star(layout, x, center_y, width, height):
+    """
+    在图例中绘制红色五角星图标
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        x (float): 起始X坐标
+        center_y (float): 中心Y坐标
+        width (float): 图标宽度
+        height (float): 图标高度
+    """
+    star_label = QgsLayoutItemLabel(layout)
+    star_label.setText("★")
+    star_format = QgsTextFormat()
+    star_font_size = LEGEND_TITLE_FONT_SIZE_PT + 4
+    star_format.setFont(QFont(FONT_PATH_SONGTI, star_font_size))
+    star_format.setSize(star_font_size)
+    star_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    star_format.setColor(EPICENTER_COLOR)
+    star_label.setTextFormat(star_format)
+    star_label.attemptMove(QgsLayoutPoint(x, center_y - height / 2.0,
+                                          QgsUnitTypes.LayoutMillimeters))
+    star_label.attemptResize(QgsLayoutSize(width, height, QgsUnitTypes.LayoutMillimeters))
+    star_label.setHAlign(Qt.AlignHCenter)
+    star_label.setVAlign(Qt.AlignVCenter)
+    star_label.setFrameEnabled(False)
+    star_label.setBackgroundEnabled(False)
+    layout.addLayoutItem(star_label)
 
 
 def _draw_legend_line(layout, x, center_y, width, color, line_width_mm):
