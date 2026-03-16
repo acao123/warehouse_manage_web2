@@ -7,3 +7,4 @@ Pillow==9.5.0
 pyshp==2.3.1
 #lxml==4.9.4
  rasterio==xxx
+concurrent-log-handler==0.9.25
