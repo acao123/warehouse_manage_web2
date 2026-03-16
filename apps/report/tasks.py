@@ -9,11 +9,14 @@
 后续可扩展为 WebSocket 推送或 Redis 缓存，以支持前端进度条。
 """
 
+import gc
 import logging
 import os
 import random
 import threading
 from datetime import datetime
+from functools import wraps
+from typing import Callable, Optional, Tuple
 
 from django.conf import settings
 from django.utils import timezone
@@ -42,6 +45,45 @@ PROGRESS_STEPS = {
     'save': 98,
     'done': 100,
 }
+
+
+# ============================================================
+# 安全装饰器：为每个图片生成函数提供异常隔离
+# ============================================================
+
+def safe_qgis_task(func: Callable) -> Callable:
+    """
+    装饰器：为 QGIS 任务提供安全的异常处理和资源管理。
+
+    功能：
+    1. 捕获所有异常，防止单个图片生成失败导致整个任务崩溃
+    2. 每次调用后强制垃圾回收，释放 QGIS 资源
+    3. 记录详细日志，便于问题排查
+    """
+    @wraps(func)
+    def wrapper(task: ReportTask, output_dir: str, *args, **kwargs):
+        task_id = task.id
+        func_name = func.__name__
+
+        try:
+            logger.info('[任务 %s] 开始执行 %s', task_id, func_name)
+            result = func(task, output_dir, *args, **kwargs)
+            logger.info('[任务 %s] %s 执行完成', task_id, func_name)
+            return result
+
+        except Exception as exc:
+            logger.error(
+                '[任务 %s] %s 执行失败: %s',
+                task_id, func_name, exc, exc_info=True
+            )
+            # 返回 None，不抛出异常，保证其他步骤可继续执行
+            return None
+
+        finally:
+            # 强制垃圾回收，释放 QGIS 对象占用的内存
+            gc.collect()
+
+    return wrapper
 
 
 # ============================================================
@@ -378,10 +420,16 @@ def execute_report_task(task_id: int) -> None:
 
     执行流程：
         1. 创建输出目录
-        2. 依次生成图一 ~ 图九
-        3. 生成 Ia.tif → Dn.tif → 图十
-        4. 将结果保存到 report_task_record 表
-        5. 更新 report_task 状态为成功（失败时标记为失败）
+        2. 通过 QGISManager 初始化 QGIS（保证全局唯一实例）
+        3. 依次生成图一 ~ 图九
+        4. 生成 Ia.tif → Dn.tif → 图十
+        5. 将结果保存到 report_task_record 表
+        6. 更新 report_task 状态为成功（失败时标记为失败）
+
+    异常处理：
+        - 整体使用 try/except 包裹，确保任何异常都不会导致 Web 进程崩溃
+        - 每个图片生成函数内部独立捕获异常，单个失败不影响其他图片
+        - 最终通过 gc.collect() 强制释放 QGIS 相关资源
 
     参数:
         task_id: report_task 表的 id
@@ -409,51 +457,66 @@ def execute_report_task(task_id: int) -> None:
     record_kwargs = {'user_id': task.user_id, 'task_id': task_id}
 
     try:
+        # 通过 QGISManager 确保 QGIS 已初始化（统一管理前缀路径和资源清理）
+        from core.qgis_manager import get_qgis_manager
+        qgis_manager = get_qgis_manager()
+        qgis_manager.ensure_initialized()
+
         # ---- 图一 ----
         update_progress(task_id, '生成图一（历史地震分布图）', PROGRESS_STEPS['img1'])
         img1_path, img1_info = _gen_img1(task, output_dir)
         record_kwargs['img1_path'] = img1_path
         record_kwargs['img1_info'] = img1_info
+        gc.collect()
 
         # ---- 图二 ----
         update_progress(task_id, '生成图二（烈度分布图）', PROGRESS_STEPS['img2'])
         img2_path, img2_info = _gen_img2(task, output_dir)
         record_kwargs['img2_path'] = img2_path
         record_kwargs['img2_info'] = img2_info
+        gc.collect()
 
         # ---- 图三 ----
         update_progress(task_id, '生成图三（地质构造图）', PROGRESS_STEPS['img3'])
         record_kwargs['img3_path'] = _gen_img3(task, output_dir)
+        gc.collect()
 
         # ---- 图四 ----
         update_progress(task_id, '生成图四（数字高程图）', PROGRESS_STEPS['img4'])
         record_kwargs['img4_path'] = _gen_img4(task, output_dir)
+        gc.collect()
 
         # ---- 图五 ----
         update_progress(task_id, '生成图五（土地利用类型图）', PROGRESS_STEPS['img5'])
         record_kwargs['img5_path'] = _gen_img5(task, output_dir)
+        gc.collect()
 
         # ---- 图六 ----
         update_progress(task_id, '生成图六（人口分布图）', PROGRESS_STEPS['img6'])
         record_kwargs['img6_path'] = _gen_img6(task, output_dir)
+        gc.collect()
 
         # ---- 图七 ----
         update_progress(task_id, '生成图七（GDP网格图）', PROGRESS_STEPS['img7'])
         record_kwargs['img7_path'] = _gen_img7(task, output_dir)
+        gc.collect()
 
         # ---- 图八 ----
         update_progress(task_id, '生成图八（道路交通图）', PROGRESS_STEPS['img8'])
         record_kwargs['img8_path'] = _gen_img8(task, output_dir)
+        gc.collect()
 
         # ---- 图九 ----
         update_progress(task_id, '生成图九（滑坡斜坡分布图）', PROGRESS_STEPS['img9'])
         img9_path, img9_info = _gen_img9(task, output_dir)
         record_kwargs['img9_path'] = img9_path
         record_kwargs['img9_info'] = img9_info
+        gc.collect()
 
         # ---- Ia.tif ----
         update_progress(task_id, '生成 Ia.tif', PROGRESS_STEPS['ia_tif'])
         ia_tif_path = _gen_ia_tif(task, output_dir)
+        gc.collect()
 
         # ---- Dn.tif ----
         update_progress(task_id, '生成 Dn.tif', PROGRESS_STEPS['dn_tif'])
@@ -462,10 +525,12 @@ def execute_report_task(task_id: int) -> None:
             dn_tif_path = _gen_dn_tif(task, output_dir, ia_tif_path)
         else:
             logger.warning('[任务 %s] Ia.tif 未生成，跳过 Dn.tif 及图十', task_id)
+        gc.collect()
 
         # ---- 图十 ----
         update_progress(task_id, '生成图十（Newmark位移图）', PROGRESS_STEPS['img10'])
         record_kwargs['img10_path'] = _gen_img10(task, output_dir, dn_tif_path)
+        gc.collect()
 
         # ---- 保存记录 ----
         update_progress(task_id, '保存记录到数据库', PROGRESS_STEPS['save'])
@@ -482,6 +547,15 @@ def execute_report_task(task_id: int) -> None:
     except Exception as exc:
         logger.error('[任务 %s] 报告任务执行过程中发生未捕获异常: %s', task_id, exc, exc_info=True)
         _mark_failed(task)
+
+    finally:
+        # 最终强制释放所有 QGIS 资源，防止内存积累
+        try:
+            from core.qgis_manager import get_qgis_manager
+            get_qgis_manager()._cleanup_session(task_id)
+        except Exception as cleanup_exc:
+            logger.warning('[任务 %s] 最终资源清理异常: %s', task_id, cleanup_exc)
+        gc.collect()
 
 
 def _mark_failed(task: ReportTask) -> None:

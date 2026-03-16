@@ -2066,12 +2066,9 @@ def _generate_earthquake_land_use_map_impl(longitude, latitude, magnitude,
     map_height_mm = calculate_map_height_from_extent(extent, MAP_WIDTH_MM)
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
-    # 初始化QGIS应用
-    qgs_app = None
-    if not QgsApplication.instance():
-        qgs_app = QgsApplication([], False)
-        qgs_app.initQgis()
-        print("[信息] QGIS应用初始化完成")
+    # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
+    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    _get_qgis_manager().ensure_initialized()
 
     # 创建项目
     project = QgsProject.instance()
