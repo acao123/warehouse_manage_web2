@@ -2278,7 +2278,7 @@ def generate_earthquake_landslide_slope_map(longitude, latitude, magnitude,
     # 统计范围内的滑坡和斜坡数量
     slope_count = count_features_in_extent(slope_layer, extent) if slope_layer else 0
     landslide_count = count_features_in_extent(landslide_layer, extent) if landslide_layer else 0
-    stats_message = f"本次地震震中附近{int(map_size_km / 2)}km范围内有危险斜坡{slope_count}处，历史滑坡{landslide_count}处."
+    stats_message = f"本次地震震中附近{int(map_size_km / 2)}km范围内有危险斜坡{slope_count}处，历史滑坡{landslide_count}处"
     print(f"[统计] {stats_message}")
 
     # 加载县界图层
