@@ -72,6 +72,12 @@
                             <input type="text" id="magnitude" placeholder="7.0" class="layui-input">
                         </div>
                     </div>
+                    <div class="layui-inline">
+                        <label class="layui-form-label" style="width:100px;">震源深度</label>
+                        <div class="layui-input-inline" style="width:100px;">
+                            <input type="text" id="foc_depth" placeholder="10.0" class="layui-input">
+                        </div>
+                    </div>
                 </div>
                 <div class="layui-form-item">
                     <div class="layui-inline">
@@ -84,6 +90,13 @@
                         <label class="layui-form-label" style="width:100px;">发震时刻</label>
                         <div class="layui-input-inline" style="width:180px;">
                             <input type="datetime-local" id="ori_time" class="layui-input">
+                        </div>
+                    </div>
+                    <div class="layui-inline">
+                        <label class="layui-form-label" style="width:100px;">天地图缓存</label>
+                        <div class="layui-input-inline" style="width:200px;">
+                            <input type="radio" name="cache_base_map" value="0" title="每次都下载" checked>
+                            <input type="radio" name="cache_base_map" value="1" title="使用缓存底图">
                         </div>
                     </div>
                 </div>
@@ -335,6 +348,14 @@
                 layer.msg('震级必须为非负整数或小数'); return false;
             }
         }
+        // 校验震源深度
+        var foc_depth = $('#foc_depth').val().trim();
+        if(foc_depth !== ''){
+            var fd = parseFloat(foc_depth);
+            if(isNaN(fd) || fd < 0){
+                layer.msg('震源深度必须为非负整数或小数'); return false;
+            }
+        }
         // 校验文件
         var historyFile   = document.getElementById('history_record').files[0];
         var intensityFile = document.getElementById('intensity_kml').files[0];
@@ -384,6 +405,8 @@
         formData.append('longitude',         $('#longitude').val().trim());
         formData.append('latitude',          $('#latitude').val().trim());
         formData.append('magnitude',         $('#magnitude').val().trim());
+        formData.append('foc_depth',          $('#foc_depth').val().trim());
+        formData.append('cache_base_map',     $('input[name="cache_base_map"]:checked').val() || '0');
         formData.append('address',           $('#address').val().trim());
         formData.append('ori_time',          $('#ori_time').val().trim());
         formData.append('interp_method',     $('#interp_method').val());
