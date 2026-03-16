@@ -11,7 +11,7 @@ class EarthquakeInfo:
     loc_name: str           # 震中位置
     epi_lon: float          # 震中经度（四舍五入保留2位小数）
     epi_lat: float          # 震中纬度（四舍五入保留2位小数）
-    foc_depth: int          # 震源深度
+    foc_depth: float          # 震源深度
     magnitude: float        # 震级
 
     def __str__(self) -> str:
@@ -173,7 +173,7 @@ class EarthquakeFetcher:
             loc_name=first["locName"].strip(),
             epi_lon=round(float(first["epiLon"]), 2),
             epi_lat=round(float(first["epiLat"]), 2),
-            foc_depth=int(first["focDepth"]),
+            foc_depth=float(first["focDepth"]),
             magnitude=float(first["magnitude"]),
         )
 

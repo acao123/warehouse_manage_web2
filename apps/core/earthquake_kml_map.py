@@ -135,9 +135,9 @@ LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
 DATE_FONT_SIZE_PT = 10
 INTENSITY_LABEL_FONT_SIZE_PT = 10
-SCALE_FONT_SIZE_PT = 8
+SCALE_FONT_SIZE_PT = 10
 # 比例尺缩小时字体最小值（磅）
-MIN_SCALE_FONT_SIZE_PT = 4
+MIN_SCALE_FONT_SIZE_PT = 10
 
 # ============================================================
 # 【行政边界线样式】
@@ -1540,7 +1540,7 @@ def _add_info_panel(layout, x, y, width, height, description_text, scale, extent
 
     # 说明文字（右侧边框留 1mm ≥ 5px@150DPI，即 5×25.4/150≈0.85mm，取整为 1mm）
     LEFT_MARGIN_MM = 2.0
-    RIGHT_MARGIN_MM = 1.0
+    RIGHT_MARGIN_MM = 2.0
 
     # 处理首行缩进并自动折行
     indent = "　　"  # 两个全角空格缩进
@@ -2269,12 +2269,12 @@ def _create_test_kml(kml_path):
 if __name__ == "__main__":
     INPUT_KML_PATH = r"../../data/geology/n0432881302350072.kml"
     INPUT_DESCRIPTION = (
-        "据中国地震台网正式测定：2026年01月26日14时56分甘肃甘南州迭部县"
+        "据中国地震台网正式测定： 2026年01月26日14时56分甘肃甘南州迭部县"
         "(103.25°，34.06°)发生5.5级地震，震源深度10千米。"
         "综合考虑震中附近地质构造背景、地震波衰减特性，"
         "估计了本次地震的地震动预测图。"
     )
-    INPUT_MAGNITUDE = 3.5
+    INPUT_MAGNITUDE = 7.5
     OUTPUT_PATH = r"../../data/geology/output_earthquake_kml_map_qgis.png"
 
     if not os.path.exists(INPUT_KML_PATH):
