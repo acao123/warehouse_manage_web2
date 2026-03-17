@@ -81,6 +81,10 @@ from core.tianditu_basemap_downloader import (
     download_tianditu_basemap_tiles,
     download_tianditu_annotation_tiles,
 )
+
+# ============================================================
+# 日志配置
+# ============================================================
 logger = logging.getLogger('report.core.earthquake_landslide_slope_map')
 
 # ============================================================
