@@ -1204,7 +1204,7 @@ def create_county_legend_layer():
 # 布局创建
 # ============================================================
 
-def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm):
+def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm, ordered_layers=None):
     """
     创建QGIS打印布局。
 
@@ -1248,6 +1248,8 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     map_item.setBackgroundEnabled(True)
     map_item.setBackgroundColor(QColor(255, 255, 255))
     layout.addLayoutItem(map_item)
+    if ordered_layers is not None:
+        map_item.setLayers(ordered_layers)
 
     # 添加地图元素
     _setup_map_grid(map_item, extent)
@@ -1888,7 +1890,8 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def generate_earthquake_population_map(longitude, latitude, magnitude,
                                        output_path="output_population_map.png",
-                                       kml_path=None):
+                                       kml_path=None,
+                                       basemap_path=None, annotation_path=None):
     """
     生成地震震中人口公里网格分布图（主入口函数）。
 
@@ -1906,7 +1909,8 @@ def generate_earthquake_population_map(longitude, latitude, magnitude,
                 longitude, latitude, magnitude, output_path)
     try:
         return _generate_earthquake_population_map_impl(
-            longitude, latitude, magnitude, output_path, kml_path
+            longitude, latitude, magnitude, output_path, kml_path,
+            basemap_path=basemap_path, annotation_path=annotation_path
         )
     except Exception as exc:
         logger.error('生成人口分布图失败: %s', exc, exc_info=True)
@@ -1914,7 +1918,8 @@ def generate_earthquake_population_map(longitude, latitude, magnitude,
 
 
 def _generate_earthquake_population_map_impl(longitude, latitude, magnitude,
-                                              output_path, kml_path):
+                                              output_path, kml_path,
+                                              basemap_path=None, annotation_path=None):
     """generate_earthquake_population_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震人口公里网格分布图")
@@ -2009,8 +2014,20 @@ def _generate_earthquake_population_map_impl(longitude, latitude, magnitude,
         project.addMapLayer(epicenter_layer)
 
     # 创建打印布局
+    # 按渲染顺序排列图层（列表第一项在最上层）
+    ordered_layers = [lyr for lyr in [
+        epicenter_layer,
+        locals().get('intensity_layer'),
+        locals().get('city_point_layer'),
+        locals().get('province_layer'),
+        locals().get('city_layer'),
+        locals().get('county_layer'),
+        locals().get('population_layer'),
+    ] if lyr is not None]
+
     layout = create_print_layout(project, longitude, latitude, magnitude,
-                                 extent, scale, map_height_mm)
+                                 extent, scale, map_height_mm,
+                                 ordered_layers=ordered_layers)
 
     # 导出PNG
     result = export_layout_to_png(layout, output_path, OUTPUT_DPI)

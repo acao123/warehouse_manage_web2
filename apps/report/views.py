@@ -269,20 +269,12 @@ def create_task_view(request):
             history_record_path=history_record_path,
             intensity_kml_path=intensity_kml_path,
             pga_kml_path=pga_kml_path,
-            task_status=ReportTask.STATUS_RUNNING,  # 创建即设为执行中（TODO: 实际执行逻辑）
+            task_status=ReportTask.STATUS_CREATED,
         )
         logger.info('报告任务创建成功，task_id=%s, user_id=%s', task.id, user_id)
     except Exception as e:
         logger.error('报告任务入库失败: %s', e, exc_info=True)
         return JsonResponse({'code': 1, 'msg': f'任务创建失败: {str(e)}'})
-
-    # TODO: 异步执行报告生成任务
-    try:
-        from .tasks import start_task_async
-        start_task_async(task.id)
-        logger.info('已异步启动报告任务 task_id=%s', task.id)
-    except Exception as e:
-        logger.error('启动异步任务失败 task_id=%s: %s', task.id, e, exc_info=True)
 
     return JsonResponse({'code': 0, 'msg': '任务创建成功', 'task_id': task.id})
 

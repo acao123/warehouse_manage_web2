@@ -39,6 +39,8 @@ except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
 
+from core.tianditu_basemap_downloader import download_tianditu_annotation_tiles
+
 # ============================================================
 # 日志配置
 # ============================================================
@@ -256,158 +258,6 @@ LEGEND_ROW_COUNT = 2  # 图例行数
 LEGEND_COLUMN_COUNT = 3  # 图例列数
 LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"  # (m)标签字体
 LEGEND_ITEM_SPACING = 2  # 图例项间距
-
-
-# ============================================================
-# 天地图瓦片下载函数（只下载注记图层）
-# ============================================================
-
-def download_tianditu_annotation_tiles(extent, width_px, height_px, output_path):
-    """
-    只下载天地图矢量注记瓦片并拼接为本地栅格图像（透明背景）
-
-    参数:
-        extent: QgsRectangle, 渲染范围 (WGS84)
-        width_px: int, 输出图像宽度(像素)
-        height_px: int, 输出图像高度(像素)
-        output_path: str, 输出文件路径
-
-    返回:
-        QgsRasterLayer或None, 渲染后的栅格图层
-    """
-    tk = TIANDITU_TK
-
-    # 计算合适的缩放级别
-    lon_range = extent.xMaximum() - extent.xMinimum()
-    zoom = int(math.log2(360 / lon_range * width_px / 256))
-    zoom = max(1, min(zoom, 18))
-
-    print(f"[信息] 下载天地图注记瓦片，缩放级别: {zoom}")
-
-    def lon_to_tile_x(lon, z):
-        """经度转瓦片X坐标"""
-        n = 2 ** z
-        x = int((lon + 180.0) / 360.0 * n)
-        return max(0, min(n - 1, x))
-
-    def lat_to_tile_y(lat, z):
-        """纬度转瓦片Y坐标 (天地图c系列)"""
-        n = 2 ** (z - 1)
-        y = int((90.0 - lat) / 180.0 * n)
-        return max(0, min(n - 1, y))
-
-    def tile_x_to_lon(x, z):
-        """瓦片X坐标转经度（左边界）"""
-        n = 2 ** z
-        return x / n * 360.0 - 180.0
-
-    def tile_y_to_lat(y, z):
-        """瓦片Y坐标转纬度（上边界）"""
-        n = 2 ** (z - 1)
-        return 90.0 - y / n * 180.0
-
-    # 获取瓦片范围
-    tile_x_min = lon_to_tile_x(extent.xMinimum(), zoom)
-    tile_x_max = lon_to_tile_x(extent.xMaximum(), zoom)
-    tile_y_min = lat_to_tile_y(extent.yMaximum(), zoom)
-    tile_y_max = lat_to_tile_y(extent.yMinimum(), zoom)
-
-    if tile_y_min > tile_y_max:
-        tile_y_min, tile_y_max = tile_y_max, tile_y_min
-
-    print(f"[信息] 瓦片范围: x={tile_x_min}-{tile_x_max}, y={tile_y_min}-{tile_y_max}")
-
-    num_tiles_x = tile_x_max - tile_x_min + 1
-    num_tiles_y = tile_y_max - tile_y_min + 1
-    total_tiles = num_tiles_x * num_tiles_y
-    print(f"[信息] 需要下载 {total_tiles} 个注记瓦片 ({num_tiles_x} x {num_tiles_y})")
-
-    tile_size = 256
-    mosaic_width = num_tiles_x * tile_size
-    mosaic_height = num_tiles_y * tile_size
-    # 使用RGBA模式，支持透明背景
-    mosaic = Image.new('RGBA', (mosaic_width, mosaic_height), (0, 0, 0, 0))
-
-    downloaded = 0
-    failed = 0
-    servers = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7']
-
-    for ty in range(tile_y_min, tile_y_max + 1):
-        for tx in range(tile_x_min, tile_x_max + 1):
-            server = servers[(tx + ty) % len(servers)]
-
-            # 只下载天地图注记URL (cva_c - EPSG:4326)
-            cva_url = (
-                f"http://{server}.tianditu.gov.cn/cva_c/wmts?"
-                f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-                f"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
-                f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
-                f"&tk={tk}"
-            )
-
-            try:
-                resp_cva = requests.get(cva_url, timeout=10)
-                if resp_cva.status_code == 200:
-                    tile_cva = Image.open(BytesIO(resp_cva.content)).convert('RGBA')
-
-                    # 粘贴到拼接图像（保留透明度）
-                    paste_x = (tx - tile_x_min) * tile_size
-                    paste_y = (ty - tile_y_min) * tile_size
-                    mosaic.paste(tile_cva, (paste_x, paste_y), tile_cva)
-                    downloaded += 1
-                else:
-                    failed += 1
-                    print(f"[警告] 注记瓦片下载失败: {tx},{ty} - 状态码: {resp_cva.status_code}")
-            except Exception as e:
-                failed += 1
-                print(f"[警告] 注记瓦片下载异常: {tx},{ty} - {e}")
-
-    print(f"[信息] 注记瓦片下载完成: 成功 {downloaded}, 失败 {failed}")
-
-    if downloaded == 0:
-        print("[错误] 没有成功下载任何注记瓦片")
-        return None
-
-    actual_lon_min = tile_x_to_lon(tile_x_min, zoom)
-    actual_lon_max = tile_x_to_lon(tile_x_max + 1, zoom)
-    actual_lat_max = tile_y_to_lat(tile_y_min, zoom)
-    actual_lat_min = tile_y_to_lat(tile_y_max + 1, zoom)
-
-    crop_left = int((extent.xMinimum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_right = int((extent.xMaximum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_top = int((actual_lat_max - extent.yMaximum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
-    crop_bottom = int((actual_lat_max - extent.yMinimum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
-
-    crop_left = max(0, min(mosaic_width - 1, crop_left))
-    crop_right = max(crop_left + 1, min(mosaic_width, crop_right))
-    crop_top = max(0, min(mosaic_height - 1, crop_top))
-    crop_bottom = max(crop_top + 1, min(mosaic_height, crop_bottom))
-
-    cropped = mosaic.crop((crop_left, crop_top, crop_right, crop_bottom))
-    final_image = cropped.resize((width_px, height_px), Image.LANCZOS)
-
-    # 保存为PNG格式（支持透明度）
-    final_image.save(output_path, 'PNG')
-    print(f"[信息] 注记底图已保存: {output_path}")
-
-    world_file_path = output_path.replace(".png", ".pgw")
-    x_res = (extent.xMaximum() - extent.xMinimum()) / width_px
-    y_res = (extent.yMaximum() - extent.yMinimum()) / height_px
-    with open(world_file_path, 'w') as f:
-        f.write(f"{x_res}\n")
-        f.write("0\n")
-        f.write("0\n")
-        f.write(f"{-y_res}\n")
-        f.write(f"{extent.xMinimum()}\n")
-        f.write(f"{extent.yMaximum()}\n")
-
-    raster_layer = QgsRasterLayer(output_path, "天地图注记", "gdal")
-    if raster_layer.isValid():
-        print(f"[信息] 成功加载注记栅格图层")
-        return raster_layer
-    else:
-        print(f"[错误] 无法加载注记栅格图层")
-        return None
 
 
 # ============================================================
@@ -2240,7 +2090,8 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def generate_earthquake_elevation_map(longitude, latitude, magnitude,
                                       output_path="output_elevation_map.png",
-                                      kml_path=None):
+                                      kml_path=None,
+                                      basemap_path=None, annotation_path=None):
     """
     生成地震震中数字高程图（主入口函数）
 
@@ -2261,7 +2112,8 @@ def generate_earthquake_elevation_map(longitude, latitude, magnitude,
                 longitude, latitude, magnitude, output_path)
     try:
         return _generate_earthquake_elevation_map_impl(
-            longitude, latitude, magnitude, output_path, kml_path
+            longitude, latitude, magnitude, output_path, kml_path,
+            basemap_path=basemap_path, annotation_path=annotation_path
         )
     except Exception as exc:
         logger.error('生成数字高程图失败: %s', exc, exc_info=True)
@@ -2269,7 +2121,8 @@ def generate_earthquake_elevation_map(longitude, latitude, magnitude,
 
 
 def _generate_earthquake_elevation_map_impl(longitude, latitude, magnitude,
-                                             output_path, kml_path):
+                                             output_path, kml_path,
+                                             basemap_path=None, annotation_path=None):
     """generate_earthquake_elevation_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震数字高程图（优化版）")
@@ -2315,7 +2168,12 @@ def _generate_earthquake_elevation_map_impl(longitude, latitude, magnitude,
         width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
         height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
 
-        annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
+        if annotation_path:
+            annotation_raster = QgsRasterLayer(annotation_path, "天地图注记", "gdal")
+            if not annotation_raster.isValid():
+                annotation_raster = None
+        else:
+            annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
 
         # 加载数字高程底图（优化版，按需裁剪）
         elevation_layer = load_elevation_raster_optimized(ELEVATION_TIF_PATH, extent)
@@ -2421,7 +2279,7 @@ def _generate_earthquake_elevation_map_impl(longitude, latitude, magnitude,
                 pass
 
         # 清理临时注记底图文件
-        if os.path.exists(temp_annotation_path):
+        if not annotation_path and os.path.exists(temp_annotation_path):
             try:
                 os.remove(temp_annotation_path)
                 pgw_path = temp_annotation_path.replace(".png", ".pgw")

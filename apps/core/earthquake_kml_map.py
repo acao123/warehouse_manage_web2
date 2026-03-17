@@ -33,6 +33,11 @@ except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
 
+from core.tianditu_basemap_downloader import (
+    download_tianditu_basemap_tiles,
+    download_tianditu_annotation_tiles,
+)
+
 # ============================================================
 # 日志配置
 # ============================================================
@@ -800,249 +805,6 @@ def _extract_all_linestring_coords(pm, nsmap, ns):
             if pts:
                 all_lines.append(pts)
     return all_lines
-
-# ============================================================
-# 【天地图瓦片下载函数】
-# ============================================================
-
-def download_tianditu_basemap_tiles(extent, width_px, height_px, output_path):
-    """
-    下载天地图矢量底图瓦片（vec_c）并拼接为本地栅格图像
-
-    参数:
-        extent (QgsRectangle): 渲染范围（WGS84）
-        width_px (int): 输出图像宽度（像素）
-        height_px (int): 输出图像高度（像素）
-        output_path (str): 输出文件路径
-    返回:
-        QgsRasterLayer或None
-    """
-    tk = TIANDITU_TK
-    lon_range = extent.xMaximum() - extent.xMinimum()
-    zoom = int(math.log2(360 / lon_range * width_px / 256))
-    zoom = max(1, min(zoom, 18))
-    print(f"[信息] 下载天地图矢量底图瓦片，缩放级别: {zoom}")
-
-    def lon_to_tile_x(lon, z):
-        n = 2 ** z
-        x = int((lon + 180.0) / 360.0 * n)
-        return max(0, min(n - 1, x))
-
-    def lat_to_tile_y(lat, z):
-        n = 2 ** (z - 1)
-        y = int((90.0 - lat) / 180.0 * n)
-        return max(0, min(n - 1, y))
-
-    def tile_x_to_lon(x, z):
-        n = 2 ** z
-        return x / n * 360.0 - 180.0
-
-    def tile_y_to_lat(y, z):
-        n = 2 ** (z - 1)
-        return 90.0 - y / n * 180.0
-
-    tile_x_min = lon_to_tile_x(extent.xMinimum(), zoom)
-    tile_x_max = lon_to_tile_x(extent.xMaximum(), zoom)
-    tile_y_min = lat_to_tile_y(extent.yMaximum(), zoom)
-    tile_y_max = lat_to_tile_y(extent.yMinimum(), zoom)
-
-    if tile_y_min > tile_y_max:
-        tile_y_min, tile_y_max = tile_y_max, tile_y_min
-
-    num_tiles_x = tile_x_max - tile_x_min + 1
-    num_tiles_y = tile_y_max - tile_y_min + 1
-    print(f"[信息] 需要下载 {num_tiles_x * num_tiles_y} 个底图瓦片 ({num_tiles_x} x {num_tiles_y})")
-
-    tile_size = 256
-    mosaic_width = num_tiles_x * tile_size
-    mosaic_height = num_tiles_y * tile_size
-    mosaic = Image.new('RGB', (mosaic_width, mosaic_height), (170, 211, 223))
-
-    downloaded = 0
-    failed = 0
-    servers = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7']
-
-    for ty in range(tile_y_min, tile_y_max + 1):
-        for tx in range(tile_x_min, tile_x_max + 1):
-            server = servers[(tx + ty) % len(servers)]
-            vec_url = (
-                f"http://{server}.tianditu.gov.cn/vec_c/wmts?"
-                f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-                f"&LAYER=vec&STYLE=default&TILEMATRIXSET=c"
-                f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
-                f"&tk={tk}"
-            )
-            try:
-                resp = requests.get(vec_url, timeout=10)
-                if resp.status_code == 200 and len(resp.content) > 0:
-                    tile_img = Image.open(BytesIO(resp.content)).convert('RGB')
-                    paste_x = (tx - tile_x_min) * tile_size
-                    paste_y = (ty - tile_y_min) * tile_size
-                    mosaic.paste(tile_img, (paste_x, paste_y))
-                    downloaded += 1
-                else:
-                    failed += 1
-            except Exception as e:
-                failed += 1
-                print(f"[警告] 底图瓦片下载异常: {tx},{ty} - {e}")
-
-    print(f"[信息] 底图瓦片下载完成: 成功 {downloaded}, 失败 {failed}")
-
-    if downloaded == 0:
-        print("[错误] 没有成功下载任何底图瓦片")
-        return None
-
-    actual_lon_min = tile_x_to_lon(tile_x_min, zoom)
-    actual_lon_max = tile_x_to_lon(tile_x_max + 1, zoom)
-    actual_lat_max = tile_y_to_lat(tile_y_min, zoom)
-    actual_lat_min = tile_y_to_lat(tile_y_max + 1, zoom)
-
-    crop_left = int((extent.xMinimum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_right = int((extent.xMaximum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_top = int((actual_lat_max - extent.yMaximum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
-    crop_bottom = int((actual_lat_max - extent.yMinimum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
-
-    crop_left = max(0, min(mosaic_width - 1, crop_left))
-    crop_right = max(crop_left + 1, min(mosaic_width, crop_right))
-    crop_top = max(0, min(mosaic_height - 1, crop_top))
-    crop_bottom = max(crop_top + 1, min(mosaic_height, crop_bottom))
-
-    cropped = mosaic.crop((crop_left, crop_top, crop_right, crop_bottom))
-    final_image = cropped.resize((width_px, height_px), Image.LANCZOS)
-    final_image.save(output_path, 'PNG')
-    print(f"[信息] 底图已保存: {output_path}")
-
-    world_file_path = output_path.replace(".png", ".pgw")
-    x_res = (extent.xMaximum() - extent.xMinimum()) / width_px
-    y_res = (extent.yMaximum() - extent.yMinimum()) / height_px
-    with open(world_file_path, 'w') as f:
-        f.write(f"{x_res}\n0\n0\n{-y_res}\n{extent.xMinimum()}\n{extent.yMaximum()}\n")
-
-    raster_layer = QgsRasterLayer(output_path, "天地图底图", "gdal")
-    if raster_layer.isValid():
-        print("[信息] 成功加载底图栅格图层")
-        return raster_layer
-    else:
-        print("[错误] 无法加载底图栅格图层")
-        return None
-
-
-def download_tianditu_annotation_tiles(extent, width_px, height_px, output_path):
-    """
-    下载天地图矢量注记瓦片（cva_c）并拼接为本地栅格图像
-
-    参数:
-        extent (QgsRectangle): 渲染范围（WGS84）
-        width_px (int): 输出图像宽度（像素）
-        height_px (int): 输出图像高度（像素）
-        output_path (str): 输出文件路径
-    返回:
-        QgsRasterLayer或None
-    """
-    tk = TIANDITU_TK
-    lon_range = extent.xMaximum() - extent.xMinimum()
-    zoom = int(math.log2(360 / lon_range * width_px / 256))
-    zoom = max(1, min(zoom, 18))
-    print(f"[信息] 下载天地图注记瓦片，缩放级别: {zoom}")
-
-    def lon_to_tile_x(lon, z):
-        n = 2 ** z
-        x = int((lon + 180.0) / 360.0 * n)
-        return max(0, min(n - 1, x))
-
-    def lat_to_tile_y(lat, z):
-        n = 2 ** (z - 1)
-        y = int((90.0 - lat) / 180.0 * n)
-        return max(0, min(n - 1, y))
-
-    def tile_x_to_lon(x, z):
-        n = 2 ** z
-        return x / n * 360.0 - 180.0
-
-    def tile_y_to_lat(y, z):
-        n = 2 ** (z - 1)
-        return 90.0 - y / n * 180.0
-
-    tile_x_min = lon_to_tile_x(extent.xMinimum(), zoom)
-    tile_x_max = lon_to_tile_x(extent.xMaximum(), zoom)
-    tile_y_min = lat_to_tile_y(extent.yMaximum(), zoom)
-    tile_y_max = lat_to_tile_y(extent.yMinimum(), zoom)
-
-    if tile_y_min > tile_y_max:
-        tile_y_min, tile_y_max = tile_y_max, tile_y_min
-
-    num_tiles_x = tile_x_max - tile_x_min + 1
-    num_tiles_y = tile_y_max - tile_y_min + 1
-    print(f"[信息] 需要下载 {num_tiles_x * num_tiles_y} 个注记瓦片")
-
-    tile_size = 256
-    mosaic_width = num_tiles_x * tile_size
-    mosaic_height = num_tiles_y * tile_size
-    mosaic = Image.new('RGBA', (mosaic_width, mosaic_height), (0, 0, 0, 0))
-
-    downloaded = 0
-    failed = 0
-    servers = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7']
-
-    for ty in range(tile_y_min, tile_y_max + 1):
-        for tx in range(tile_x_min, tile_x_max + 1):
-            server = servers[(tx + ty) % len(servers)]
-            cva_url = (
-                f"http://{server}.tianditu.gov.cn/cva_c/wmts?"
-                f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-                f"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
-                f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
-                f"&tk={tk}"
-            )
-            try:
-                resp = requests.get(cva_url, timeout=10)
-                if resp.status_code == 200 and len(resp.content) > 0:
-                    tile_cva = Image.open(BytesIO(resp.content)).convert('RGBA')
-                    paste_x = (tx - tile_x_min) * tile_size
-                    paste_y = (ty - tile_y_min) * tile_size
-                    mosaic.paste(tile_cva, (paste_x, paste_y), tile_cva)
-                    downloaded += 1
-                else:
-                    failed += 1
-            except Exception as e:
-                failed += 1
-
-    print(f"[信息] 注记瓦片下载完成: 成功 {downloaded}, 失败 {failed}")
-
-    if downloaded == 0:
-        return None
-
-    actual_lon_min = tile_x_to_lon(tile_x_min, zoom)
-    actual_lon_max = tile_x_to_lon(tile_x_max + 1, zoom)
-    actual_lat_max = tile_y_to_lat(tile_y_min, zoom)
-    actual_lat_min = tile_y_to_lat(tile_y_max + 1, zoom)
-
-    crop_left = int((extent.xMinimum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_right = int((extent.xMaximum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_top = int((actual_lat_max - extent.yMaximum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
-    crop_bottom = int((actual_lat_max - extent.yMinimum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
-
-    crop_left = max(0, min(mosaic_width - 1, crop_left))
-    crop_right = max(crop_left + 1, min(mosaic_width, crop_right))
-    crop_top = max(0, min(mosaic_height - 1, crop_top))
-    crop_bottom = max(crop_top + 1, min(mosaic_height, crop_bottom))
-
-    cropped = mosaic.crop((crop_left, crop_top, crop_right, crop_bottom))
-    final_image = cropped.resize((width_px, height_px), Image.LANCZOS)
-    final_image.save(output_path, 'PNG')
-
-    world_file_path = output_path.replace(".png", ".pgw")
-    x_res = (extent.xMaximum() - extent.xMinimum()) / width_px
-    y_res = (extent.yMaximum() - extent.yMinimum()) / height_px
-    with open(world_file_path, 'w') as f:
-        f.write(f"{x_res}\n0\n0\n{-y_res}\n{extent.xMinimum()}\n{extent.yMaximum()}\n")
-
-    raster_layer = QgsRasterLayer(output_path, "天地图注记", "gdal")
-    if raster_layer.isValid():
-        print("[信息] 成功加载注记栅格图层")
-        return raster_layer
-    return None
-
 
 # ============================================================
 # 【矢量图层加载与样式设置函数】
@@ -2057,7 +1819,8 @@ def export_layout_to_png(layout, output_path, dpi=150):
 # 【主函数】
 # ============================================================
 
-def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_path):
+def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_path,
+                                basemap_path=None, annotation_path=None):
     """
     生成地震烈度分布图（基于QGIS 3.40.15）
 
@@ -2073,14 +1836,16 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
                 kml_path, magnitude, output_path)
     try:
         return _generate_earthquake_kml_map_impl(
-            kml_path, description_text, magnitude, output_path
+            kml_path, description_text, magnitude, output_path,
+            basemap_path=basemap_path, annotation_path=annotation_path
         )
     except Exception as exc:
         logger.error('生成地震烈度分布图失败: %s', exc, exc_info=True)
         raise
 
 
-def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, output_path):
+def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, output_path,
+                                      basemap_path=None, annotation_path=None):
     """generate_earthquake_kml_map 的实际实现。"""
     print("=" * 65)
     print("  地 震 烈 度 分 布 图 生 成 工 具（QGIS版）")
@@ -2129,8 +1894,18 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
         print("\n[4/9] 下载天地图矢量底图...")
         width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
         height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
-        basemap_raster = download_tianditu_basemap_tiles(extent, width_px, height_px, temp_basemap_path)
-        annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
+        if basemap_path:
+            basemap_raster = QgsRasterLayer(basemap_path, "天地图底图", "gdal")
+            if not basemap_raster.isValid():
+                basemap_raster = None
+        else:
+            basemap_raster = download_tianditu_basemap_tiles(extent, width_px, height_px, temp_basemap_path)
+        if annotation_path:
+            annotation_raster = QgsRasterLayer(annotation_path, "天地图注记", "gdal")
+            if not annotation_raster.isValid():
+                annotation_raster = None
+        else:
+            annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
 
         # [5/9] 加载行政边界图层
         print("\n[5/9] 加载行政边界图层...")
@@ -2214,15 +1989,22 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
 
     finally:
         # 清理临时文件
-        for tmp_path in [temp_basemap_path, temp_annotation_path]:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                    pgw = tmp_path.replace(".png", ".pgw")
-                    if os.path.exists(pgw):
-                        os.remove(pgw)
-                except OSError:
-                    pass
+        if not basemap_path and os.path.exists(temp_basemap_path):
+            try:
+                os.remove(temp_basemap_path)
+                pgw = temp_basemap_path.replace(".png", ".pgw")
+                if os.path.exists(pgw):
+                    os.remove(pgw)
+            except OSError:
+                pass
+        if not annotation_path and os.path.exists(temp_annotation_path):
+            try:
+                os.remove(temp_annotation_path)
+                pgw = temp_annotation_path.replace(".png", ".pgw")
+                if os.path.exists(pgw):
+                    os.remove(pgw)
+            except OSError:
+                pass
         if os.path.exists(svg_temp_path):
             try:
                 os.remove(svg_temp_path)
