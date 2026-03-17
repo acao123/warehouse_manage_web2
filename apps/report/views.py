@@ -8,12 +8,12 @@ import os
 from datetime import datetime
 
 from django.conf import settings
-from django.http import JsonResponse
+from django.http import FileResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 
-from .models import ReportTask
+from .models import ReportTask, ReportTaskRecord
 
 # 获取日志记录器
 logger = logging.getLogger('report')
@@ -339,6 +339,71 @@ def stop_task_view(request):
     logger.info('任务 %s 被用户 %s 手动结束', task_id, user_id)
 
     return JsonResponse({'code': 0, 'msg': '任务已结束'})
+
+
+@csrf_exempt
+def execute_task_view(request):
+    """
+    执行任务接口：将 task_status 更新为 STATUS_RUNNING，然后在后台线程中执行任务
+    :param request: HTTP 请求对象
+    :return: JSON 格式响应
+    """
+    if request.method != 'POST':
+        return JsonResponse({'code': 1, 'msg': '请求方法错误'})
+
+    user_id = request.session.get('user_id')
+    if not user_id:
+        return JsonResponse({'code': 1, 'msg': '用户未登录'})
+
+    task_id = request.POST.get('task_id', '').strip()
+    if not task_id:
+        return JsonResponse({'code': 1, 'msg': '缺少任务ID'})
+
+    try:
+        task = ReportTask.objects.get(id=task_id)
+    except ReportTask.DoesNotExist:
+        return JsonResponse({'code': 1, 'msg': '任务不存在'})
+
+    task.task_status = ReportTask.STATUS_RUNNING
+    task.save(update_fields=['task_status', 'updated_at'])
+    logger.info('任务 %s 状态更新为执行中，由用户 %s 触发', task_id, user_id)
+
+    from .tasks import start_task_async
+    start_task_async(int(task_id))
+
+    return JsonResponse({'code': 0, 'msg': '任务开始执行'})
+
+
+@require_GET
+def download_report_view(request):
+    """
+    下载报告文档接口：根据 task_id 查询 report_task_record 中的 report_path 并返回文件
+    :param request: HTTP 请求对象
+    :return: 文件响应或 JSON 错误信息
+    """
+    user_id = request.session.get('user_id')
+    if not user_id:
+        return JsonResponse({'code': 1, 'msg': '用户未登录'})
+
+    task_id = request.GET.get('task_id', '').strip()
+    if not task_id:
+        return JsonResponse({'code': 1, 'msg': '缺少任务ID'})
+
+    record = ReportTaskRecord.objects.filter(task_id=task_id).first()
+    if not record or not record.report_path:
+        return JsonResponse({'code': 1, 'msg': '报告文件不存在'})
+
+    if not os.path.exists(record.report_path):
+        return JsonResponse({'code': 1, 'msg': '报告文件不存在'})
+
+    file_handle = open(record.report_path, 'rb')
+    response = FileResponse(
+        file_handle,
+        as_attachment=True,
+        filename=os.path.basename(record.report_path),
+    )
+    logger.info('任务 %s 的报告文档被用户 %s 下载', task_id, user_id)
+    return response
 
 
 # ============================================================

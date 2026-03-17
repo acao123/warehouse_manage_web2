@@ -587,6 +587,9 @@ def execute_report_task(task_id: int) -> None:
         ReportTaskRecord.objects.create(**record_kwargs)
         logger.info('[任务 %s] 已保存 report_task_record', task_id)
 
+        # ---- 生成Word文档 ----
+        generate_report_word(task_id, output_dir)
+
         # ---- 标记成功 ----
         task.task_status = ReportTask.STATUS_SUCCESS
         task.success_time = datetime.now()
@@ -619,6 +622,93 @@ def _mark_failed(task: ReportTask) -> None:
 
 
 # ============================================================
+# Word文档生成函数
+# ============================================================
+
+def generate_report_word(task_id: int, output_dir: str) -> Optional[str]:
+    """
+    根据任务记录生成Word报告文档。
+
+    执行流程：
+        1. 从 ReportTaskRecord 表查询该任务的记录
+        2. 从 settings.REPORT_TEMPLATE_PATH 获取Word模板路径
+        3. 打开模板（模板不存在则创建空白文档）
+        4. 遍历图片1~图片10，对每张存在的图片插入说明和图片
+        5. 保存文档到 output_dir/report.docx
+        6. 更新 ReportTaskRecord 的 report_path 字段
+
+    参数:
+        task_id: report_task 表的 id
+        output_dir: 输出目录路径
+
+    返回:
+        文档路径字符串，失败时返回 None
+    """
+    try:
+        from docx import Document
+        from docx.shared import Inches
+    except ImportError:
+        logger.error('[任务 %s] python-docx 未安装，跳过Word文档生成', task_id)
+        return None
+
+    try:
+        record = ReportTaskRecord.objects.filter(task_id=task_id).first()
+        if not record:
+            logger.warning('[任务 %s] 未找到 ReportTaskRecord，跳过Word文档生成', task_id)
+            return None
+
+        template_path = getattr(settings, 'REPORT_TEMPLATE_PATH', None)
+        if template_path and os.path.exists(template_path):
+            document = Document(template_path)
+            logger.info('[任务 %s] 使用Word模板: %s', task_id, template_path)
+        else:
+            if template_path:
+                logger.warning('[任务 %s] Word模板文件不存在: %s，使用空白文档', task_id, template_path)
+            document = Document()
+
+        # 图片字段映射：编号 -> (path字段名, info字段名或None)
+        img_fields = [
+            (1, 'img1_path', 'img1_info'),
+            (2, 'img2_path', 'img2_info'),
+            (3, 'img3_path', None),
+            (4, 'img4_path', None),
+            (5, 'img5_path', None),
+            (6, 'img6_path', None),
+            (7, 'img7_path', None),
+            (8, 'img8_path', None),
+            (9, 'img9_path', 'img9_info'),
+            (10, 'img10_path', None),
+        ]
+
+        for img_no, path_field, info_field in img_fields:
+            img_path = getattr(record, path_field, None)
+            if not img_path or not os.path.exists(img_path):
+                continue
+            img_info = getattr(record, info_field, None) if info_field else None
+            if img_info:
+                document.add_paragraph(img_info)
+            try:
+                document.add_picture(img_path, width=Inches(6))
+                logger.info('[任务 %s] 已插入图%d: %s', task_id, img_no, img_path)
+            except Exception as pic_exc:
+                logger.error('[任务 %s] 插入图%d失败: %s', task_id, img_no, pic_exc, exc_info=True)
+
+        doc_path = os.path.join(output_dir, 'report.docx')
+        document.save(doc_path)
+        logger.info('[任务 %s] Word文档已保存: %s', task_id, doc_path)
+
+        record.report_path = doc_path
+        record.save(update_fields=['report_path', 'updated_at'])
+        logger.info('[任务 %s] report_task_record.report_path 已更新', task_id)
+
+        return doc_path
+
+    except Exception as exc:
+        logger.error('[任务 %s] Word文档生成失败: %s', task_id, exc, exc_info=True)
+        return None
+
+
+# ============================================================
 # 异步启动入口
 # ============================================================
 
@@ -629,12 +719,11 @@ def start_task_async(task_id: int) -> None:
     参数:
         task_id: report_task 表的 id
     """
-    execute_report_task(task_id)
-    # thread = threading.Thread(
-    #     target=,
-    #     args=(task_id,),
-    #     name=f'ReportTask-{task_id}',
-    #     daemon=True,
-    # )
-    # thread.start()
-    # logger.info('[任务 %s] 已启动后台线程 %s', task_id, thread.name)
+    thread = threading.Thread(
+        target=execute_report_task,
+        args=(task_id,),
+        name=f'ReportTask-{task_id}',
+        daemon=True,
+    )
+    thread.start()
+    logger.info('[任务 %s] 已启动后台线程 %s', task_id, thread.name)
