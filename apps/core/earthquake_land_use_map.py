@@ -1297,7 +1297,7 @@ def create_county_legend_layer():
 # 布局创建
 # ============================================================
 
-def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm, land_use_list=None):
+def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm, land_use_list=None, ordered_layers=None):
     """
     创建QGIS打印布局
 
@@ -1345,6 +1345,8 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     map_item.setBackgroundEnabled(True)
     map_item.setBackgroundColor(QColor(255, 255, 255))
     layout.addLayoutItem(map_item)
+    if ordered_layers is not None:
+        map_item.setLayers(ordered_layers)
 
     # 添加经纬度网格
     _setup_map_grid(map_item, extent)
@@ -2016,7 +2018,8 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def generate_earthquake_land_use_map(longitude, latitude, magnitude,
                                      output_path="output_land_use_map.png",
-                                     kml_path=None):
+                                     kml_path=None,
+                                     basemap_path=None, annotation_path=None):
     """
     生成地震震中土地利用类型图（主入口函数）
 
@@ -2034,7 +2037,8 @@ def generate_earthquake_land_use_map(longitude, latitude, magnitude,
                 longitude, latitude, magnitude, output_path)
     try:
         return _generate_earthquake_land_use_map_impl(
-            longitude, latitude, magnitude, output_path, kml_path
+            longitude, latitude, magnitude, output_path, kml_path,
+            basemap_path=basemap_path, annotation_path=annotation_path
         )
     except Exception as exc:
         logger.error('生成土地利用类型图失败: %s', exc, exc_info=True)
@@ -2042,7 +2046,8 @@ def generate_earthquake_land_use_map(longitude, latitude, magnitude,
 
 
 def _generate_earthquake_land_use_map_impl(longitude, latitude, magnitude,
-                                            output_path, kml_path):
+                                            output_path, kml_path,
+                                            basemap_path=None, annotation_path=None):
     """generate_earthquake_land_use_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震土地利用类型图")
@@ -2144,8 +2149,20 @@ def _generate_earthquake_land_use_map_impl(longitude, latitude, magnitude,
         project.addMapLayer(epicenter_layer)
 
     # 创建打印布局
+    # 按渲染顺序排列图层（列表第一项在最上层）
+    ordered_layers = [lyr for lyr in [
+        epicenter_layer,
+        locals().get('intensity_layer'),
+        locals().get('city_point_layer'),
+        locals().get('province_layer'),
+        locals().get('city_layer'),
+        locals().get('county_layer'),
+        locals().get('land_use_layer'),
+    ] if lyr is not None]
+
     layout = create_print_layout(project, longitude, latitude, magnitude,
-                                 extent, scale, map_height_mm, land_use_list)
+                                 extent, scale, map_height_mm, land_use_list,
+                                 ordered_layers=ordered_layers)
 
     # 导出为PNG
     result = export_layout_to_png(layout, output_path, OUTPUT_DPI)

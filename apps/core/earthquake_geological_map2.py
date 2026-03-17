@@ -1199,7 +1199,7 @@ def create_county_legend_layer():
 # 布局创建
 # ============================================================
 
-def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm, yanxing_list=None):
+def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm, yanxing_list=None, ordered_layers=None):
     """创建QGIS打印布局"""
     layout = QgsPrintLayout(project)
     layout.initializeDefaults()
@@ -1229,6 +1229,8 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     map_item.setBackgroundEnabled(True)
     map_item.setBackgroundColor(QColor(255, 255, 255))
     layout.addLayoutItem(map_item)
+    if ordered_layers is not None:
+        map_item.setLayers(ordered_layers)
 
     _setup_map_grid(map_item, extent)
     _add_north_arrow(layout, map_height_mm)
@@ -1806,20 +1808,24 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def generate_earthquake_geology_map(longitude, latitude, magnitude,
                                     output_path="output_geology_map.png",
-                                    kml_path=None):
+                                    kml_path=None,
+                                    basemap_path=None, annotation_path=None):
     """生成地震震中地质构造图（主入口函数）"""
     logger.info('开始生成地质构造图: lon=%.4f lat=%.4f M=%.1f output=%s',
                 longitude, latitude, magnitude, output_path)
     try:
         return _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
-                                                     output_path, kml_path)
+                                                     output_path, kml_path,
+                                                     basemap_path=basemap_path,
+                                                     annotation_path=annotation_path)
     except Exception as exc:
         logger.error('生成地质构造图失败: %s', exc, exc_info=True)
         raise
 
 
 def _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
-                                           output_path, kml_path):
+                                           output_path, kml_path,
+                                           basemap_path=None, annotation_path=None):
     """generate_earthquake_geology_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震地质构造图")
@@ -1907,8 +1913,20 @@ def _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
     if epicenter_layer:
         project.addMapLayer(epicenter_layer)
 
+    # 按渲染顺序排列图层（列表第一项在最上层）
+    ordered_layers = [lyr for lyr in [
+        epicenter_layer,
+        locals().get('intensity_layer'),
+        locals().get('city_point_layer'),
+        locals().get('province_layer'),
+        locals().get('city_layer'),
+        locals().get('county_layer'),
+        locals().get('geology_layer'),
+    ] if lyr is not None]
+
     layout = create_print_layout(project, longitude, latitude, magnitude,
-                                 extent, scale, map_height_mm, yanxing_list)
+                                 extent, scale, map_height_mm, yanxing_list,
+                                 ordered_layers=ordered_layers)
 
     result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
 

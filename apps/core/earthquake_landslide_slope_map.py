@@ -77,6 +77,11 @@ except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
 
+from core.tianditu_basemap_downloader import (
+    download_tianditu_basemap_tiles,
+    download_tianditu_annotation_tiles,
+)
+
 # ============================================================
 # 日志配置
 # ============================================================
@@ -368,195 +373,6 @@ import requests
 import math
 from PIL import Image
 from io import BytesIO
-
-
-def download_tianditu_tiles(extent, width_px, height_px, output_path):
-    """
-    直接下载天地图瓦片并拼接为本地栅格图像
-
-    参数:
-        extent: QgsRectangle, 渲染范围 (WGS84)
-        width_px: int, 输出图像宽度(像素)
-        height_px: int, 输出图像高度(像素)
-        output_path: str, 输出文件路径
-
-    返回:
-        QgsRasterLayer或None, 渲染后的栅格图层
-    """
-    tk = TIANDITU_TK
-
-    # 计算合适的缩放级别
-    lon_range = extent.xMaximum() - extent.xMinimum()
-    zoom = int(math.log2(360 / lon_range * width_px / 256))
-    zoom = max(1, min(zoom, 18))
-
-    print(f"[信息] 下载天地图瓦片，缩放级别: {zoom}")
-
-    # 天地图 EPSG:4326 (c系列) 瓦片坐标计算
-    # 天地图c系列使用经纬度直投，范围是 -180~180, -90~90
-    # 瓦片原点在左上角 (-180, 90)
-    # 级别1时，全球分为2列(x)×1行(y)
-    # 级别n时，全球分为2^n列×2^(n-1)行
-
-    def lon_to_tile_x(lon, z):
-        """经度转瓦片X坐标"""
-        n = 2 ** z
-        x = int((lon + 180.0) / 360.0 * n)
-        return max(0, min(n - 1, x))
-
-    def lat_to_tile_y(lat, z):
-        """纬度转瓦片Y坐标 (天地图c系列)"""
-        n = 2 ** (z - 1)  # 天地图c系列Y方向是2^(z-1)个瓦片
-        y = int((90.0 - lat) / 180.0 * n)
-        return max(0, min(n - 1, y))
-
-    def tile_x_to_lon(x, z):
-        """瓦片X坐标转经度（左边界）"""
-        n = 2 ** z
-        return x / n * 360.0 - 180.0
-
-    def tile_y_to_lat(y, z):
-        """瓦片Y坐标转纬度（上���界）"""
-        n = 2 ** (z - 1)
-        return 90.0 - y / n * 180.0
-
-    # 获取瓦片范围
-    tile_x_min = lon_to_tile_x(extent.xMinimum(), zoom)
-    tile_x_max = lon_to_tile_x(extent.xMaximum(), zoom)
-    tile_y_min = lat_to_tile_y(extent.yMaximum(), zoom)  # 纬度大的在上面，Y值小
-    tile_y_max = lat_to_tile_y(extent.yMinimum(), zoom)  # 纬度小的在下面，Y值大
-
-    # 确保范围正确
-    if tile_y_min > tile_y_max:
-        tile_y_min, tile_y_max = tile_y_max, tile_y_min
-
-    print(f"[信息] 瓦片范围: x={tile_x_min}-{tile_x_max}, y={tile_y_min}-{tile_y_max}")
-
-    num_tiles_x = tile_x_max - tile_x_min + 1
-    num_tiles_y = tile_y_max - tile_y_min + 1
-    total_tiles = num_tiles_x * num_tiles_y
-    print(f"[信息] 需要下载 {total_tiles} 个瓦片 ({num_tiles_x} x {num_tiles_y})")
-
-    # 创建拼接图像
-    tile_size = 256
-    mosaic_width = num_tiles_x * tile_size
-    mosaic_height = num_tiles_y * tile_size
-    mosaic = Image.new('RGB', (mosaic_width, mosaic_height), (255, 255, 255))
-
-    # 下载并拼接瓦片
-    downloaded = 0
-    failed = 0
-    servers = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7']
-
-    for ty in range(tile_y_min, tile_y_max + 1):
-        for tx in range(tile_x_min, tile_x_max + 1):
-            server = servers[(tx + ty) % len(servers)]
-
-            # 天地图矢量底图URL (vec_c - EPSG:4326)
-            vec_url = (
-                f"http://{server}.tianditu.gov.cn/vec_c/wmts?"
-                f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-                f"&LAYER=vec&STYLE=default&TILEMATRIXSET=c"
-                f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
-                f"&tk={tk}"
-            )
-
-            # 天地图注记URL (cva_c - EPSG:4326)
-            cva_url = (
-                f"http://{server}.tianditu.gov.cn/cva_c/wmts?"
-                f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-                f"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
-                f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
-                f"&tk={tk}"
-            )
-
-            try:
-                # 下载矢量底图瓦片
-                resp_vec = requests.get(vec_url, timeout=10)
-                if resp_vec.status_code == 200:
-                    tile_vec = Image.open(BytesIO(resp_vec.content)).convert('RGBA')
-
-                    # 下载注记瓦片
-                    resp_cva = requests.get(cva_url, timeout=10)
-                    if resp_cva.status_code == 200:
-                        tile_cva = Image.open(BytesIO(resp_cva.content)).convert('RGBA')
-                        tile_vec = Image.alpha_composite(tile_vec, tile_cva)
-
-                    # 转换为RGB
-                    tile_rgb = Image.new('RGB', tile_vec.size, (255, 255, 255))
-                    tile_rgb.paste(tile_vec, mask=tile_vec.split()[3])
-
-                    # 粘贴到拼接图像
-                    paste_x = (tx - tile_x_min) * tile_size
-                    paste_y = (ty - tile_y_min) * tile_size
-                    mosaic.paste(tile_rgb, (paste_x, paste_y))
-                    downloaded += 1
-                else:
-                    failed += 1
-                    print(f"[警告] 瓦片下载失败: {tx},{ty} - 状态码: {resp_vec.status_code}")
-            except Exception as e:
-                failed += 1
-                print(f"[警告] 瓦片下载异常: {tx},{ty} - {e}")
-
-    print(f"[信息] 瓦片下载完成: 成功 {downloaded}, 失败 {failed}")
-
-    if downloaded == 0:
-        print("[错误] 没有成功下载任何瓦片")
-        return None
-
-    # 计算拼接图像的实际地理范围
-    actual_lon_min = tile_x_to_lon(tile_x_min, zoom)
-    actual_lon_max = tile_x_to_lon(tile_x_max + 1, zoom)
-    actual_lat_max = tile_y_to_lat(tile_y_min, zoom)  # 上边界
-    actual_lat_min = tile_y_to_lat(tile_y_max + 1, zoom)  # 下边界
-
-    print(
-        f"[信息] 拼接图像地理范围: ({actual_lon_min:.4f}, {actual_lat_min:.4f}) - ({actual_lon_max:.4f}, {actual_lat_max:.4f})")
-    print(
-        f"[信息] 请求的地理范围: ({extent.xMinimum():.4f}, {extent.yMinimum():.4f}) - ({extent.xMaximum():.4f}, {extent.yMaximum():.4f})")
-
-    # 计算裁剪像素位置
-    crop_left = int((extent.xMinimum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_right = int((extent.xMaximum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_top = int((actual_lat_max - extent.yMaximum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
-    crop_bottom = int((actual_lat_max - extent.yMinimum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
-
-    # 确保裁剪范围有效
-    crop_left = max(0, min(mosaic_width - 1, crop_left))
-    crop_right = max(crop_left + 1, min(mosaic_width, crop_right))
-    crop_top = max(0, min(mosaic_height - 1, crop_top))
-    crop_bottom = max(crop_top + 1, min(mosaic_height, crop_bottom))
-
-    print(f"[信息] 裁剪范围: ({crop_left}, {crop_top}) - ({crop_right}, {crop_bottom})")
-
-    # 裁剪并缩放
-    cropped = mosaic.crop((crop_left, crop_top, crop_right, crop_bottom))
-    final_image = cropped.resize((width_px, height_px), Image.LANCZOS)
-
-    # 保存图像
-    final_image.save(output_path, 'PNG')
-    print(f"[信息] 底图已保存: {output_path}")
-
-    # 创建world文件 (精确匹配请求的extent)
-    world_file_path = output_path.replace(".png", ".pgw")
-    x_res = (extent.xMaximum() - extent.xMinimum()) / width_px
-    y_res = (extent.yMaximum() - extent.yMinimum()) / height_px
-    with open(world_file_path, 'w') as f:
-        f.write(f"{x_res}\n")  # 像素X方向分辨率
-        f.write("0\n")  # 旋转参数
-        f.write("0\n")  # 旋转参数
-        f.write(f"{-y_res}\n")  # 像素Y方向分辨率（负值，因为Y轴向下）
-        f.write(f"{extent.xMinimum()}\n")  # 左上角X坐标
-        f.write(f"{extent.yMaximum()}\n")  # 左上角Y坐标
-
-    # 加载为QGIS栅格图层
-    raster_layer = QgsRasterLayer(output_path, "天地图底图", "gdal")
-    if raster_layer.isValid():
-        print(f"[信息] 成功加载底图栅格图层")
-        return raster_layer
-    else:
-        print(f"[错误] 无法加载底图栅格图层")
-        return None
 
 
 
@@ -2237,7 +2053,8 @@ def _draw_point_icon_with_stroke(layout, x, center_y, width, fill_color, stroke_
 # ============================================================
 def generate_earthquake_landslide_slope_map(longitude, latitude, magnitude,
                                             output_path="output_landslide_slope_map.png",
-                                            kml_path=None):
+                                            kml_path=None,
+                                            basemap_path=None, annotation_path=None):
     """
     生成地震震中历史滑坡、斜坡分布图（主入口函数）
 
@@ -2255,7 +2072,8 @@ def generate_earthquake_landslide_slope_map(longitude, latitude, magnitude,
                 longitude, latitude, magnitude, output_path)
     try:
         return _generate_earthquake_landslide_slope_map_impl(
-            longitude, latitude, magnitude, output_path, kml_path
+            longitude, latitude, magnitude, output_path, kml_path,
+            basemap_path=basemap_path, annotation_path=annotation_path
         )
     except Exception as exc:
         logger.error('生成滑坡斜坡分布图失败: %s', exc, exc_info=True)
@@ -2263,7 +2081,8 @@ def generate_earthquake_landslide_slope_map(longitude, latitude, magnitude,
 
 
 def _generate_earthquake_landslide_slope_map_impl(longitude, latitude, magnitude,
-                                                   output_path, kml_path):
+                                                   output_path, kml_path,
+                                                   basemap_path=None, annotation_path=None):
     """generate_earthquake_landslide_slope_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震震中历史滑坡、斜坡分布图")
@@ -2310,11 +2129,28 @@ def _generate_earthquake_landslide_slope_map_impl(longitude, latitude, magnitude
         os.path.dirname(os.path.abspath(__file__)),
         "_temp_basemap.png"
     )
-    basemap_raster = download_tianditu_tiles(extent, width_px, height_px, temp_basemap_path)
+    temp_annotation_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "_temp_annotation_landslide.png"
+    )
+    if basemap_path:
+        basemap_raster = QgsRasterLayer(basemap_path, "天地图底图", "gdal")
+        if not basemap_raster.isValid():
+            basemap_raster = None
+    else:
+        basemap_raster = download_tianditu_basemap_tiles(extent, width_px, height_px, temp_basemap_path)
+    if annotation_path:
+        annotation_raster = QgsRasterLayer(annotation_path, "天地图注记", "gdal")
+        if not annotation_raster.isValid():
+            annotation_raster = None
+    else:
+        annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
 
     # 添加本地栅格底图（如果下载成功）
     if basemap_raster:
         project.addMapLayer(basemap_raster)
+    if annotation_raster:
+        project.addMapLayer(annotation_raster)
 
     # 加载斜坡图层（先加载，显示在下层）
     slope_layer = load_slope_layer(SLOPE_SHP_PATH)
@@ -2391,10 +2227,18 @@ def _generate_earthquake_landslide_slope_map_impl(longitude, latitude, magnitude
         project.addMapLayer(epicenter_layer)
 
     # 创建打印布局（按正确渲染顺序传入图层：列表第一项在最上层）
-    ordered_layers = [lyr for lyr in [epicenter_layer, intensity_layer, city_point_layer,
-                                      province_layer, city_layer, county_layer,
-                                      landslide_layer, slope_layer, basemap_raster]
-                      if lyr is not None]
+    ordered_layers = [lyr for lyr in [
+        epicenter_layer,
+        annotation_raster,
+        intensity_layer,
+        city_point_layer,
+        province_layer,
+        city_layer,
+        county_layer,
+        landslide_layer,
+        slope_layer,
+        basemap_raster,
+    ] if lyr is not None]
     layout = create_print_layout(project, longitude, latitude, magnitude,
                                  extent, scale, map_height_mm, ordered_layers)
 
@@ -2410,10 +2254,18 @@ def _generate_earthquake_landslide_slope_map_impl(longitude, latitude, magnitude
             pass
 
     # 清理临时底图文件
-    if os.path.exists(temp_basemap_path):
+    if not basemap_path and os.path.exists(temp_basemap_path):
         try:
             os.remove(temp_basemap_path)
             pgw_path = temp_basemap_path.replace(".png", ".pgw")
+            if os.path.exists(pgw_path):
+                os.remove(pgw_path)
+        except OSError:
+            pass
+    if not annotation_path and os.path.exists(temp_annotation_path):
+        try:
+            os.remove(temp_annotation_path)
+            pgw_path = temp_annotation_path.replace(".png", ".pgw")
             if os.path.exists(pgw_path):
                 os.remove(pgw_path)
         except OSError:

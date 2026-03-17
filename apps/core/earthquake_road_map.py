@@ -1252,7 +1252,7 @@ def create_road_legend_layer(road_type):
 # 布局创建
 # ============================================================
 
-def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm):
+def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm, ordered_layers=None):
     """
     创建QGIS打印布局
 
@@ -1297,6 +1297,8 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     map_item.setBackgroundEnabled(True)
     map_item.setBackgroundColor(QColor(255, 255, 255))
     layout.addLayoutItem(map_item)
+    if ordered_layers is not None:
+        map_item.setLayers(ordered_layers)
 
     # 添加经纬度网格
     _setup_map_grid(map_item, extent)
@@ -1910,7 +1912,8 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def generate_earthquake_road_map(longitude, latitude, magnitude,
                                  output_path="output_road_map.png",
-                                 kml_path=None):
+                                 kml_path=None,
+                                 basemap_path=None, annotation_path=None):
     """
     生成地震震中道路交通图（主入口函数）
 
@@ -1928,14 +1931,16 @@ def generate_earthquake_road_map(longitude, latitude, magnitude,
                 longitude, latitude, magnitude, output_path)
     try:
         return _generate_earthquake_road_map_impl(
-            longitude, latitude, magnitude, output_path, kml_path
+            longitude, latitude, magnitude, output_path, kml_path,
+            basemap_path=basemap_path, annotation_path=annotation_path
         )
     except Exception as exc:
         logger.error('生成道路交通图失败: %s', exc, exc_info=True)
         raise
 
 
-def _generate_earthquake_road_map_impl(longitude, latitude, magnitude, output_path, kml_path):
+def _generate_earthquake_road_map_impl(longitude, latitude, magnitude, output_path, kml_path,
+                                       basemap_path=None, annotation_path=None):
     """generate_earthquake_road_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震道路交通图")
@@ -1969,12 +1974,22 @@ def _generate_earthquake_road_map_impl(longitude, latitude, magnitude, output_pa
     project.setCrs(CRS_WGS84)
 
     # 加载天地图底图
-    tianditu_layer = load_tianditu_basemap()
+    if basemap_path:
+        tianditu_layer = QgsRasterLayer(basemap_path, "天地图底图", "gdal")
+        if not tianditu_layer.isValid():
+            tianditu_layer = None
+    else:
+        tianditu_layer = load_tianditu_basemap()
     if tianditu_layer:
         project.addMapLayer(tianditu_layer)
 
     # 加载天地图注记
-    tianditu_anno_layer = load_tianditu_annotation()
+    if annotation_path:
+        tianditu_anno_layer = QgsRasterLayer(annotation_path, "天地图注记", "gdal")
+        if not tianditu_anno_layer.isValid():
+            tianditu_anno_layer = None
+    else:
+        tianditu_anno_layer = load_tianditu_annotation()
     if tianditu_anno_layer:
         project.addMapLayer(tianditu_anno_layer)
 
@@ -1984,10 +1999,12 @@ def _generate_earthquake_road_map_impl(longitude, latitude, magnitude, output_pa
         "乡道", "省道", "国道", "铁路", "高速"
     ]
 
+    road_layer_list = []
     for road_type in road_load_order:
         road_layer = load_road_layer(road_type)
         if road_layer:
             project.addMapLayer(road_layer)
+            road_layer_list.append(road_layer)
 
     # 加载县界图层
     county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
@@ -2054,8 +2071,22 @@ def _generate_earthquake_road_map_impl(longitude, latitude, magnitude, output_pa
         project.addMapLayer(epicenter_layer)
 
     # 创建打印布局
+    # 按渲染顺序排列图层（列表第一项在最上层）
+    ordered_layers = [lyr for lyr in [
+        epicenter_layer,
+        locals().get('intensity_layer'),
+        locals().get('city_point_layer'),
+        locals().get('province_layer'),
+        locals().get('city_layer'),
+        locals().get('county_layer'),
+        *road_layer_list,
+        tianditu_anno_layer,
+        tianditu_layer,
+    ] if lyr is not None]
+
     layout = create_print_layout(project, longitude, latitude, magnitude,
-                                 extent, scale, map_height_mm)
+                                 extent, scale, map_height_mm,
+                                 ordered_layers=ordered_layers)
 
     # 导出为PNG
     result = export_layout_to_png(layout, output_path, OUTPUT_DPI)

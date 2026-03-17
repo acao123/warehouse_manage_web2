@@ -134,7 +134,7 @@ def _img_path(output_dir: str, img_no: int) -> str:
 # 各图片生成封装函数
 # ============================================================
 
-def _gen_img1(task: ReportTask, output_dir: str):
+def _gen_img1(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
     """
     生成图一：历史地震分布图。
 
@@ -150,6 +150,8 @@ def _gen_img1(task: ReportTask, output_dir: str):
             magnitude=task.magnitude,
             csv_path=task.history_record_path,
             output_path=out,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
         )
         logger.info('[任务 %s] 图一生成完成: %s', task.id, out)
         return out, str(info) if info else None
@@ -158,7 +160,7 @@ def _gen_img1(task: ReportTask, output_dir: str):
         return None, None
 
 
-def _gen_img2(task: ReportTask, output_dir: str):
+def _gen_img2(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
     """
     生成图二：地震烈度分布图。
 
@@ -173,6 +175,8 @@ def _gen_img2(task: ReportTask, output_dir: str):
             description_text='',
             magnitude=task.magnitude,
             output_path=out,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
         )
         info = None
         if result and isinstance(result, dict):
@@ -189,7 +193,7 @@ def _gen_img2(task: ReportTask, output_dir: str):
         return None, None
 
 
-def _gen_img3(task: ReportTask, output_dir: str):
+def _gen_img3(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
     """生成图三：地质构造图。返回 img_path 或 None。"""
     try:
         from core.earthquake_geological_map2 import generate_earthquake_geology_map
@@ -200,6 +204,8 @@ def _gen_img3(task: ReportTask, output_dir: str):
             magnitude=task.magnitude,
             output_path=out,
             kml_path=task.intensity_kml_path,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
         )
         logger.info('[任务 %s] 图三生成完成: %s', task.id, out)
         return out
@@ -208,7 +214,7 @@ def _gen_img3(task: ReportTask, output_dir: str):
         return None
 
 
-def _gen_img4(task: ReportTask, output_dir: str):
+def _gen_img4(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
     """生成图四：数字高程图。返回 img_path 或 None。"""
     try:
         from core.earthquake_elevation_map import generate_earthquake_elevation_map
@@ -219,6 +225,8 @@ def _gen_img4(task: ReportTask, output_dir: str):
             magnitude=task.magnitude,
             output_path=out,
             kml_path=task.intensity_kml_path,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
         )
         logger.info('[任务 %s] 图四生成完成: %s', task.id, out)
         return out
@@ -227,7 +235,7 @@ def _gen_img4(task: ReportTask, output_dir: str):
         return None
 
 
-def _gen_img5(task: ReportTask, output_dir: str):
+def _gen_img5(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
     """生成图五：土地利用类型图。返回 img_path 或 None。"""
     try:
         from core.earthquake_land_use_map import generate_earthquake_land_use_map
@@ -238,6 +246,8 @@ def _gen_img5(task: ReportTask, output_dir: str):
             magnitude=task.magnitude,
             output_path=out,
             kml_path=task.intensity_kml_path,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
         )
         logger.info('[任务 %s] 图五生成完成: %s', task.id, out)
         return out
@@ -246,7 +256,7 @@ def _gen_img5(task: ReportTask, output_dir: str):
         return None
 
 
-def _gen_img6(task: ReportTask, output_dir: str):
+def _gen_img6(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
     """生成图六：人口分布图。返回 img_path 或 None。"""
     try:
         from core.earthquake_population_map import generate_earthquake_population_map
@@ -257,6 +267,8 @@ def _gen_img6(task: ReportTask, output_dir: str):
             magnitude=task.magnitude,
             output_path=out,
             kml_path=task.intensity_kml_path,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
         )
         logger.info('[任务 %s] 图六生成完成: %s', task.id, out)
         return out
@@ -265,7 +277,7 @@ def _gen_img6(task: ReportTask, output_dir: str):
         return None
 
 
-def _gen_img7(task: ReportTask, output_dir: str):
+def _gen_img7(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
     """生成图七：GDP 网格图。返回 img_path 或 None。"""
     try:
         from core.gdp_grid_map import generate_gdp_grid_map
@@ -276,6 +288,8 @@ def _gen_img7(task: ReportTask, output_dir: str):
             magnitude=task.magnitude,
             output_path=out,
             kml_path=task.intensity_kml_path,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
         )
         logger.info('[任务 %s] 图七生成完成: %s', task.id, out)
         return out
@@ -284,7 +298,7 @@ def _gen_img7(task: ReportTask, output_dir: str):
         return None
 
 
-def _gen_img8(task: ReportTask, output_dir: str):
+def _gen_img8(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
     """生成图八：道路交通图。返回 img_path 或 None。"""
     try:
         from core.earthquake_road_map import generate_earthquake_road_map
@@ -295,6 +309,8 @@ def _gen_img8(task: ReportTask, output_dir: str):
             magnitude=task.magnitude,
             output_path=out,
             kml_path=task.intensity_kml_path,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
         )
         logger.info('[任务 %s] 图八生成完成: %s', task.id, out)
         return out
@@ -303,7 +319,7 @@ def _gen_img8(task: ReportTask, output_dir: str):
         return None
 
 
-def _gen_img9(task: ReportTask, output_dir: str):
+def _gen_img9(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
     """
     生成图九：历史滑坡、斜坡分布图。
 
@@ -319,6 +335,8 @@ def _gen_img9(task: ReportTask, output_dir: str):
             magnitude=task.magnitude,
             output_path=out,
             kml_path=task.intensity_kml_path,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
         )
         logger.info('[任务 %s] 图九生成完成: %s, 说明=%s', task.id, out, stats)
         return out, str(stats) if stats else None
@@ -456,6 +474,36 @@ def execute_report_task(task_id: int) -> None:
     # 记录各图片结果
     record_kwargs = {'user_id': task.user_id, 'task_id': task_id}
 
+    # ---- 缓存模式：预先下载天地图底图和注记 ----
+    cached_basemap_path = None
+    cached_annotation_path = None
+    if task.cache_base_map == 1:
+        from core.tianditu_basemap_downloader import download_basemap_with_cache
+        from core.earthquake_map import (
+            calculate_extent, get_magnitude_config,
+            calculate_map_height_from_extent, MAP_WIDTH_MM, OUTPUT_DPI,
+        )
+        _config = get_magnitude_config(float(task.magnitude))
+        _half_size_km = _config["map_size_km"] / 2.0
+        _extent = calculate_extent(float(task.longitude), float(task.latitude), _half_size_km)
+        _map_height_mm = calculate_map_height_from_extent(_extent, MAP_WIDTH_MM)
+        _width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
+        _height_px = int(_map_height_mm / 25.4 * OUTPUT_DPI)
+        _basemap_path = os.path.join(output_dir, 'basemap.png')
+        _annotation_path = os.path.join(output_dir, 'annotation.png')
+        _bm, _ann, _err = download_basemap_with_cache(
+            _extent, _width_px, _height_px,
+            _basemap_path, _annotation_path, task.cache_base_map
+        )
+        if _err:
+            logger.error('[任务 %s] 缓存底图下载失败: %s', task_id, _err)
+            _mark_failed(task)
+            return
+        cached_basemap_path = _basemap_path
+        cached_annotation_path = _annotation_path
+        logger.info('[任务 %s] 缓存底图下载成功: basemap=%s, annotation=%s',
+                    task_id, cached_basemap_path, cached_annotation_path)
+
     try:
         # 通过 QGISManager 确保 QGIS 已初始化（统一管理前缀路径和资源清理）
         from core.qgis_manager import get_qgis_manager
@@ -464,7 +512,9 @@ def execute_report_task(task_id: int) -> None:
 
         # ---- 图一 ----
         update_progress(task_id, '生成图一（历史地震分布图）', PROGRESS_STEPS['img1'])
-        img1_path, img1_info = _gen_img1(task, output_dir)
+        img1_path, img1_info = _gen_img1(task, output_dir,
+                                          basemap_path=cached_basemap_path,
+                                          annotation_path=cached_annotation_path)
         record_kwargs['img1_path'] = img1_path
         record_kwargs['img1_info'] = img1_info
         gc.collect()
