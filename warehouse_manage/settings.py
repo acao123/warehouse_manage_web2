@@ -227,7 +227,7 @@ SLOPE_SHP_PATH = MAP_DATA_BASE_PATH + '滑坡和危险斜坡/斜坡.shp'
 AC_TIF_PATH = 'C:/地质/ac/ac分割版/ac2.TIF'
 
 # 天地图 Key
-TIANDITU_TK = '8a7eff89e30c5ecc97bee999d39fc1e1'
+TIANDITU_TK = '1ef76ef90c6eb961cb49618f9b1a399d'
 
 # ============================================================
 # 企业级日志配置

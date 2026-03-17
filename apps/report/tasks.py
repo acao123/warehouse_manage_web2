@@ -470,67 +470,67 @@ def execute_report_task(task_id: int) -> None:
         gc.collect()
 
         # ---- 图二 ----
-        update_progress(task_id, '生成图二（烈度分布图）', PROGRESS_STEPS['img2'])
-        img2_path, img2_info = _gen_img2(task, output_dir)
-        record_kwargs['img2_path'] = img2_path
-        record_kwargs['img2_info'] = img2_info
-        gc.collect()
-
-        # ---- 图三 ----
-        update_progress(task_id, '生成图三（地质构造图）', PROGRESS_STEPS['img3'])
-        record_kwargs['img3_path'] = _gen_img3(task, output_dir)
-        gc.collect()
-
-        # ---- 图四 ----
-        update_progress(task_id, '生成图四（数字高程图）', PROGRESS_STEPS['img4'])
-        record_kwargs['img4_path'] = _gen_img4(task, output_dir)
-        gc.collect()
-
-        # ---- 图五 ----
-        update_progress(task_id, '生成图五（土地利用类型图）', PROGRESS_STEPS['img5'])
-        record_kwargs['img5_path'] = _gen_img5(task, output_dir)
-        gc.collect()
-
-        # ---- 图六 ----
-        update_progress(task_id, '生成图六（人口分布图）', PROGRESS_STEPS['img6'])
-        record_kwargs['img6_path'] = _gen_img6(task, output_dir)
-        gc.collect()
-
-        # ---- 图七 ----
-        update_progress(task_id, '生成图七（GDP网格图）', PROGRESS_STEPS['img7'])
-        record_kwargs['img7_path'] = _gen_img7(task, output_dir)
-        gc.collect()
-
-        # ---- 图八 ----
-        update_progress(task_id, '生成图八（道路交通图）', PROGRESS_STEPS['img8'])
-        record_kwargs['img8_path'] = _gen_img8(task, output_dir)
-        gc.collect()
-
-        # ---- 图九 ----
-        update_progress(task_id, '生成图九（滑坡斜坡分布图）', PROGRESS_STEPS['img9'])
-        img9_path, img9_info = _gen_img9(task, output_dir)
-        record_kwargs['img9_path'] = img9_path
-        record_kwargs['img9_info'] = img9_info
-        gc.collect()
-
-        # ---- Ia.tif ----
-        update_progress(task_id, '生成 Ia.tif', PROGRESS_STEPS['ia_tif'])
-        ia_tif_path = _gen_ia_tif(task, output_dir)
-        gc.collect()
-
-        # ---- Dn.tif ----
-        update_progress(task_id, '生成 Dn.tif', PROGRESS_STEPS['dn_tif'])
-        dn_tif_path = None
-        if ia_tif_path:
-            dn_tif_path = _gen_dn_tif(task, output_dir, ia_tif_path)
-        else:
-            logger.warning('[任务 %s] Ia.tif 未生成，跳过 Dn.tif 及图十', task_id)
-        gc.collect()
-
-        # ---- 图十 ----
-        update_progress(task_id, '生成图十（Newmark位移图）', PROGRESS_STEPS['img10'])
-        record_kwargs['img10_path'] = _gen_img10(task, output_dir, dn_tif_path)
-        gc.collect()
+        # update_progress(task_id, '生成图二（烈度分布图）', PROGRESS_STEPS['img2'])
+        # img2_path, img2_info = _gen_img2(task, output_dir)
+        # record_kwargs['img2_path'] = img2_path
+        # record_kwargs['img2_info'] = img2_info
+        # gc.collect()
+        #
+        # # ---- 图三 ----
+        # update_progress(task_id, '生成图三（地质构造图）', PROGRESS_STEPS['img3'])
+        # record_kwargs['img3_path'] = _gen_img3(task, output_dir)
+        # gc.collect()
+        #
+        # # ---- 图四 ----
+        # update_progress(task_id, '生成图四（数字高程图）', PROGRESS_STEPS['img4'])
+        # record_kwargs['img4_path'] = _gen_img4(task, output_dir)
+        # gc.collect()
+        #
+        # # ---- 图五 ----
+        # update_progress(task_id, '生成图五（土地利用类型图）', PROGRESS_STEPS['img5'])
+        # record_kwargs['img5_path'] = _gen_img5(task, output_dir)
+        # gc.collect()
+        #
+        # # ---- 图六 ----
+        # update_progress(task_id, '生成图六（人口分布图）', PROGRESS_STEPS['img6'])
+        # record_kwargs['img6_path'] = _gen_img6(task, output_dir)
+        # gc.collect()
+        #
+        # # ---- 图七 ----
+        # update_progress(task_id, '生成图七（GDP网格图）', PROGRESS_STEPS['img7'])
+        # record_kwargs['img7_path'] = _gen_img7(task, output_dir)
+        # gc.collect()
+        #
+        # # ---- 图八 ----
+        # update_progress(task_id, '生成图八（道路交通图）', PROGRESS_STEPS['img8'])
+        # record_kwargs['img8_path'] = _gen_img8(task, output_dir)
+        # gc.collect()
+        #
+        # # ---- 图九 ----
+        # update_progress(task_id, '生成图九（滑坡斜坡分布图）', PROGRESS_STEPS['img9'])
+        # img9_path, img9_info = _gen_img9(task, output_dir)
+        # record_kwargs['img9_path'] = img9_path
+        # record_kwargs['img9_info'] = img9_info
+        # gc.collect()
+        #
+        # # ---- Ia.tif ----
+        # update_progress(task_id, '生成 Ia.tif', PROGRESS_STEPS['ia_tif'])
+        # ia_tif_path = _gen_ia_tif(task, output_dir)
+        # gc.collect()
+        #
+        # # ---- Dn.tif ----
+        # update_progress(task_id, '生成 Dn.tif', PROGRESS_STEPS['dn_tif'])
+        # dn_tif_path = None
+        # if ia_tif_path:
+        #     dn_tif_path = _gen_dn_tif(task, output_dir, ia_tif_path)
+        # else:
+        #     logger.warning('[任务 %s] Ia.tif 未生成，跳过 Dn.tif 及图十', task_id)
+        # gc.collect()
+        #
+        # # ---- 图十 ----
+        # update_progress(task_id, '生成图十（Newmark位移图）', PROGRESS_STEPS['img10'])
+        # record_kwargs['img10_path'] = _gen_img10(task, output_dir, dn_tif_path)
+        # gc.collect()
 
         # ---- 保存记录 ----
         update_progress(task_id, '保存记录到数据库', PROGRESS_STEPS['save'])
@@ -579,11 +579,12 @@ def start_task_async(task_id: int) -> None:
     参数:
         task_id: report_task 表的 id
     """
-    thread = threading.Thread(
-        target=execute_report_task,
-        args=(task_id,),
-        name=f'ReportTask-{task_id}',
-        daemon=True,
-    )
-    thread.start()
-    logger.info('[任务 %s] 已启动后台线程 %s', task_id, thread.name)
+    execute_report_task(task_id)
+    # thread = threading.Thread(
+    #     target=,
+    #     args=(task_id,),
+    #     name=f'ReportTask-{task_id}',
+    #     daemon=True,
+    # )
+    # thread.start()
+    # logger.info('[任务 %s] 已启动后台线程 %s', task_id, thread.name)
