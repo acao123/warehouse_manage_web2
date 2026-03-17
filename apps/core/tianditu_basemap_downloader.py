@@ -26,10 +26,7 @@ TIANDITU_TK = (
     if _django_settings is not None else '1ef76ef90c6eb961cb49618f9b1a399d'
 )
 
-try:
-    from qgis.core import QgsRasterLayer
-except ImportError:
-    QgsRasterLayer = None
+from qgis.core import QgsRasterLayer
 
 
 def download_tianditu_basemap_tiles(extent, width_px, height_px, output_path):
