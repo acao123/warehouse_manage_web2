@@ -1166,6 +1166,7 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
 
     if ordered_layers:
         map_item.setLayers(ordered_layers)
+        map_item.setKeepLayerSet(True)
     map_item.invalidateCache()
 
     # 经纬度网格

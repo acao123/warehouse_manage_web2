@@ -1434,9 +1434,11 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     layout.addLayoutItem(map_item)
 
     # 显式设置地图项渲染的图层列表，确保底图等所有图层都能在布局中正确显示
+    # setKeepLayerSet确保震中五角星始终在最上层，不被注记等图层遮挡
     layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
     if layers_to_set:
         map_item.setLayers(layers_to_set)
+        map_item.setKeepLayerSet(True)
     map_item.invalidateCache()
 
     # 添加经纬度网格

@@ -1217,10 +1217,11 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale,
     map_item.setBackgroundColor(QColor(255, 255, 255))
     layout.addLayoutItem(map_item)
 
-    # 设置地图渲染图层列表
+    # 设置地图渲染图层列表（setKeepLayerSet确保使用自定义列表，震中五角星在最上层）
     layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
     if layers_to_set:
         map_item.setLayers(layers_to_set)
+        map_item.setKeepLayerSet(True)
     map_item.invalidateCache()
 
     # 经纬度网格

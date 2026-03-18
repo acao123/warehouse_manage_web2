@@ -1270,6 +1270,7 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     layout.addLayoutItem(map_item)
     if ordered_layers is not None:
         map_item.setLayers(ordered_layers)
+        map_item.setKeepLayerSet(True)
 
     # 添加经纬度网格
     _setup_map_grid(map_item, extent)

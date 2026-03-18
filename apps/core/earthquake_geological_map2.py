@@ -1231,6 +1231,7 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     layout.addLayoutItem(map_item)
     if ordered_layers is not None:
         map_item.setLayers(ordered_layers)
+        map_item.setKeepLayerSet(True)
 
     _setup_map_grid(map_item, extent)
     _add_north_arrow(layout, map_height_mm)
