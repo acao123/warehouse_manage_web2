@@ -205,16 +205,16 @@ FAULT_EARLY_SHP_PATH = MAP_DATA_BASE_PATH + '断层/活动断裂-早中更新世
 FAULT_KMZ_PATH = MAP_DATA_BASE_PATH + '断层/全国六代图断裂.KMZ'
 
 # 地质构造数据
-GEOLOGY_TIF_PATH = MAP_DATA_BASE_PATH + '图3/地质构造/地质构造底图.tif'
+GEOLOGY_TIF_PATH = MAP_DATA_BASE_PATH + '图3/group.tif'
 
 # 数字高程数据
-ELEVATION_TIF_PATH = MAP_DATA_BASE_PATH + '图4/全国DEM整合/全国DEM整合.tif'
+ELEVATION_TIF_PATH = 'C:\地质\图4地形地貌\全国哥白尼DEM数据.tif'
 
 # 土地利用数据
-LAND_USE_TIF_PATH = MAP_DATA_BASE_PATH + '图5/土地利用/Globeland30.tif'
+LAND_USE_TIF_PATH = MAP_DATA_BASE_PATH + '图5/全国土壤利用分类.tif'
 
 # 人口分布数据
-POPULATION_TIF_PATH = MAP_DATA_BASE_PATH + '图6/人口公里网格分布/人口公里网格.tif'
+POPULATION_TIF_PATH = MAP_DATA_BASE_PATH + '图6/全国人口密度-2023年数据.tif'
 
 # GDP数据
 GDP_TIF_PATH = MAP_DATA_BASE_PATH + '图7/gdp2020.tif'
