@@ -173,7 +173,7 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 209715200  # 200MB
 FILE_BASE_PATH = 'E:/data/report/'
 
 # 报告Word模板路径
-REPORT_TEMPLATE_PATH = os.path.join(BASE_DIR, 'data', 'report_template.docx')
+REPORT_TEMPLATE_PATH = 'E:/data/word/第X期 XXX地XX级地震滑坡危险性评估报告.docx'
 
 # ============================================================
 # 地图底图数据路径配置

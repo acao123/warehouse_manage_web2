@@ -293,9 +293,11 @@ def running_tasks_view(request):
     page = int(request.GET.get('page', 1))
     limit = int(request.GET.get('limit', 10))
 
+    status_list = [ReportTask.STATUS_CREATED, ReportTask.STATUS_RUNNING]
     queryset = ReportTask.objects.filter(
-        user_id=user_id, task_status=ReportTask.STATUS_RUNNING
-    ).order_by('-created_at')
+        user_id=user_id,
+        task_status__in=status_list
+    ).order_by('-updated_at')
 
     total = queryset.count()
     start = (page - 1) * limit

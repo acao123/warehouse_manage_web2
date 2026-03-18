@@ -474,7 +474,7 @@ def execute_report_task(task_id: int) -> None:
     # 记录各图片结果
     record_kwargs = {'user_id': task.user_id, 'task_id': task_id}
 
-    # ---- 缓存模式：预先下载天地图底图和注记 ----
+    # ---- 缓存模式：预先下���天地图底图和注记 ----
     cached_basemap_path = None
     cached_annotation_path = None
     if task.cache_base_map == 1:
@@ -521,44 +521,60 @@ def execute_report_task(task_id: int) -> None:
 
         # ---- 图二 ----
         # update_progress(task_id, '生成图二（烈度分布图）', PROGRESS_STEPS['img2'])
-        # img2_path, img2_info = _gen_img2(task, output_dir)
+        # img2_path, img2_info = _gen_img2(task, output_dir,
+        #                                   basemap_path=cached_basemap_path,
+        #                                   annotation_path=cached_annotation_path)
         # record_kwargs['img2_path'] = img2_path
         # record_kwargs['img2_info'] = img2_info
         # gc.collect()
         #
         # # ---- 图三 ----
         # update_progress(task_id, '生成图三（地质构造图）', PROGRESS_STEPS['img3'])
-        # record_kwargs['img3_path'] = _gen_img3(task, output_dir)
+        # record_kwargs['img3_path'] = _gen_img3(task, output_dir,
+        #                                         basemap_path=cached_basemap_path,
+        #                                         annotation_path=cached_annotation_path)
         # gc.collect()
         #
         # # ---- 图四 ----
         # update_progress(task_id, '生成图四（数字高程图）', PROGRESS_STEPS['img4'])
-        # record_kwargs['img4_path'] = _gen_img4(task, output_dir)
+        # record_kwargs['img4_path'] = _gen_img4(task, output_dir,
+        #                                         basemap_path=cached_basemap_path,
+        #                                         annotation_path=cached_annotation_path)
         # gc.collect()
         #
         # # ---- 图五 ----
         # update_progress(task_id, '生成图五（土地利用类型图）', PROGRESS_STEPS['img5'])
-        # record_kwargs['img5_path'] = _gen_img5(task, output_dir)
+        # record_kwargs['img5_path'] = _gen_img5(task, output_dir,
+        #                                         basemap_path=cached_basemap_path,
+        #                                         annotation_path=cached_annotation_path)
         # gc.collect()
         #
         # # ---- 图六 ----
         # update_progress(task_id, '生成图六（人口分布图）', PROGRESS_STEPS['img6'])
-        # record_kwargs['img6_path'] = _gen_img6(task, output_dir)
+        # record_kwargs['img6_path'] = _gen_img6(task, output_dir,
+        #                                         basemap_path=cached_basemap_path,
+        #                                         annotation_path=cached_annotation_path)
         # gc.collect()
         #
         # # ---- 图七 ----
         # update_progress(task_id, '生成图七（GDP网格图）', PROGRESS_STEPS['img7'])
-        # record_kwargs['img7_path'] = _gen_img7(task, output_dir)
+        # record_kwargs['img7_path'] = _gen_img7(task, output_dir,
+        #                                         basemap_path=cached_basemap_path,
+        #                                         annotation_path=cached_annotation_path)
         # gc.collect()
         #
         # # ---- 图八 ----
         # update_progress(task_id, '生成图八（道路交通图）', PROGRESS_STEPS['img8'])
-        # record_kwargs['img8_path'] = _gen_img8(task, output_dir)
+        # record_kwargs['img8_path'] = _gen_img8(task, output_dir,
+        #                                         basemap_path=cached_basemap_path,
+        #                                         annotation_path=cached_annotation_path)
         # gc.collect()
         #
         # # ---- 图九 ----
         # update_progress(task_id, '生成图九（滑坡斜坡分布图）', PROGRESS_STEPS['img9'])
-        # img9_path, img9_info = _gen_img9(task, output_dir)
+        # img9_path, img9_info = _gen_img9(task, output_dir,
+        #                                   basemap_path=cached_basemap_path,
+        #                                   annotation_path=cached_annotation_path)
         # record_kwargs['img9_path'] = img9_path
         # record_kwargs['img9_info'] = img9_info
         # gc.collect()
@@ -588,7 +604,7 @@ def execute_report_task(task_id: int) -> None:
         logger.info('[任务 %s] 已保存 report_task_record', task_id)
 
         # ---- 生成Word文档 ----
-        generate_report_word(task_id, output_dir)
+        generate_report_word(task, output_dir, record_kwargs)
 
         # ---- 标记成功 ----
         task.task_status = ReportTask.STATUS_SUCCESS
@@ -625,78 +641,215 @@ def _mark_failed(task: ReportTask) -> None:
 # Word文档生成函数
 # ============================================================
 
-def generate_report_word(task_id: int, output_dir: str) -> Optional[str]:
+def _get_map_scope_km(magnitude: float) -> int:
     """
-    根据任务记录生成Word报告文档。
-
-    执行流程：
-        1. 从 ReportTaskRecord 表查询该任务的记录
-        2. 从 settings.REPORT_TEMPLATE_PATH 获取Word模板路径
-        3. 打开模板（模板不存在则创建空白文档）
-        4. 遍历图片1~图片10，对每张存在的图片插入说明和图片
-        5. 保存文档到 output_dir/report.docx
-        6. 更新 ReportTaskRecord 的 report_path 字段
+    根据震级获取历史地震统计范围（公里）。
 
     参数:
-        task_id: report_task 表的 id
+        magnitude: 震级
+
+    返回:
+        统计范围（公里），默认150km
+    """
+    # 根据实际需求，可以根据震级返回不同的范围
+    # 目前固定返回150km
+    if magnitude >= 7.0:
+        return 200
+    elif magnitude >= 6.0:
+        return 150
+    elif magnitude >= 5.0:
+        return 100
+    else:
+        return 80
+
+
+def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -> Optional[str]:
+    """
+    根据 Word 模板生成报告文档，使用占位符替换方式。
+
+    模板占位符说明（使用 Jinja2 语法）：
+        - {{current_year}}: 当前年份
+        - {{task_id}}: 任务ID（期号）
+        - {{current_Time}}: 当前日期时间
+        - {{address}}: 地震位置（如：XX省XX市）
+        - {{base_info}}: 地震基本信息描述
+        - {{img1_info}}: 历史地震说明文字
+        - {{img1}}: 历史地震分布图
+        - {{scope}}: 历史地震统计范围（如150）
+        - {{img2_info}}: 烈度说明文字
+        - {{img2}}: 烈度分布图
+        - {{img3}} ~ {{img9}}: 其他专题图
+        - {{img9_info}}: 滑坡分布说明
+
+    执行流程：
+        1. 检查并导入 docxtpl 库
+        2. 查询 ReportTaskRecord 记录
+        3. 加载 Word 模板文件
+        4. 构建模板上下文（包括文字和图片）
+        5. 渲染模板并保存
+        6. 更新数据库记录
+
+    参数:
+        task: ReportTask 模型对象
         output_dir: 输出目录路径
+        record_data: 已生成的图片路径字典
 
     返回:
         文档路径字符串，失败时返回 None
     """
     try:
-        from docx import Document
-        from docx.shared import Inches
+        # 尝试导入 docxtpl 库（支持 Jinja2 模板语法）
+        from docxtpl import DocxTemplate, InlineImage
+        from docx.shared import Inches, Mm
     except ImportError:
-        logger.error('[任务 %s] python-docx 未安装，跳过Word文档生成', task_id)
-        return None
+        logger.error('[任务 %s] docxtpl 未安装，尝试使用 python-docx 备用方案', task.id)
+        return _generate_report_word_fallback(task, output_dir, record_data)
 
     try:
+        task_id = task.id
+
+        # ---- 获取 ReportTaskRecord 记录 ----
         record = ReportTaskRecord.objects.filter(task_id=task_id).first()
         if not record:
             logger.warning('[任务 %s] 未找到 ReportTaskRecord，跳过Word文档生成', task_id)
             return None
 
+        # ---- 获取模板路径 ----
         template_path = getattr(settings, 'REPORT_TEMPLATE_PATH', None)
-        if template_path and os.path.exists(template_path):
-            document = Document(template_path)
-            logger.info('[任务 %s] 使用Word模板: %s', task_id, template_path)
+        if not template_path or not os.path.exists(template_path):
+            logger.warning('[任务 %s] Word模板文件不存在: %s，使用备用方案', task_id, template_path)
+            return _generate_report_word_fallback(task, output_dir, record_data)
+
+        # ---- 加载模板 ----
+        doc = DocxTemplate(template_path)
+        logger.info('[任务 %s] 已加载Word模板: %s', task_id, template_path)
+
+        # ---- 准备日期时间字符串 ----
+        now = datetime.now()
+        current_year = now.strftime('%Y')
+        current_time = now.strftime('%Y年%m月%d日')
+
+        # ---- 准备地震基本信息 ----
+        # 格式：北京时间2026年3月15日14时30分，XX省XX市发生X.X级地震，震中位于北纬XX.XX度，东经XX.XX度，震源深度约XXkm
+        ori_time_str = task.ori_time.strftime('%Y年%m月%d日%H时%M分') if task.ori_time else ''
+        base_info = (
+            f"北京时间{ori_time_str}，{task.address}发生{task.magnitude}级地震，"
+            f"震中位于北纬{float(task.latitude):.2f}度，东经{float(task.longitude):.2f}度，"
+            f"震源深度约{int(task.foc_depth)}km"
+        )
+
+        # ---- 获取历史地震统计范围 ----
+        scope = _get_map_scope_km(task.magnitude)
+
+        # ---- 构建模板上下文 ----
+        context = {
+            'current_year': current_year,
+            'task_id': task_id,
+            'current_Time': current_time,
+            'address': f"{task.address}{task.magnitude}",
+            'base_info': base_info,
+            'scope': scope,
+            # 文字说明
+            'img1_info': record.img1_info or '',
+            'img2_info': record.img2_info or '',
+            'img9_info': record.img9_info or '',
+        }
+
+        # ---- 准备图片对象 ----
+        # 图片宽度设置（单位：英寸）
+        img_width = Inches(5.5)
+
+        # 图片一：历史地震分布图
+        img1_path = record.img1_path
+        if img1_path and os.path.exists(img1_path):
+            context['img1'] = InlineImage(doc, img1_path, width=img_width)
+            logger.info('[任务 %s] 已准备图一: %s', task_id, img1_path)
         else:
-            if template_path:
-                logger.warning('[任务 %s] Word模板文件不存在: %s，使用空白文档', task_id, template_path)
-            document = Document()
+            context['img1'] = ''
+            logger.warning('[任务 %s] 图一不存在: %s', task_id, img1_path)
 
-        # 图片字段映射：编号 -> (path字段名, info字段名或None)
-        img_fields = [
-            (1, 'img1_path', 'img1_info'),
-            (2, 'img2_path', 'img2_info'),
-            (3, 'img3_path', None),
-            (4, 'img4_path', None),
-            (5, 'img5_path', None),
-            (6, 'img6_path', None),
-            (7, 'img7_path', None),
-            (8, 'img8_path', None),
-            (9, 'img9_path', 'img9_info'),
-            (10, 'img10_path', None),
-        ]
+        # 图片二：烈度分布图
+        img2_path = record.img2_path
+        if img2_path and os.path.exists(img2_path):
+            context['img2'] = InlineImage(doc, img2_path, width=img_width)
+            logger.info('[任务 %s] 已准备图二: %s', task_id, img2_path)
+        else:
+            context['img2'] = ''
+            logger.warning('[任务 %s] 图二不存在: %s', task_id, img2_path)
 
-        for img_no, path_field, info_field in img_fields:
-            img_path = getattr(record, path_field, None)
-            if not img_path or not os.path.exists(img_path):
-                continue
-            img_info = getattr(record, info_field, None) if info_field else None
-            if img_info:
-                document.add_paragraph(img_info)
-            try:
-                document.add_picture(img_path, width=Inches(6))
-                logger.info('[任务 %s] 已插入图%d: %s', task_id, img_no, img_path)
-            except Exception as pic_exc:
-                logger.error('[任务 %s] 插入图%d失败: %s', task_id, img_no, pic_exc, exc_info=True)
+        # 图片三：地质构造图
+        img3_path = record.img3_path
+        if img3_path and os.path.exists(img3_path):
+            context['img3'] = InlineImage(doc, img3_path, width=img_width)
+            logger.info('[任务 %s] 已准备图三: %s', task_id, img3_path)
+        else:
+            context['img3'] = ''
+            logger.warning('[任务 %s] 图三不存在: %s', task_id, img3_path)
 
+        # 图片四：数字高程图
+        img4_path = record.img4_path
+        if img4_path and os.path.exists(img4_path):
+            context['img4'] = InlineImage(doc, img4_path, width=img_width)
+            logger.info('[任务 %s] 已准备图四: %s', task_id, img4_path)
+        else:
+            context['img4'] = ''
+            logger.warning('[任务 %s] 图四不存在: %s', task_id, img4_path)
+
+        # 图片五：土地利用类型图
+        img5_path = record.img5_path
+        if img5_path and os.path.exists(img5_path):
+            context['img5'] = InlineImage(doc, img5_path, width=img_width)
+            logger.info('[任务 %s] 已准备图五: %s', task_id, img5_path)
+        else:
+            context['img5'] = ''
+            logger.warning('[任务 %s] 图五不存在: %s', task_id, img5_path)
+
+        # 图片六：人口分布图
+        img6_path = record.img6_path
+        if img6_path and os.path.exists(img6_path):
+            context['img6'] = InlineImage(doc, img6_path, width=img_width)
+            logger.info('[任务 %s] 已准备图六: %s', task_id, img6_path)
+        else:
+            context['img6'] = ''
+            logger.warning('[任务 %s] 图六不存在: %s', task_id, img6_path)
+
+        # 图片七：GDP网格图
+        img7_path = record.img7_path
+        if img7_path and os.path.exists(img7_path):
+            context['img7'] = InlineImage(doc, img7_path, width=img_width)
+            logger.info('[任务 %s] 已准备图七: %s', task_id, img7_path)
+        else:
+            context['img7'] = ''
+            logger.warning('[任务 %s] 图七不存在: %s', task_id, img7_path)
+
+        # 图片八：道路交通图
+        img8_path = record.img8_path
+        if img8_path and os.path.exists(img8_path):
+            context['img8'] = InlineImage(doc, img8_path, width=img_width)
+            logger.info('[任务 %s] 已准备图八: %s', task_id, img8_path)
+        else:
+            context['img8'] = ''
+            logger.warning('[任务 %s] 图八不存在: %s', task_id, img8_path)
+
+        # 图片九：滑坡分布图
+        img9_path = record.img9_path
+        if img9_path and os.path.exists(img9_path):
+            context['img9'] = InlineImage(doc, img9_path, width=img_width)
+            logger.info('[任务 %s] 已准备图九: %s', task_id, img9_path)
+        else:
+            context['img9'] = ''
+            logger.warning('[任务 %s] 图九不存在: %s', task_id, img9_path)
+
+        # ---- 渲染模板 ----
+        doc.render(context)
+        logger.info('[任务 %s] 模板渲染完成', task_id)
+
+        # ---- 保存文档 ----
         doc_path = os.path.join(output_dir, 'report.docx')
-        document.save(doc_path)
+        doc.save(doc_path)
         logger.info('[任务 %s] Word文档已保存: %s', task_id, doc_path)
 
+        # ---- 更新数据库记录 ----
         record.report_path = doc_path
         record.save(update_fields=['report_path', 'updated_at'])
         logger.info('[任务 %s] report_task_record.report_path 已更新', task_id)
@@ -704,7 +857,218 @@ def generate_report_word(task_id: int, output_dir: str) -> Optional[str]:
         return doc_path
 
     except Exception as exc:
-        logger.error('[任务 %s] Word文档生成失败: %s', task_id, exc, exc_info=True)
+        logger.error('[任务 %s] Word文档生成失败: %s', task.id, exc, exc_info=True)
+        # 尝试使用备用方案
+        return _generate_report_word_fallback(task, output_dir, record_data)
+
+
+def _generate_report_word_fallback(task: ReportTask, output_dir: str, record_data: dict) -> Optional[str]:
+    """
+    使用 python-docx 库的备用方案生成 Word 文档。
+
+    当 docxtpl 不可用或模板文件不存在时，使用此函数从头创建文档。
+
+    参数:
+        task: ReportTask 模型对象
+        output_dir: 输出目录路径
+        record_data: 已生成的图片路径字典
+
+    返回:
+        文档路径字符串，失败时返回 None
+    """
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt, Cm
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+    except ImportError:
+        logger.error('[任务 %s] python-docx 未安装，跳过Word文档生成', task.id)
+        return None
+
+    try:
+        task_id = task.id
+
+        # ---- 获取 ReportTaskRecord 记录 ----
+        record = ReportTaskRecord.objects.filter(task_id=task_id).first()
+        if not record:
+            logger.warning('[任务 %s] 未找到 ReportTaskRecord，跳过Word文档生成', task_id)
+            return None
+
+        # ---- 创建新文档 ----
+        document = Document()
+
+        # ---- 设置默认字体（需要设置中文字体）----
+        document.styles['Normal'].font.name = '宋体'
+        document.styles['Normal']._element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')
+
+        # ---- 准备日期时间字符串 ----
+        now = datetime.now()
+        current_year = now.strftime('%Y')
+        current_time = now.strftime('%Y年%m月%d日')
+
+        # ---- 添加标题行 ----
+        # 第一行：年份和期号
+        p1 = document.add_paragraph()
+        p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run1 = p1.add_run(f'{current_year}年第{task_id}期')
+        run1.font.size = Pt(16)
+        run1.bold = True
+
+        # 第二行：单位名称
+        p2 = document.add_paragraph()
+        p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run2 = p2.add_run('中国地震灾害防御中心')
+        run2.font.size = Pt(12)
+
+        # 第三行：部门和日期
+        p3 = document.add_paragraph()
+        run3a = p3.add_run('国（境）外地震灾情评估部')
+        run3a.font.size = Pt(12)
+        p3.add_run('\t' * 5)  # 添加制表符间隔
+        run3b = p3.add_run(current_time)
+        run3b.font.size = Pt(12)
+
+        # ---- 添加地震标题 ----
+        p_title = document.add_paragraph()
+        p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run_title = p_title.add_run(f'{task.address}{task.magnitude}级地震')
+        run_title.font.size = Pt(18)
+        run_title.bold = True
+
+        # ---- 一、地震基本情况 ----
+        document.add_heading('一、地震基本情况', level=1)
+        ori_time_str = task.ori_time.strftime('%Y年%m月%d日%H时%M分') if task.ori_time else ''
+        base_info = (
+            f"据中国地震台网测定，北京时间{ori_time_str}，{task.address}发生{task.magnitude}级地震，"
+            f"震中位于北纬{float(task.latitude):.2f}度，东经{float(task.longitude):.2f}度，"
+            f"震源深度约{int(task.foc_depth)}km。"
+        )
+        document.add_paragraph(base_info)
+
+        # ---- 二、历史地震��动性 ----
+        document.add_heading('二、历史地震活动性', level=1)
+        # 添加图一说明
+        img1_info = record.img1_info
+        if img1_info:
+            document.add_paragraph(img1_info + '。')
+        # 添加图一
+        img1_path = record.img1_path
+        if img1_path and os.path.exists(img1_path):
+            document.add_picture(img1_path, width=Inches(5.5))
+            logger.info('[任务 %s] 已插入图一: %s', task_id, img1_path)
+        # 添加图注
+        scope = _get_map_scope_km(task.magnitude)
+        p_cap1 = document.add_paragraph()
+        p_cap1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_cap1.add_run(f'图1 1900年以来震中{scope}km范围内历史地震分布图')
+
+        # ---- 三、地震烈度分布预估 ----
+        document.add_heading('三、地震烈度分布预估', level=1)
+        # 添加图二说明
+        img2_info = record.img2_info
+        if img2_info:
+            document.add_paragraph(f'本次地震最高预估烈度为{img2_info}度。')
+        # 添加图二
+        img2_path = record.img2_path
+        if img2_path and os.path.exists(img2_path):
+            document.add_picture(img2_path, width=Inches(5.5))
+            logger.info('[任务 %s] 已插入图二: %s', task_id, img2_path)
+        # 添加图注
+        p_cap2 = document.add_paragraph()
+        p_cap2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_cap2.add_run('图2 地震烈度预估图')
+
+        # ---- 四、区域孕灾环境与承灾体分布 ----
+        document.add_heading('四、区域孕灾环境与承灾体分布', level=1)
+
+        # （一）地质构造
+        document.add_heading('（一）地质构造', level=2)
+        img3_path = record.img3_path
+        if img3_path and os.path.exists(img3_path):
+            document.add_picture(img3_path, width=Inches(5.5))
+            logger.info('[任务 %s] 已插入图三: %s', task_id, img3_path)
+        p_cap3 = document.add_paragraph()
+        p_cap3.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_cap3.add_run('图3 震中附近150km地质构造图')
+
+        # （二）地形地貌
+        document.add_heading('（二）地形地貌', level=2)
+        img4_path = record.img4_path
+        if img4_path and os.path.exists(img4_path):
+            document.add_picture(img4_path, width=Inches(5.5))
+            logger.info('[任务 %s] 已插入图四: %s', task_id, img4_path)
+        p_cap4 = document.add_paragraph()
+        p_cap4.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_cap4.add_run('图4 震中附近150km数字高程图（单位：m）')
+
+        # （三）土地利用类型
+        document.add_heading('（三）土地利用类型', level=2)
+        img5_path = record.img5_path
+        if img5_path and os.path.exists(img5_path):
+            document.add_picture(img5_path, width=Inches(5.5))
+            logger.info('[任务 %s] 已插入图五: %s', task_id, img5_path)
+        p_cap5 = document.add_paragraph()
+        p_cap5.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_cap5.add_run('图5 震中附近150km土地利用类型分布图')
+
+        # （四）人口公里网格
+        document.add_heading('（四）人口公里网格', level=2)
+        img6_path = record.img6_path
+        if img6_path and os.path.exists(img6_path):
+            document.add_picture(img6_path, width=Inches(5.5))
+            logger.info('[任务 %s] 已插入图六: %s', task_id, img6_path)
+        p_cap6 = document.add_paragraph()
+        p_cap6.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_cap6.add_run('图6 震中附近150km人口公里网格分布图（单位：人/平方千米）')
+
+        # （五）经济公里网格
+        document.add_heading('（五）经济公里网格', level=2)
+        img7_path = record.img7_path
+        if img7_path and os.path.exists(img7_path):
+            document.add_picture(img7_path, width=Inches(5.5))
+            logger.info('[任务 %s] 已插入图七: %s', task_id, img7_path)
+        p_cap7 = document.add_paragraph()
+        p_cap7.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_cap7.add_run('图7 震中附近150km经济公里网格分布图（单位：万元/平方千米）')
+
+        # （六）路网
+        document.add_heading('（六）路网', level=2)
+        img8_path = record.img8_path
+        if img8_path and os.path.exists(img8_path):
+            document.add_picture(img8_path, width=Inches(5.5))
+            logger.info('[任务 %s] 已插入图八: %s', task_id, img8_path)
+        p_cap8 = document.add_paragraph()
+        p_cap8.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_cap8.add_run('图8 震中附近150km路网分布图')
+
+        # （七）历史滑坡灾害盘点
+        document.add_heading('（七）历史滑坡灾害盘点', level=2)
+        # 添加图九说明
+        img9_info = record.img9_info
+        if img9_info:
+            document.add_paragraph(img9_info)
+        img9_path = record.img9_path
+        if img9_path and os.path.exists(img9_path):
+            document.add_picture(img9_path, width=Inches(5.5))
+            logger.info('[任务 %s] 已插入图九: %s', task_id, img9_path)
+        p_cap9 = document.add_paragraph()
+        p_cap9.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_cap9.add_run('图9 震中附近150km历史滑坡分布图')
+
+        # ---- 保存文档 ----
+        doc_path = os.path.join(output_dir, 'report.docx')
+        document.save(doc_path)
+        logger.info('[任务 %s] Word文档已保存（备用方案）: %s', task_id, doc_path)
+
+        # ---- 更新数据库记录 ----
+        record.report_path = doc_path
+        record.save(update_fields=['report_path', 'updated_at'])
+        logger.info('[任务 %s] report_task_record.report_path 已更新', task_id)
+
+        return doc_path
+
+    except Exception as exc:
+        logger.error('[任务 %s] Word文档生成失败（备用方案）: %s', task.id, exc, exc_info=True)
         return None
 
 
