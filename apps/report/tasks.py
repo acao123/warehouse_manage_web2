@@ -173,9 +173,7 @@ def _gen_img2(task: ReportTask, output_dir: str, basemap_path=None, annotation_p
             kml_path=task.intensity_kml_path,
             description_text='',
             magnitude=task.magnitude,
-            output_path=out,
-            basemap_path=basemap_path,
-            annotation_path=annotation_path,
+            output_path=out
         )
         info = None
         if result and isinstance(result, dict):
@@ -473,7 +471,7 @@ def execute_report_task(task_id: int) -> None:
     # 记录各图片结果
     record_kwargs = {'user_id': task.user_id, 'task_id': task_id}
 
-    # ---- 缓存模式：预先下���天地图底图和注记 ----
+    # ---- 缓存模式：预先下载天地图底图和注记 ----
     cached_basemap_path = None
     cached_annotation_path = None
     if task.cache_base_map == 1:
@@ -651,15 +649,240 @@ def _get_map_scope_km(magnitude: float) -> int:
         统计范围（公里），默认150km
     """
     # 根据实际需求，可以根据震级返回不同的范围
-    # 目前固定返回150km
     if magnitude >= 7.0:
-        return 200
-    elif magnitude >= 6.0:
         return 150
-    elif magnitude >= 5.0:
-        return 100
+    elif magnitude >= 6.0:
+        return 50
     else:
-        return 80
+        return 15
+
+
+def _get_image_size_px(image_path: str) -> Tuple[int, int]:
+    """
+    获取图片的实际像素尺寸。
+
+    参数:
+        image_path: 图片文件路径
+
+    返回:
+        (width_px, height_px) 元组，失败时返回 (0, 0)
+    """
+    try:
+        from PIL import Image
+        with Image.open(image_path) as img:
+            return img.size  # (width, height)
+    except Exception as exc:
+        logger.warning('获取图片尺寸失败 %s: %s', image_path, exc)
+        return (0, 0)
+
+
+def _get_image_dpi(image_path: str) -> Tuple[float, float]:
+    """
+    获取图片的 DPI 信息。
+
+    参数:
+        image_path: 图片文件路径
+
+    返回:
+        (dpi_x, dpi_y) 元组，如果图片没有 DPI 信息则返回 (96, 96) 作为默认值
+    """
+    try:
+        from PIL import Image
+        with Image.open(image_path) as img:
+            dpi = img.info.get('dpi')
+            if dpi and isinstance(dpi, tuple) and len(dpi) >= 2:
+                return (float(dpi[0]), float(dpi[1]))
+            # 尝试从 EXIF 获取
+            exif = img.getexif() if hasattr(img, 'getexif') else None
+            if exif:
+                # EXIF 标签 282 = XResolution, 283 = YResolution
+                x_res = exif.get(282)
+                y_res = exif.get(283)
+                if x_res and y_res:
+                    return (float(x_res), float(y_res))
+    except Exception as exc:
+        logger.warning('获取图片DPI失败 %s: %s', image_path, exc)
+    return (96.0, 96.0)  # 默认 96 DPI
+
+
+def _calculate_image_size_for_word(
+    image_path: str,
+    target_width_mm: Optional[float] = None,
+    target_height_mm: Optional[float] = None,
+    max_width_mm: float = 230.0,
+    max_height_mm: float = 300.0,
+    use_image_dpi: bool = True
+) -> Tuple[float, float]:
+    """
+    计算图片在 Word 中的合适尺寸（毫米），保持宽高比。
+
+    算法说明：
+    1. 如果指定了 target_width_mm 或 target_height_mm，按指定值计算（保持宽高比）
+    2. 如果启用 use_image_dpi 且图片有 DPI 信息，按图片原始物理尺寸计算
+    3. 否则按最大宽高限制等比例缩放
+
+    参数:
+        image_path: 图片文件路径
+        target_width_mm: 目标宽度（毫米），如果指定则优先使用
+        target_height_mm: 目标高度（毫米），如果指定则优先使用
+        max_width_mm: 最大宽度限制（毫米）
+        max_height_mm: 最大高度限制（毫米）
+        use_image_dpi: 是否使用图片自身的 DPI 信息计算物理尺寸
+
+    返回:
+        (width_mm, height_mm) 元组
+    """
+    width_px, height_px = _get_image_size_px(image_path)
+    if width_px == 0 or height_px == 0:
+        # 无法获取图片尺寸，返回默认值
+        return (max_width_mm, max_width_mm * 0.75)  # 假设 4:3 比例
+
+    aspect_ratio = width_px / height_px
+
+    # 情况1：指定了目标宽度
+    if target_width_mm is not None:
+        calc_width = target_width_mm
+        calc_height = target_width_mm / aspect_ratio
+        # 检查高度是否超限
+        if calc_height > max_height_mm:
+            calc_height = max_height_mm
+            calc_width = max_height_mm * aspect_ratio
+        return (calc_width, calc_height)
+
+    # 情况2：指定了目标高度
+    if target_height_mm is not None:
+        calc_height = target_height_mm
+        calc_width = target_height_mm * aspect_ratio
+        # 检查宽度是否超限
+        if calc_width > max_width_mm:
+            calc_width = max_width_mm
+            calc_height = max_width_mm / aspect_ratio
+        return (calc_width, calc_height)
+
+    # 情况3：使用图片 DPI 计算原始物理尺寸
+    if use_image_dpi:
+        dpi_x, dpi_y = _get_image_dpi(image_path)
+        # 像素转毫米: mm = px / dpi * 25.4
+        original_width_mm = width_px / dpi_x * 25.4
+        original_height_mm = height_px / dpi_y * 25.4
+
+        # 如果原始尺寸在限制范围内，直接使用
+        if original_width_mm <= max_width_mm and original_height_mm <= max_height_mm:
+            return (original_width_mm, original_height_mm)
+
+    # 情况4：按最大限制等比例缩放
+    # 计算宽度和高度的缩放比例，取较小值确保都不超限
+    scale_w = max_width_mm / (width_px / 96.0 * 25.4)  # 假设默认 96 DPI
+    scale_h = max_height_mm / (height_px / 96.0 * 25.4)
+    scale = min(scale_w, scale_h, 1.0)  # 不放大，只缩小
+
+    final_width_mm = width_px / 96.0 * 25.4 * scale
+    final_height_mm = height_px / 96.0 * 25.4 * scale
+
+    # 确保不超过最大限制
+    if final_width_mm > max_width_mm:
+        scale = max_width_mm / final_width_mm
+        final_width_mm = max_width_mm
+        final_height_mm *= scale
+
+    if final_height_mm > max_height_mm:
+        scale = max_height_mm / final_height_mm
+        final_height_mm = max_height_mm
+        final_width_mm *= scale
+
+    return (width_px, height_px)
+
+
+def _create_inline_image(
+    doc,
+    image_path: str,
+    target_width_mm: Optional[float] = None,
+    target_height_mm: Optional[float] = None,
+    max_width_mm: float = 150.0,
+    max_height_mm: float = 200.0,
+    use_image_dpi: bool = True
+):
+    """
+    创建 InlineImage 对象，自动计算合适的尺寸。
+
+    参数:
+        doc: DocxTemplate 对象
+        image_path: 图片文件路径
+        target_width_mm: 目标宽度（毫米），可选
+        target_height_mm: 目标高度（毫米），可选
+        max_width_mm: 最大宽度限制（毫米）
+        max_height_mm: 最大高度限制（毫米）
+        use_image_dpi: 是否使用图片自身的 DPI 信息
+
+    返回:
+        InlineImage 对象，如果图片不存在则返回空字符串
+    """
+    from docxtpl import InlineImage
+    from docx.shared import Mm
+
+    if not image_path or not os.path.exists(image_path):
+        return ''
+
+    width_mm, height_mm = _calculate_image_size_for_word(
+        image_path,
+        target_width_mm=target_width_mm,
+        target_height_mm=target_height_mm,
+        max_width_mm=max_width_mm,
+        max_height_mm=max_height_mm,
+        use_image_dpi=use_image_dpi
+    )
+
+    logger.info('图片 %s 计算尺寸: %.1f x %.1f mm', image_path, width_mm, height_mm)
+
+    # 创建 InlineImage，同时指定宽度和高度以确保尺寸精确
+    return InlineImage(doc, image_path, width=Mm(width_mm), height=Mm(height_mm))
+
+
+# ============================================================
+# 图片尺寸配置
+# ============================================================
+
+# Word 文档中图片的默认尺寸配置（单位：毫米）
+# 可根据模板实际需求调整这些值
+
+IMAGE_SIZE_CONFIG = {
+    # 默认配置：适用于大多数图片
+    'default': {
+        'target_width_mm': 166.0,      # 目标宽度 150mm（约 5.9 英寸）
+        'target_height_mm': None,       # 高度自动计算
+        'max_width_mm': 170.0,          # 最大宽度限制
+        'max_height_mm': 220.0,         # 最大高度限制
+        'use_image_dpi': True,          # 使用图片 DPI 信息
+    },
+    # 可为特定图片配置不同尺寸
+    'img1': {
+        'target_width_mm': 166.0,
+        'target_height_mm': None,
+        'max_width_mm': 180.0,
+        'max_height_mm': 220.0,
+        'use_image_dpi': True,
+    },
+    'img2': {
+        'target_width_mm': 166.0,
+        'target_height_mm': None,
+        'max_width_mm': 180.0,
+        'max_height_mm': 220.0,
+        'use_image_dpi': True,
+    },
+    # 其他图片使用默认配置
+}
+
+def _get_image_size_config(img_key: str) -> dict:
+    """
+    获取指定图片的尺寸配置。
+
+    参数:
+        img_key: 图片键名（如 'img1', 'img2' 等）
+
+    返回:
+        尺寸配置字典
+    """
+    return IMAGE_SIZE_CONFIG.get(img_key, IMAGE_SIZE_CONFIG['default'])
 
 
 def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -> Optional[str]:
@@ -679,6 +902,11 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         - {{img2}}: 烈度分布图
         - {{img3}} ~ {{img9}}: 其他专题图
         - {{img9_info}}: 滑坡分布说明
+
+    图片尺寸处理：
+        - 自动读取图片实际像素尺寸和 DPI 信息
+        - 根据配置计算合适的显示尺寸（毫米）
+        - 同时设置宽度和高度，确保与手动插入效果一致
 
     执行流程：
         1. 检查并导入 docxtpl 库
@@ -760,14 +988,13 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
             'img9_info': record.img9_info or '',
         }
 
-        # ---- 准备图片对象 ----
-        # 图片宽度设置（单位：英寸）
-        img_width = Inches(5.5)
+        # ---- 准备图片对象（使用自动尺寸计算） ----
 
         # 图片一：历史地震分布图
         img1_path = record.img1_path
         if img1_path and os.path.exists(img1_path):
-            context['img1'] = InlineImage(doc, img1_path, width=img_width)
+            config = _get_image_size_config('img1')
+            context['img1'] = _create_inline_image(doc, img1_path, **config)
             logger.info('[任务 %s] 已准备图一: %s', task_id, img1_path)
         else:
             context['img1'] = ''
@@ -776,7 +1003,8 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         # 图片二：烈度分布图
         img2_path = record.img2_path
         if img2_path and os.path.exists(img2_path):
-            context['img2'] = InlineImage(doc, img2_path, width=img_width)
+            config = _get_image_size_config('img2')
+            context['img2'] = _create_inline_image(doc, img2_path, **config)
             logger.info('[任务 %s] 已准备图二: %s', task_id, img2_path)
         else:
             context['img2'] = ''
@@ -785,7 +1013,8 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         # 图片三：地质构造图
         img3_path = record.img3_path
         if img3_path and os.path.exists(img3_path):
-            context['img3'] = InlineImage(doc, img3_path, width=img_width)
+            config = _get_image_size_config('img3')
+            context['img3'] = _create_inline_image(doc, img3_path, **config)
             logger.info('[任务 %s] 已准备图三: %s', task_id, img3_path)
         else:
             context['img3'] = ''
@@ -794,7 +1023,8 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         # 图片四：数字高程图
         img4_path = record.img4_path
         if img4_path and os.path.exists(img4_path):
-            context['img4'] = InlineImage(doc, img4_path, width=img_width)
+            config = _get_image_size_config('img4')
+            context['img4'] = _create_inline_image(doc, img4_path, **config)
             logger.info('[任务 %s] 已准备图四: %s', task_id, img4_path)
         else:
             context['img4'] = ''
@@ -803,7 +1033,8 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         # 图片五：土地利用类型图
         img5_path = record.img5_path
         if img5_path and os.path.exists(img5_path):
-            context['img5'] = InlineImage(doc, img5_path, width=img_width)
+            config = _get_image_size_config('img5')
+            context['img5'] = _create_inline_image(doc, img5_path, **config)
             logger.info('[任务 %s] 已准备图五: %s', task_id, img5_path)
         else:
             context['img5'] = ''
@@ -812,7 +1043,8 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         # 图片六：人口分布图
         img6_path = record.img6_path
         if img6_path and os.path.exists(img6_path):
-            context['img6'] = InlineImage(doc, img6_path, width=img_width)
+            config = _get_image_size_config('img6')
+            context['img6'] = _create_inline_image(doc, img6_path, **config)
             logger.info('[任务 %s] 已准备图六: %s', task_id, img6_path)
         else:
             context['img6'] = ''
@@ -821,7 +1053,8 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         # 图片七：GDP网格图
         img7_path = record.img7_path
         if img7_path and os.path.exists(img7_path):
-            context['img7'] = InlineImage(doc, img7_path, width=img_width)
+            config = _get_image_size_config('img7')
+            context['img7'] = _create_inline_image(doc, img7_path, **config)
             logger.info('[任务 %s] 已准备图七: %s', task_id, img7_path)
         else:
             context['img7'] = ''
@@ -830,7 +1063,8 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         # 图片八：道路交通图
         img8_path = record.img8_path
         if img8_path and os.path.exists(img8_path):
-            context['img8'] = InlineImage(doc, img8_path, width=img_width)
+            config = _get_image_size_config('img8')
+            context['img8'] = _create_inline_image(doc, img8_path, **config)
             logger.info('[任务 %s] 已准备图八: %s', task_id, img8_path)
         else:
             context['img8'] = ''
@@ -839,7 +1073,8 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         # 图片九：滑坡分布图
         img9_path = record.img9_path
         if img9_path and os.path.exists(img9_path):
-            context['img9'] = InlineImage(doc, img9_path, width=img_width)
+            config = _get_image_size_config('img9')
+            context['img9'] = _create_inline_image(doc, img9_path, **config)
             logger.info('[任务 %s] 已准备图九: %s', task_id, img9_path)
         else:
             context['img9'] = ''
@@ -870,6 +1105,11 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
 
 
 def _generate_report_word_fallback(task: ReportTask, output_dir: str, record_data: dict) -> Optional[str]:
+    """
+    备用方案：使用 python-docx 直接操作 Word 文档。
+
+    当 docxtpl 不可用或模板不存在时调用此函数。
+    """
     pass
 
 
