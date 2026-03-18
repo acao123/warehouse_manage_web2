@@ -14,7 +14,6 @@ import gc
 import logging
 import os
 import random
-import threading
 from datetime import datetime
 from functools import wraps
 from typing import Callable, Optional, Tuple
@@ -48,6 +47,9 @@ PROGRESS_STEPS = {
     'report_done':    99,
     'done':           100,
 }
+
+# 天地图缓存文件有效性最小尺寸（字节）：小于此值视为下载不完整的无效文件
+_MIN_VALID_CACHE_SIZE_BYTES = 1024
 
 
 # ============================================================
@@ -504,7 +506,7 @@ def execute_report_task(task_id: int) -> None:
         3. 初始化进度为 0，状态为 STATUS_RUNNING
         4. 若 cache_base_map==1，检查取消后下载天地图（progress=1→2）
         5. 初始化 QGIS
-        6. ThreadPoolExecutor 并发执行图1-图9（每完成一张 progress+1，从3开始）
+        6. 串行执行图1-图9（每完成一张 progress+1，从3开始）
         7. 检查是否取消；检查是否有失败图片（task_status=3）→ return
         8. 生成 Ia.tif（progress=12）
         9. 生成 Dn.tif（progress=13）
@@ -566,8 +568,19 @@ def execute_report_task(task_id: int) -> None:
             _map_height_mm = calculate_map_height_from_extent(_extent, MAP_WIDTH_MM)
             _width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
             _height_px = int(_map_height_mm / 25.4 * OUTPUT_DPI)
-            _basemap_path = os.path.join(output_dir, 'basemap.png')
-            _annotation_path = os.path.join(output_dir, 'annotation.png')
+            _basemap_path = os.path.join(output_dir, f'basemap_task_{task_id}.png')
+            _annotation_path = os.path.join(output_dir, f'annotation_task_{task_id}.png')
+            # 验证缓存完整性：若 PNG 存在但 .pgw 世界文件缺失或文件过小，则删除强制重下
+            for _cache_path in (_basemap_path, _annotation_path):
+                if os.path.exists(_cache_path):
+                    _pgw_path = os.path.splitext(_cache_path)[0] + '.pgw'
+                    if not os.path.exists(_pgw_path) or os.path.getsize(_cache_path) < _MIN_VALID_CACHE_SIZE_BYTES:
+                        try:
+                            os.remove(_cache_path)
+                            logger.warning('[任务 %s] 缓存文件不完整，已删除: %s', task_id, _cache_path)
+                        except OSError as _del_exc:
+                            logger.warning('[任务 %s] 删除不完整缓存文件失败: %s — %s',
+                                           task_id, _cache_path, _del_exc)
             _bm, _ann, _err = download_basemap_with_cache(
                 _extent, _width_px, _height_px,
                 _basemap_path, _annotation_path, task.cache_base_map
@@ -594,71 +607,59 @@ def execute_report_task(task_id: int) -> None:
         qgis_manager = get_qgis_manager()
         qgis_manager.ensure_initialized()
 
-        # ---- 6. ThreadPoolExecutor 并发执行图1-图9 ----
-        # 每完成一张图，progress 从 3 开始递增（img1=3, img2=4, ..., img9=11）
-        _completed_count = [0]  # 已完成图片数（线程安全用列表包装）
-        _has_failure = [False]  # 是否有图片生成失败
-        _progress_lock = threading.Lock()
+        # ---- 6. 串行执行图1-图9（QGIS 不支持多线程并发操作 QgsProject）----
+        _img_generators = [
+            ('img1', 1, _gen_img1),
+            ('img2', 2, _gen_img2),
+            ('img3', 3, _gen_img3),
+            ('img4', 4, _gen_img4),
+            ('img5', 5, _gen_img5),
+            ('img6', 6, _gen_img6),
+            ('img7', 7, _gen_img7),
+            ('img8', 8, _gen_img8),
+            ('img9', 9, _gen_img9),
+        ]
 
-        with _cf.ThreadPoolExecutor(max_workers=9) as img_executor:
-            future_map = {
-                img_executor.submit(_gen_img1, task, output_dir,
-                                    cached_basemap_path, cached_annotation_path): ('img1', 1),
-                img_executor.submit(_gen_img2, task, output_dir,
-                                    cached_basemap_path, cached_annotation_path): ('img2', 2),
-                img_executor.submit(_gen_img3, task, output_dir,
-                                    cached_basemap_path, cached_annotation_path): ('img3', 3),
-                img_executor.submit(_gen_img4, task, output_dir,
-                                    cached_basemap_path, cached_annotation_path): ('img4', 4),
-                img_executor.submit(_gen_img5, task, output_dir,
-                                    cached_basemap_path, cached_annotation_path): ('img5', 5),
-                img_executor.submit(_gen_img6, task, output_dir,
-                                    cached_basemap_path, cached_annotation_path): ('img6', 6),
-                img_executor.submit(_gen_img7, task, output_dir,
-                                    cached_basemap_path, cached_annotation_path): ('img7', 7),
-                img_executor.submit(_gen_img8, task, output_dir,
-                                    cached_basemap_path, cached_annotation_path): ('img8', 8),
-                img_executor.submit(_gen_img9, task, output_dir,
-                                    cached_basemap_path, cached_annotation_path): ('img9', 9),
-            }
+        _has_failure = False
 
-            for future in _cf.as_completed(future_map):
-                img_key, img_no = future_map[future]
-                try:
-                    result = future.result()
-                    # 线程安全地递增已完成计数，progress 从3开始（2+已完成数）
-                    with _progress_lock:
-                        _completed_count[0] += 1
-                        current_progress = 2 + _completed_count[0]
+        for img_key, img_no, gen_func in _img_generators:
+            # 检查是否取消
+            if _is_cancelled(task_id):
+                logger.info('[任务 %s] 图片生成过程中检测到取消信号，终止任务', task_id)
+                _mark_failed(task)
+                return
 
-                    _update_task_progress(
-                        task_id, current_progress,
-                        append_message=f'img{img_no}已完成，',
-                    )
+            try:
+                result = gen_func(task, output_dir, cached_basemap_path, cached_annotation_path)
+                current_progress = 2 + img_no  # img1=3, img2=4, ..., img9=11
 
-                    # 根据图片编号存储结果
-                    if img_key in ('img1', 'img2', 'img9'):
-                        # 这些函数返回 (path, info) 元组
-                        img_path = result[0] if isinstance(result, tuple) else result
-                        img_info = result[1] if isinstance(result, tuple) and len(result) > 1 else None
-                        record_kwargs[f'{img_key}_path'] = img_path
-                        record_kwargs[f'{img_key}_info'] = img_info
-                    else:
-                        record_kwargs[f'{img_key}_path'] = result
+                _update_task_progress(
+                    task_id, current_progress,
+                    append_message=f'img{img_no}已完成，',
+                )
 
-                except Exception as exc:
-                    logger.error('[任务 %s] %s 执行异常: %s', task_id, img_key, exc, exc_info=True)
-                    with _progress_lock:
-                        _completed_count[0] += 1
-                        current_progress = 2 + _completed_count[0]
-                        _has_failure[0] = True
-                    _update_task_progress(
-                        task_id, current_progress,
-                        error_message=f'{img_key}生成失败: {exc}',
-                        task_status=ReportTask.STATUS_FAILED,
-                    )
+                # 根据图片编号存储结果
+                if img_key in ('img1', 'img2', 'img9'):
+                    # 这些函数返回 (path, info) 元组
+                    img_path = result[0] if isinstance(result, tuple) else result
+                    img_info = result[1] if isinstance(result, tuple) and len(result) > 1 else None
+                    record_kwargs[f'{img_key}_path'] = img_path
+                    record_kwargs[f'{img_key}_info'] = img_info
+                else:
+                    record_kwargs[f'{img_key}_path'] = result
 
-        gc.collect()
+            except Exception as exc:
+                logger.error('[任务 %s] %s 执行异常: %s', task_id, img_key, exc, exc_info=True)
+                current_progress = 2 + img_no
+                _has_failure = True
+                _update_task_progress(
+                    task_id, current_progress,
+                    error_message=f'{img_key}生成失败: {exc}',
+                    task_status=ReportTask.STATUS_FAILED,
+                )
+
+            finally:
+                gc.collect()  # 每张图后释放 QGIS 资源
 
         # ---- 7. 检查是否取消或失败 ----
         if _is_cancelled(task_id):
@@ -667,7 +668,7 @@ def execute_report_task(task_id: int) -> None:
             return
 
         # 若有图片失败则终止（_has_failure 标志或重新查询 DB 状态）
-        if _has_failure[0]:
+        if _has_failure:
             logger.warning('[任务 %s] 图1-9中有生成失败项，终止任务', task_id)
             # 刷新 task 对象以获取 DB 中最新状态
             task.refresh_from_db()
