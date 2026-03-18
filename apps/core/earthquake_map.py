@@ -1145,7 +1145,7 @@ def generate_statistics(filtered_quakes, radius_km):
     mx = max(filtered_quakes, key=lambda e: e["magnitude"]) if filtered_quakes else None
 
     txt = (f"自1900年以来，本次地震震中{int(radius_km)}km范围内"
-           f"共发生{ct}次4.7级以上地震（含本次），"
+           f"共发生{ct}次4.7级以上地震，"
            f"其中4.7~5.9级地震{c1}次，6.0~6.9级地震{c2}次，"
            f"7.0~7.9级地震{c3}次，8.0级以上地震{c4}次。")
     if mx:
