@@ -282,7 +282,7 @@ def create_task_view(request):
 @require_GET
 def running_tasks_view(request):
     """
-    查询当前用户正在执行的任务列表（task_status=1）
+    查询当前用户正在执行的任务列表（task_status 为 0/1/4）
     :param request: HTTP 请求对象
     :return: JSON 格式的任务列表
     """
@@ -293,7 +293,11 @@ def running_tasks_view(request):
     page = int(request.GET.get('page', 1))
     limit = int(request.GET.get('limit', 10))
 
-    status_list = [ReportTask.STATUS_CREATED, ReportTask.STATUS_RUNNING]
+    status_list = [
+        ReportTask.STATUS_CREATED,
+        ReportTask.STATUS_RUNNING,
+        ReportTask.STATUS_CANCELLING,
+    ]
     queryset = ReportTask.objects.filter(
         user_id=user_id,
         task_status__in=status_list
@@ -313,7 +317,7 @@ def running_tasks_view(request):
 @csrf_exempt
 def stop_task_view(request):
     """
-    结束任务接口（将 task_status 更新为 STATUS_FAILED=3）
+    结束任务接口（将 task_status 更新为 STATUS_CANCELLING=4，后台任务检测到后自行终止）
     :param request: HTTP 请求对象
     :return: JSON 格式响应
     """
@@ -333,20 +337,20 @@ def stop_task_view(request):
     except ReportTask.DoesNotExist:
         return JsonResponse({'code': 1, 'msg': '任务不存在'})
 
-    if task.task_status != ReportTask.STATUS_RUNNING:
-        return JsonResponse({'code': 1, 'msg': '只能结束正在执行的任务'})
+    if task.task_status not in (ReportTask.STATUS_RUNNING, ReportTask.STATUS_CANCELLING):
+        return JsonResponse({'code': 1, 'msg': '只能结束正在执行或取消中的任务'})
 
-    task.task_status = ReportTask.STATUS_FAILED
+    task.task_status = ReportTask.STATUS_CANCELLING
     task.save(update_fields=['task_status', 'updated_at'])
-    logger.info('任务 %s 被用户 %s 手动结束', task_id, user_id)
+    logger.info('任务 %s 被用户 %s 请求取消（状态设为取消中）', task_id, user_id)
 
-    return JsonResponse({'code': 0, 'msg': '任务已结束'})
+    return JsonResponse({'code': 0, 'msg': '任务取消中，请稍后查看状态'})
 
 
 @csrf_exempt
 def execute_task_view(request):
     """
-    执行任务接口：将 task_status 更新为 STATUS_RUNNING，然后在后台线程中执行任务
+    执行任务接口：原子重置任务进度字段，然后在后台线程池中执行任务
     :param request: HTTP 请求对象
     :return: JSON 格式响应
     """
@@ -366,14 +370,32 @@ def execute_task_view(request):
     except ReportTask.DoesNotExist:
         return JsonResponse({'code': 1, 'msg': '任务不存在'})
 
+    # 1. 检查目标任务本身是否已在执行中
+    if task.task_status == ReportTask.STATUS_RUNNING:
+        return JsonResponse({'code': 1, 'msg': '该任务正在执行，请稍后'})
+
+    # 2. 检查该用户是否已有其他任务在执行中或取消中
+    busy_task = ReportTask.objects.filter(
+        user_id=user_id,
+        task_status__in=(ReportTask.STATUS_RUNNING, ReportTask.STATUS_CANCELLING),
+    ).exclude(id=task_id).first()
+    if busy_task:
+        logger.info('用户 %s 已有任务 id=%s 正在执行，禁止重复执行', user_id, busy_task.id)
+        return JsonResponse({'code': 1, 'msg': '您有任务正在执行，请稍后执行'})
+
+    # 3. 原子更新：状态置为执行中，进度/消息重置
     task.task_status = ReportTask.STATUS_RUNNING
-    task.save(update_fields=['task_status', 'updated_at'])
+    task.progress = 0
+    task.message = None
+    task.error_message = None
+    task.save(update_fields=['task_status', 'progress', 'message', 'error_message', 'updated_at'])
     logger.info('任务 %s 状态更新为执行中，由用户 %s 触发', task_id, user_id)
 
+    # 4. 提交到线程池异步执行
     from .tasks import start_task_async
     start_task_async(int(task_id))
 
-    return JsonResponse({'code': 0, 'msg': '任务开始执行'})
+    return JsonResponse({'code': 0, 'msg': '任务执行中，请从进度条查看进度'})
 
 
 @require_GET
@@ -391,6 +413,17 @@ def download_report_view(request):
     if not task_id:
         return JsonResponse({'code': 1, 'msg': '缺少任务ID'})
 
+    try:
+        task = ReportTask.objects.get(id=task_id)
+    except ReportTask.DoesNotExist:
+        return JsonResponse({'code': 1, 'msg': '任务不存在'})
+
+    if task.task_status == ReportTask.STATUS_RUNNING:
+        return JsonResponse({'code': 1, 'msg': '任务正在执行，请稍后'})
+
+    if task.task_status != ReportTask.STATUS_SUCCESS:
+        return JsonResponse({'code': 1, 'msg': '报告尚未生成，请先执行任务'})
+
     record = ReportTaskRecord.objects.filter(task_id=task_id).first()
     if not record or not record.report_path:
         return JsonResponse({'code': 1, 'msg': '报告文件不存在'})
@@ -406,6 +439,51 @@ def download_report_view(request):
     )
     logger.info('任务 %s 的报告文档被用户 %s 下载', task_id, user_id)
     return response
+
+
+@require_GET
+def task_progress_view(request):
+    """
+    查询指定任务的进度信息接口（GET）
+
+    参数（GET）:
+        task_id: 任务ID
+
+    返回:
+        {
+          "code": 0,
+          "data": {
+            "task_id": 1,
+            "task_status": 1,
+            "progress": 5,
+            "message": "img1已完成，img2已完成，",
+            "error_message": ""
+          }
+        }
+    """
+    user_id = request.session.get('user_id')
+    if not user_id:
+        return JsonResponse({'code': 1, 'msg': '用户未登录'})
+
+    task_id = request.GET.get('task_id', '').strip()
+    if not task_id:
+        return JsonResponse({'code': 1, 'msg': '缺少任务ID'})
+
+    try:
+        task = ReportTask.objects.get(id=task_id)
+    except ReportTask.DoesNotExist:
+        return JsonResponse({'code': 1, 'msg': '任务不存在'})
+
+    return JsonResponse({
+        'code': 0,
+        'data': {
+            'task_id': task.id,
+            'task_status': task.task_status,
+            'progress': task.progress,
+            'message': task.message or '',
+            'error_message': task.error_message or '',
+        }
+    })
 
 
 # ============================================================
@@ -598,6 +676,9 @@ def _task_to_dict(task: ReportTask) -> dict:
         'pga_kml_path': task.pga_kml_path,
         'task_status': task.task_status,
         'task_status_label': task.get_task_status_display(),
+        'progress': task.progress,
+        'message': task.message or '',
+        'error_message': task.error_message or '',
         'success_time': task.success_time.strftime('%Y-%m-%d %H:%M:%S') if task.success_time else '',
         'created_at': task.created_at.strftime('%Y-%m-%d %H:%M:%S') if task.created_at else '',
         'updated_at': task.updated_at.strftime('%Y-%m-%d %H:%M:%S') if task.updated_at else '',

@@ -40,6 +40,31 @@
         .progress-section.active {
             display: block;
         }
+        /* 进度条容器，为跑马灯留顶部空间 */
+        .progress-wrap {
+            position: relative;
+            padding-top: 6px;
+        }
+        /* 跑马灯动效条（仅在任务执行中/取消中显示） */
+        .progress-runner {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 4px;
+            width: 60px;
+            background: linear-gradient(90deg, transparent, #1E9FFF 50%, transparent);
+            border-radius: 2px;
+            display: none;
+            animation: runnerMove 1.5s linear infinite;
+        }
+        @keyframes runnerMove {
+            0%   { left: 0;              opacity: 0.8; }
+            50%  {                        opacity: 1;   }
+            100% { left: calc(100% - 60px); opacity: 0.8; }
+        }
+        .progress-runner.active {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -199,18 +224,44 @@
     <!-- ===== 任务进度条 ===== -->
     <div class="progress-section" id="progressSection">
         <div class="report-block-title">任务进度</div>
-        <div class="layui-progress layui-progress-big" lay-showpercent="true" lay-filter="progressBar">
-            <div class="layui-progress-bar" lay-percent="0%"></div>
+        <!-- 带动效的进度条容器 -->
+        <div class="progress-wrap" id="progressWrap">
+            <!-- 滚动跑马灯动效条（绝对定位在进度条顶部） -->
+            <div class="progress-runner" id="progressRunner"></div>
+            <!-- layui 进度条 -->
+            <div class="layui-progress layui-progress-big"
+                 lay-showpercent="true"
+                 lay-filter="progressBar"
+                 style="margin-top:4px;">
+                <div class="layui-progress-bar" lay-percent="0%"></div>
+            </div>
         </div>
-        <p id="progressText" style="color:#666;font-size:13px;margin-top:8px;">等待任务执行...</p>
+        <!-- 进度文字 -->
+        <p id="progressText"
+           style="color:#333;font-size:13px;margin-top:8px;font-weight:bold;">
+            等待任务执行...
+        </p>
+        <!-- message & error_message 信息区 -->
+        <div id="progressMsgBox"
+             style="margin-top:6px;padding:8px 12px;background:#f5f5f5;
+                    border-radius:4px;font-size:12px;color:#555;
+                    min-height:32px;word-break:break-all;display:none;">
+        </div>
+        <div id="progressErrBox"
+             style="margin-top:6px;padding:8px 12px;background:#fff1f0;
+                    border:1px solid #ffa39e;border-radius:4px;
+                    font-size:12px;color:#cf1322;
+                    word-break:break-all;display:none;">
+        </div>
     </div>
 
 </div>
 
 <!-- 操作列按钮模板 -->
 <script type="text/html" id="runningToolbar">
-    <a class="layui-btn layui-btn-normal layui-btn-xs" lay-event="execute">执行任务</a>
-    <a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="stop">结束任务</a>
+    <a class="layui-btn layui-btn-normal  layui-btn-xs" lay-event="execute">执行任务</a>
+    <a class="layui-btn layui-btn-primary layui-btn-xs" lay-event="export">导出报告</a>
+    <a class="layui-btn layui-btn-danger  layui-btn-xs" lay-event="stop">结束任务</a>
 </script>
 
 <script src="/static/layui/layui/layui.js"></script>
@@ -257,14 +308,16 @@
                 {field: 'magnitude',         title: '震级',           width: 80},
                 {field: 'address',           title: '参考位置',        minWidth: 150},
                 {field: 'created_at',        title: '创建时间',        width: 160},
+                {field: 'task_status_label', title: '状态',            width: 100},
+                {field: 'progress',          title: '进度(%)',         width: 80},
                 {field: 'interp_method',     title: '插值算法',        width: 120},
                 {field: 'sample_interval',   title: '等值线采样间隔',   width: 130},
                 {field: 'max_sample_points', title: '最大采样点数',    width: 120},
-                {fixed: 'right', title: '操作', toolbar: '#runningToolbar', width: 160}
+                {fixed: 'right', title: '操作', toolbar: '#runningToolbar', width: 200}
             ]]
         });
 
-        // 监听结束任务操作
+        // 监听表格操作事件
         table.on('tool(runningTable)', function(obj){
             var data = obj.data;
             if(obj.event === 'execute'){
@@ -272,8 +325,9 @@
                 $.post('/report/task/execute/', {task_id: data.id}, function(res){
                     layer.close(loadIndex);
                     if(res.code === 0){
-                        layer.msg('任务已开始执行');
+                        layer.msg('任务执行中，请从进度条查看进度');
                         runningTable.reload();
+                        startProgressPolling(data.id);
                     } else {
                         layer.msg(res.msg || '操作失败');
                     }
@@ -281,13 +335,24 @@
                     layer.close(loadIndex);
                     layer.msg('请求失败，请重试');
                 });
+            } else if(obj.event === 'export'){
+                // 导出报告
+                if(data.task_status === 1){
+                    layer.msg('任务正在执行，请稍后');
+                    return;
+                }
+                if(data.task_status !== 2){
+                    layer.msg('报告尚未生成，请先执行任务');
+                    return;
+                }
+                window.location.href = '/report/task/download/?task_id=' + data.id;
             } else if(obj.event === 'stop'){
                 layer.confirm('确定要结束该任务吗？', {icon: 3, title: '结束确认'}, function(index){
                     $.post('/report/task/stop/', {task_id: data.id}, function(res){
                         if(res.code === 0){
-                            layer.msg('任务已结束');
+                            layer.msg('任务取消中，请稍后查看状态');
                             runningTable.reload();
-                            hideProgress();
+                            stopProgressPolling();
                         } else {
                             layer.msg(res.msg || '操作失败');
                         }
@@ -448,7 +513,7 @@
                     layer.msg('任务创建成功');
                     // 刷新正在执行的任务列表
                     layui.table.reload('runningTable');
-                    showProgress();
+                    // showProgress 不直接轮询（任务刚创建还未执行）
                 } else {
                     layer.alert(res.msg || '创建失败', {icon: 2});
                 }
@@ -461,27 +526,158 @@
         });
     }
 
-    // ---- 进度条逻辑 ----
-    function showProgress(){
-        var section = document.getElementById('progressSection');
-        section.classList.add('active');
-        // 模拟进度条（实际进度需后端推送）
-        var pct = 0;
-        var timer = setInterval(function(){
-            pct = Math.min(pct + Math.floor(Math.random() * 5 + 1), 90);
-            layui.element.progress('progressBar', pct + '%');
-            document.getElementById('progressText').textContent = '任务执行中... ' + pct + '%';
-        }, 1500);
-        section._timer = timer;
+    // ---- 进度条轮询逻辑 ----
+    var _progressTimer  = null;   // 轮询定时器句柄
+    var _currentTaskId  = null;   // 当前正在跟踪的任务ID
+
+    /**
+     * 开始轮询任务进度
+     * @param {number} taskId - 要跟踪的任务ID
+     */
+    function startProgressPolling(taskId) {
+        stopProgressPolling();      // 先清除旧的定时器
+        _currentTaskId = taskId;
+        showProgressSection();
+        pollOnce(taskId);           // 立即查询一次
+        _progressTimer = setInterval(function() {
+            pollOnce(taskId);
+        }, 3000);                   // 每3秒查询一次
+    }
+
+    /**
+     * 停止进度轮询
+     */
+    function stopProgressPolling() {
+        if (_progressTimer) {
+            clearInterval(_progressTimer);
+            _progressTimer = null;
+        }
+        _currentTaskId = null;
+        var runner = document.getElementById('progressRunner');
+        if (runner) runner.classList.remove('active');
+    }
+
+    /**
+     * 执行一次进度查询
+     * @param {number} taskId - 任务ID
+     */
+    function pollOnce(taskId) {
+        $.get('/report/task/progress/', {task_id: taskId}, function(res) {
+            if (res.code !== 0) {
+                stopProgressPolling();
+                return;
+            }
+            var d = res.data;
+            // progress 值：1-14 为步骤进度，99 报告完成，100 全部完成
+            // 显示百分比：progress=1→约7%，progress=14→100%（线性映射至14步），99/100直接显示
+            var pct;
+            if (d.progress >= 100) {
+                pct = 100;
+            } else if (d.progress >= 99) {
+                pct = 99;
+            } else if (d.progress > 0) {
+                // 步骤进度：1-14 映射到 5%-95%
+                pct = Math.min(Math.round(d.progress / 14 * 90 + 5), 95);
+            } else {
+                pct = 0;
+            }
+
+            updateProgressUI(pct, d.task_status, d.message, d.error_message);
+
+            // 任务结束（非执行中/取消中）时停止轮询
+            if (d.task_status !== 1 && d.task_status !== 4) {
+                stopProgressPolling();
+                runningTable.reload();
+            }
+        }).fail(function() {
+            // 网络错误不停止轮询，下次继续重试
+            console.warn('进度查询请求失败，将在下次重试');
+        });
+    }
+
+    /**
+     * 更新进度条 UI
+     * @param {number} pct          - 进度百分比（0-100）
+     * @param {number} taskStatus   - 任务状态
+     * @param {string} message      - 进度描述信息
+     * @param {string} errorMessage - 错误信息
+     */
+    function updateProgressUI(pct, taskStatus, message, errorMessage) {
+        layui.element.progress('progressBar', pct + '%');
+
+        // 进度文字
+        var statusText = '';
+        if      (taskStatus === 0) statusText = '待执行';
+        else if (taskStatus === 1) statusText = '执行中';
+        else if (taskStatus === 2) statusText = '执行成功';
+        else if (taskStatus === 3) statusText = '执行失败';
+        else if (taskStatus === 4) statusText = '取消中';
+
+        document.getElementById('progressText').textContent =
+            '任务状态：' + statusText + '  进度：' + pct + '%';
+
+        // 跑马灯：仅在执行中/取消中时显示
+        var runner = document.getElementById('progressRunner');
+        if (taskStatus === 1 || taskStatus === 4) {
+            runner.classList.add('active');
+        } else {
+            runner.classList.remove('active');
+        }
+
+        // message 信息区
+        var msgBox = document.getElementById('progressMsgBox');
+        if (message) {
+            msgBox.style.display = 'block';
+            msgBox.textContent = message;
+        } else {
+            msgBox.style.display = 'none';
+        }
+
+        // error_message 信息区
+        var errBox = document.getElementById('progressErrBox');
+        if (errorMessage) {
+            errBox.style.display = 'block';
+            errBox.textContent = '错误信息：' + errorMessage;
+        } else {
+            errBox.style.display = 'none';
+        }
+    }
+
+    /**
+     * 显示进度条区域并激活跑马灯
+     */
+    function showProgressSection() {
+        document.getElementById('progressSection').classList.add('active');
+        document.getElementById('progressRunner').classList.add('active');
+    }
+
+    // ---- 创建任务成功后启动进度轮询 ----
+    // （showProgress 保留原名以兼容 createTask 中的调用）
+    function showProgress(taskId) {
+        startProgressPolling(taskId);
     }
 
     function hideProgress(){
+        stopProgressPolling();
         var section = document.getElementById('progressSection');
-        if(section._timer) clearInterval(section._timer);
         section.classList.remove('active');
         layui.element.progress('progressBar', '0%');
         document.getElementById('progressText').textContent = '等待任务执行...';
+        document.getElementById('progressMsgBox').style.display = 'none';
+        document.getElementById('progressErrBox').style.display = 'none';
     }
+
+    // ---- 页面加载后检查是否有正在执行的任务，如有则自动开始轮询 ----
+    $(document).ready(function() {
+        $.get('/report/task/running/', {page: 1, limit: 1}, function(res) {
+            if (res.code === 0 && res.data && res.data.length > 0) {
+                var t = res.data[0];
+                if (t.task_status === 1 || t.task_status === 4) {
+                    startProgressPolling(t.id);
+                }
+            }
+        });
+    });
 </script>
 </body>
 </html>
