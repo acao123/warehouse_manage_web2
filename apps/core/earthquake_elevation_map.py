@@ -1424,10 +1424,11 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     map_item.setBackgroundColor(QColor(255, 255, 255))
     layout.addLayoutItem(map_item)
 
-    # 显式设置地图项渲染的图层列表
+    # 显式设置地图项渲染的图层列表（setKeepLayerSet确保震中五角星始终在最上层）
     layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
     if layers_to_set:
         map_item.setLayers(layers_to_set)
+        map_item.setKeepLayerSet(True)
     map_item.invalidateCache()
 
     _setup_map_grid(map_item, extent)

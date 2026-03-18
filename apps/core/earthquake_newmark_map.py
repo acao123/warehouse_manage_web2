@@ -1718,6 +1718,7 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
     if layers_to_set:
         map_item.setLayers(layers_to_set)
+        map_item.setKeepLayerSet(True)
     map_item.invalidateCache()
 
     _setup_map_grid(map_item, extent)
