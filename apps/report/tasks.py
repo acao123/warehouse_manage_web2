@@ -9,6 +9,7 @@
 后续可扩展为 WebSocket 推送或 Redis 缓存，以支持前端进度条。
 """
 
+import concurrent.futures as _cf
 import gc
 import logging
 import os
@@ -26,24 +27,26 @@ from .models import ReportTask, ReportTaskRecord
 logger = logging.getLogger('report')
 
 # ============================================================
-# 进度常量（用于后续扩展进度条，当前仅打日志）
+# 模块级线程池（用于主任务异步提交，避免每次创建/销毁开销）
+# ============================================================
+_TASK_EXECUTOR = _cf.ThreadPoolExecutor(
+    max_workers=3,
+    thread_name_prefix='ReportMainTask',
+)
+
+# ============================================================
+# 进度常量（对应每个执行步骤的 progress 值）
 # ============================================================
 PROGRESS_STEPS = {
-    'start': 0,
-    'img1': 10,
-    'img2': 20,
-    'img3': 30,
-    'img4': 40,
-    'img5': 50,
-    'img6': 60,
-    'img7': 65,
-    'img8': 70,
-    'img9': 80,
-    'ia_tif': 85,
-    'dn_tif': 90,
-    'img10': 95,
-    'save': 98,
-    'done': 100,
+    'start':          0,
+    'tianditu_start': 1,
+    'tianditu_done':  2,
+    # 图1-图9 完成后 progress 分别为 3-11（每完成一张 +1，从 3 开始）
+    'ia_tif':         12,
+    'dn_tif':         13,
+    'img10':          14,
+    'report_done':    99,
+    'done':           100,
 }
 
 
@@ -90,9 +93,71 @@ def safe_qgis_task(func: Callable) -> Callable:
 # 进度更新辅助函数
 # ============================================================
 
+def _update_task_progress(
+    task_id: int,
+    progress: int,
+    append_message: str = '',
+    error_message: str = None,
+    task_status: int = None,
+) -> None:
+    """
+    更新任务进度、状态描述及错误日志到数据库。
+
+    参数:
+        task_id: 任务ID
+        progress: 当前进度值（1-100）
+        append_message: 追加到 message 字段的信息（如 "img1已完成，"）
+        error_message: 写入 error_message 字段的错误信息（None 表示不更新该字段）
+        task_status: 要更新的任务状态（None 表示不更新该字段）
+    """
+    try:
+        task = ReportTask.objects.get(id=task_id)
+        update_fields = ['progress', 'updated_at']
+
+        task.progress = progress
+
+        if append_message:
+            # 追加方式更新 message 字段
+            old_msg = task.message or ''
+            task.message = old_msg + append_message
+            update_fields.append('message')
+
+        if error_message is not None:
+            task.error_message = error_message
+            update_fields.append('error_message')
+
+        if task_status is not None:
+            task.task_status = task_status
+            update_fields.append('task_status')
+
+        task.save(update_fields=update_fields)
+        logger.info('[任务 %s] 进度更新: progress=%d, append_message=%s, task_status=%s',
+                    task_id, progress, append_message or '无', task_status)
+    except Exception as exc:
+        logger.error('[任务 %s] 更新进度失败: %s', task_id, exc)
+
+
+def _is_cancelled(task_id: int) -> bool:
+    """
+    检查任务是否处于取消中状态（task_status=4）。
+
+    参数:
+        task_id: 任务ID
+
+    返回:
+        True 表示任务已被请求取消，应终止执行
+    """
+    try:
+        task = ReportTask.objects.get(id=task_id)
+        return task.task_status == ReportTask.STATUS_CANCELLING
+    except Exception as exc:
+        logger.error('[任务 %s] 检查取消状态失败: %s', task_id, exc)
+        return False
+
+
 def update_progress(task_id: int, step: str, progress: int) -> None:
     """
-    记录任务执行进度（当前实现仅写日志，后续可扩展为缓存/推送）。
+    记录任务执行进度（兼容旧调用，内部转发到 _update_task_progress）。
 
     参数:
         task_id: 任务ID
@@ -434,39 +499,45 @@ def execute_report_task(task_id: int) -> None:
     异步执行报告任务主函数，依次生成 10 张图片并保存到 report_task_record 表。
 
     执行流程：
-        1. 创建输出目录
-        2. 通过 QGISManager 初始化 QGIS（保证全局唯一实例）
-        3. 依次生成图一 ~ 图九
-        4. 生成 Ia.tif → Dn.tif → 图十
-        5. 将结果保存到 report_task_record 表
-        6. 更新 report_task 状态为成功（失败时标记为失败）
-
-    异常处理：
-        - 整体使用 try/except 包裹，确保任何异常都不会导致 Web 进程崩溃
-        - 每个图片生成函数内部独立捕获异常，单个失败不影响其他图片
-        - 最终通过 gc.collect() 强制释放 QGIS 相关资源
+        1. 查询任务，若不存在则 return
+        2. 创建输出目录（失败写 error_message + 状态3）
+        3. 初始化进度为 0，状态为 STATUS_RUNNING
+        4. 若 cache_base_map==1，检查取消后下载天地图（progress=1→2）
+        5. 初始化 QGIS
+        6. ThreadPoolExecutor 并发执行图1-图9（每完成一张 progress+1，从3开始）
+        7. 检查是否取消；检查是否有失败图片（task_status=3）→ return
+        8. 生成 Ia.tif（progress=12）
+        9. 生成 Dn.tif（progress=13）
+        10. 生成 图10（progress=14）
+        11. 保存 ReportTaskRecord
+        12. 生成 Word 报告（progress=99，更新 report_path）
+        13. 检查是否取消；更新 progress=100，task_status=2（成功）
+        14. finally: QGIS 资源清理
 
     参数:
         task_id: report_task 表的 id
     """
     logger.info('[任务 %s] 开始执行报告任务', task_id)
 
-    # ---- 查询任务 ----
+    # ---- 1. 查询任务 ----
     try:
         task = ReportTask.objects.get(id=task_id)
     except ReportTask.DoesNotExist:
         logger.error('[任务 %s] 任务不存在，终止执行', task_id)
         return
 
-    # ---- 创建输出目录 ----
+    # ---- 2. 创建输出目录 ----
     output_dir = _build_output_dir(task_id)
     try:
         os.makedirs(output_dir, exist_ok=True)
         logger.info('[任务 %s] 输出目录: %s', task_id, output_dir)
     except Exception as exc:
         logger.error('[任务 %s] 创建输出目录失败: %s', task_id, exc, exc_info=True)
-        _mark_failed(task)
+        _mark_failed(task, error_message=f'创建输出目录失败: {exc}')
         return
+
+    # ---- 3. 冗余初始化进度（保险） ----
+    _update_task_progress(task_id, 0, task_status=ReportTask.STATUS_RUNNING)
 
     # 记录各图片结果
     record_kwargs = {'user_id': task.user_id, 'task_id': task_id}
@@ -475,147 +546,215 @@ def execute_report_task(task_id: int) -> None:
     cached_basemap_path = None
     cached_annotation_path = None
     if task.cache_base_map == 1:
-        from core.tianditu_basemap_downloader import download_basemap_with_cache
-        from core.earthquake_map import (
-            calculate_extent, get_magnitude_config,
-            calculate_map_height_from_extent, MAP_WIDTH_MM, OUTPUT_DPI,
-        )
-        _config = get_magnitude_config(float(task.magnitude))
-        _half_size_km = _config["map_size_km"] / 2.0
-        _extent = calculate_extent(float(task.longitude), float(task.latitude), _half_size_km)
-        _map_height_mm = calculate_map_height_from_extent(_extent, MAP_WIDTH_MM)
-        _width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
-        _height_px = int(_map_height_mm / 25.4 * OUTPUT_DPI)
-        _basemap_path = os.path.join(output_dir, 'basemap.png')
-        _annotation_path = os.path.join(output_dir, 'annotation.png')
-        _bm, _ann, _err = download_basemap_with_cache(
-            _extent, _width_px, _height_px,
-            _basemap_path, _annotation_path, task.cache_base_map
-        )
-        if _err:
-            logger.error('[任务 %s] 缓存底图下载失败: %s', task_id, _err)
+        # 检查是否已取消
+        if _is_cancelled(task_id):
+            logger.info('[任务 %s] 任务已取消，跳过天地图下载', task_id)
             _mark_failed(task)
             return
-        cached_basemap_path = _basemap_path
-        cached_annotation_path = _annotation_path
-        logger.info('[任务 %s] 缓存底图下载成功: basemap=%s, annotation=%s',
-                    task_id, cached_basemap_path, cached_annotation_path)
+
+        _update_task_progress(task_id, PROGRESS_STEPS['tianditu_start'],
+                               append_message='开始下载天地图，')
+        try:
+            from core.tianditu_basemap_downloader import download_basemap_with_cache
+            from core.earthquake_map import (
+                calculate_extent, get_magnitude_config,
+                calculate_map_height_from_extent, MAP_WIDTH_MM, OUTPUT_DPI,
+            )
+            _config = get_magnitude_config(float(task.magnitude))
+            _half_size_km = _config["map_size_km"] / 2.0
+            _extent = calculate_extent(float(task.longitude), float(task.latitude), _half_size_km)
+            _map_height_mm = calculate_map_height_from_extent(_extent, MAP_WIDTH_MM)
+            _width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
+            _height_px = int(_map_height_mm / 25.4 * OUTPUT_DPI)
+            _basemap_path = os.path.join(output_dir, 'basemap.png')
+            _annotation_path = os.path.join(output_dir, 'annotation.png')
+            _bm, _ann, _err = download_basemap_with_cache(
+                _extent, _width_px, _height_px,
+                _basemap_path, _annotation_path, task.cache_base_map
+            )
+            if _err:
+                logger.error('[任务 %s] 缓存底图下载失败: %s', task_id, _err)
+                _mark_failed(task, error_message=f'天地图下载失败: {_err}')
+                return
+            cached_basemap_path = _basemap_path
+            cached_annotation_path = _annotation_path
+            logger.info('[任务 %s] 缓存底图下载成功: basemap=%s, annotation=%s',
+                        task_id, cached_basemap_path, cached_annotation_path)
+        except Exception as exc:
+            logger.error('[任务 %s] 天地图下载异常: %s', task_id, exc, exc_info=True)
+            _mark_failed(task, error_message=f'天地图下载异常: {exc}')
+            return
+
+        _update_task_progress(task_id, PROGRESS_STEPS['tianditu_done'],
+                               append_message='天地图下载完成，')
 
     try:
-        # 通过 QGISManager 确保 QGIS 已初始化（统一管理前缀路径和资源清理）
+        # ---- 5. 通过 QGISManager 确保 QGIS 已初始化 ----
         from core.qgis_manager import get_qgis_manager
         qgis_manager = get_qgis_manager()
         qgis_manager.ensure_initialized()
 
-        # ---- 图一 ----
-        update_progress(task_id, '生成图一（历史地震分布图）', PROGRESS_STEPS['img1'])
-        img1_path, img1_info = _gen_img1(task, output_dir,
-                                          basemap_path=cached_basemap_path,
-                                          annotation_path=cached_annotation_path)
-        record_kwargs['img1_path'] = img1_path
-        record_kwargs['img1_info'] = img1_info
+        # ---- 6. ThreadPoolExecutor 并发执行图1-图9 ----
+        # 每完成一张图，progress 从 3 开始递增（img1=3, img2=4, ..., img9=11）
+        _completed_count = [0]  # 已完成图片数（线程安全用列表包装）
+        _has_failure = [False]  # 是否有图片生成失败
+        _progress_lock = threading.Lock()
+
+        with _cf.ThreadPoolExecutor(max_workers=9) as img_executor:
+            future_map = {
+                img_executor.submit(_gen_img1, task, output_dir,
+                                    cached_basemap_path, cached_annotation_path): ('img1', 1),
+                img_executor.submit(_gen_img2, task, output_dir,
+                                    cached_basemap_path, cached_annotation_path): ('img2', 2),
+                img_executor.submit(_gen_img3, task, output_dir,
+                                    cached_basemap_path, cached_annotation_path): ('img3', 3),
+                img_executor.submit(_gen_img4, task, output_dir,
+                                    cached_basemap_path, cached_annotation_path): ('img4', 4),
+                img_executor.submit(_gen_img5, task, output_dir,
+                                    cached_basemap_path, cached_annotation_path): ('img5', 5),
+                img_executor.submit(_gen_img6, task, output_dir,
+                                    cached_basemap_path, cached_annotation_path): ('img6', 6),
+                img_executor.submit(_gen_img7, task, output_dir,
+                                    cached_basemap_path, cached_annotation_path): ('img7', 7),
+                img_executor.submit(_gen_img8, task, output_dir,
+                                    cached_basemap_path, cached_annotation_path): ('img8', 8),
+                img_executor.submit(_gen_img9, task, output_dir,
+                                    cached_basemap_path, cached_annotation_path): ('img9', 9),
+            }
+
+            for future in _cf.as_completed(future_map):
+                img_key, img_no = future_map[future]
+                try:
+                    result = future.result()
+                    # 线程安全地递增已完成计数，progress 从3开始（2+已完成数）
+                    with _progress_lock:
+                        _completed_count[0] += 1
+                        current_progress = 2 + _completed_count[0]
+
+                    _update_task_progress(
+                        task_id, current_progress,
+                        append_message=f'img{img_no}已完成，',
+                    )
+
+                    # 根据图片编号存储结果
+                    if img_key in ('img1', 'img2', 'img9'):
+                        # 这些函数返回 (path, info) 元组
+                        img_path = result[0] if isinstance(result, tuple) else result
+                        img_info = result[1] if isinstance(result, tuple) and len(result) > 1 else None
+                        record_kwargs[f'{img_key}_path'] = img_path
+                        record_kwargs[f'{img_key}_info'] = img_info
+                    else:
+                        record_kwargs[f'{img_key}_path'] = result
+
+                except Exception as exc:
+                    logger.error('[任务 %s] %s 执行异常: %s', task_id, img_key, exc, exc_info=True)
+                    with _progress_lock:
+                        _completed_count[0] += 1
+                        current_progress = 2 + _completed_count[0]
+                        _has_failure[0] = True
+                    _update_task_progress(
+                        task_id, current_progress,
+                        error_message=f'{img_key}生成失败: {exc}',
+                        task_status=ReportTask.STATUS_FAILED,
+                    )
+
         gc.collect()
 
-        # ---- 图二 ----
-        update_progress(task_id, '生成图二（烈度分布图）', PROGRESS_STEPS['img2'])
-        img2_path, img2_info = _gen_img2(task, output_dir,
-                                          basemap_path=cached_basemap_path,
-                                          annotation_path=cached_annotation_path)
-        record_kwargs['img2_path'] = img2_path
-        record_kwargs['img2_info'] = img2_info
+        # ---- 7. 检查是否取消或失败 ----
+        if _is_cancelled(task_id):
+            logger.info('[任务 %s] 图1-9完成后检测到取消信号，终止任务', task_id)
+            _mark_failed(task)
+            return
+
+        # 若有图片失败则终止（_has_failure 标志或重新查询 DB 状态）
+        if _has_failure[0]:
+            logger.warning('[任务 %s] 图1-9中有生成失败项，终止任务', task_id)
+            # 刷新 task 对象以获取 DB 中最新状态
+            task.refresh_from_db()
+            return
+
+        # ---- 8. 生成 Ia.tif ----
+        try:
+            ia_tif_path = _gen_ia_tif(task, output_dir)
+            _update_task_progress(task_id, PROGRESS_STEPS['ia_tif'],
+                                   append_message='Ia.tif已完成，')
+        except Exception as exc:
+            logger.error('[任务 %s] Ia.tif 生成失败: %s', task_id, exc, exc_info=True)
+            _mark_failed(task, error_message=f'Ia.tif生成失败: {exc}')
+            return
         gc.collect()
 
-        # ---- 图三 ----
-        update_progress(task_id, '生成图三（地质构造图）', PROGRESS_STEPS['img3'])
-        record_kwargs['img3_path'] = _gen_img3(task, output_dir,
-                                                basemap_path=cached_basemap_path,
-                                                annotation_path=cached_annotation_path)
-        gc.collect()
-
-        # ---- 图四 ----
-        update_progress(task_id, '生成图四（数字高程图）', PROGRESS_STEPS['img4'])
-        record_kwargs['img4_path'] = _gen_img4(task, output_dir,
-                                                basemap_path=cached_basemap_path,
-                                                annotation_path=cached_annotation_path)
-        gc.collect()
-
-        # ---- 图五 ----
-        update_progress(task_id, '生成图五（土地利用类型图）', PROGRESS_STEPS['img5'])
-        record_kwargs['img5_path'] = _gen_img5(task, output_dir,
-                                                basemap_path=cached_basemap_path,
-                                                annotation_path=cached_annotation_path)
-        gc.collect()
-
-        # ---- 图六 ----
-        update_progress(task_id, '生成图六（人口分布图）', PROGRESS_STEPS['img6'])
-        record_kwargs['img6_path'] = _gen_img6(task, output_dir,
-                                                basemap_path=cached_basemap_path,
-                                                annotation_path=cached_annotation_path)
-        gc.collect()
-
-        # ---- 图七 ----
-        update_progress(task_id, '生成图七（GDP网格图）', PROGRESS_STEPS['img7'])
-        record_kwargs['img7_path'] = _gen_img7(task, output_dir,
-                                                basemap_path=cached_basemap_path,
-                                                annotation_path=cached_annotation_path)
-        gc.collect()
-
-        # ---- 图八 ----
-        update_progress(task_id, '生成图八（道路交通图）', PROGRESS_STEPS['img8'])
-        record_kwargs['img8_path'] = _gen_img8(task, output_dir,
-                                                basemap_path=cached_basemap_path,
-                                                annotation_path=cached_annotation_path)
-        gc.collect()
-
-        # ---- 图九 ----
-        update_progress(task_id, '生成图九（滑坡斜坡分布图）', PROGRESS_STEPS['img9'])
-        img9_path, img9_info = _gen_img9(task, output_dir,
-                                          basemap_path=cached_basemap_path,
-                                          annotation_path=cached_annotation_path)
-        record_kwargs['img9_path'] = img9_path
-        record_kwargs['img9_info'] = img9_info
-        gc.collect()
-
-        # ---- Ia.tif ----
-        update_progress(task_id, '生成 Ia.tif', PROGRESS_STEPS['ia_tif'])
-        ia_tif_path = _gen_ia_tif(task, output_dir)
-        gc.collect()
-
-        # ---- Dn.tif ----
-        update_progress(task_id, '生成 Dn.tif', PROGRESS_STEPS['dn_tif'])
+        # ---- 9. 生成 Dn.tif ----
         dn_tif_path = None
-        if ia_tif_path:
-            dn_tif_path = _gen_dn_tif(task, output_dir, ia_tif_path)
-        else:
-            logger.warning('[任务 %s] Ia.tif 未生成，跳过 Dn.tif 及图十', task_id)
+        try:
+            if ia_tif_path:
+                dn_tif_path = _gen_dn_tif(task, output_dir, ia_tif_path)
+                _update_task_progress(task_id, PROGRESS_STEPS['dn_tif'],
+                                       append_message='Dn.tif已完成，')
+            else:
+                logger.warning('[任务 %s] Ia.tif 未生成，跳过 Dn.tif 及图十', task_id)
+                _update_task_progress(task_id, PROGRESS_STEPS['dn_tif'])
+        except Exception as exc:
+            logger.error('[任务 %s] Dn.tif 生成失败: %s', task_id, exc, exc_info=True)
+            _update_task_progress(task_id, PROGRESS_STEPS['dn_tif'],
+                                   error_message=f'Dn.tif生成失败: {exc}')
         gc.collect()
 
-        # ---- 图十 ----
-        update_progress(task_id, '生成图十（Newmark位移图）', PROGRESS_STEPS['img10'])
-        record_kwargs['img10_path'] = _gen_img10(task, output_dir, dn_tif_path)
+        # ---- 10. 生成 图十 ----
+        try:
+            img10_path = _gen_img10(task, output_dir, dn_tif_path)
+            record_kwargs['img10_path'] = img10_path
+            _update_task_progress(task_id, PROGRESS_STEPS['img10'],
+                                   append_message='img10已完成，')
+        except Exception as exc:
+            logger.error('[任务 %s] 图十生成失败: %s', task_id, exc, exc_info=True)
+            _update_task_progress(task_id, PROGRESS_STEPS['img10'],
+                                   error_message=f'图十生成失败: {exc}')
         gc.collect()
 
-        # ---- 保存记录 ----
-        update_progress(task_id, '保存记录到数据库', PROGRESS_STEPS['save'])
-        ReportTaskRecord.objects.create(**record_kwargs)
-        logger.info('[任务 %s] 已保存 report_task_record', task_id)
+        # ---- 11. 保存记录 ----
+        try:
+            ReportTaskRecord.objects.create(**record_kwargs)
+            logger.info('[任务 %s] 已保存 report_task_record', task_id)
+        except Exception as exc:
+            logger.error('[任务 %s] 保存 report_task_record 失败: %s', task_id, exc, exc_info=True)
+            _mark_failed(task, error_message=f'保存记录失败: {exc}')
+            return
 
-        # ---- 生成Word文档 ----
-        generate_report_word(task, output_dir, record_kwargs)
+        # ---- 12. 生成Word文档 ----
+        try:
+            report_path = generate_report_word(task, output_dir, record_kwargs)
+            if report_path:
+                # 更新 report_path 到 ReportTaskRecord
+                ReportTaskRecord.objects.filter(task_id=task_id).update(
+                    report_path=report_path
+                )
+            _update_task_progress(task_id, PROGRESS_STEPS['report_done'],
+                                   append_message='报告生成完成，')
+        except Exception as exc:
+            logger.error('[任务 %s] Word报告生成失败: %s', task_id, exc, exc_info=True)
+            _update_task_progress(task_id, PROGRESS_STEPS['report_done'],
+                                   error_message=f'Word报告生成失败: {exc}')
 
-        # ---- 标记成功 ----
+        # ---- 13. 检查是否取消；标记成功 ----
+        if _is_cancelled(task_id):
+            logger.info('[任务 %s] 报告生成后检测到取消信号，终止任务', task_id)
+            _mark_failed(task)
+            return
+
+        task.refresh_from_db()
         task.task_status = ReportTask.STATUS_SUCCESS
         task.success_time = datetime.now()
-        task.save(update_fields=['task_status', 'success_time', 'updated_at'])
-        update_progress(task_id, '任务完成', PROGRESS_STEPS['done'])
-        logger.info('[任务 %s] 报告任务执行成功', task_id)
+        task.progress = PROGRESS_STEPS['done']
+        task.save(update_fields=['task_status', 'success_time', 'progress', 'updated_at'])
+        logger.info('[任务 %s] 报告任务执行成功，progress=100', task_id)
 
     except Exception as exc:
         logger.error('[任务 %s] 报告任务执行过程中发生未捕获异常: %s', task_id, exc, exc_info=True)
-        _mark_failed(task)
+        _mark_failed(task, error_message=f'未捕获异常: {exc}')
 
     finally:
-        # 最终强制释放所有 QGIS 资源，防止内存积累
+        # ---- 14. 最终强制释放所有 QGIS 资源，防止内存积累 ----
         try:
             from core.qgis_manager import get_qgis_manager
             get_qgis_manager().cleanup_session(task_id)
@@ -624,11 +763,21 @@ def execute_report_task(task_id: int) -> None:
         gc.collect()
 
 
-def _mark_failed(task: ReportTask) -> None:
-    """将任务状态标记为失败。"""
+def _mark_failed(task: ReportTask, error_message: str = None) -> None:
+    """
+    将任务状态标记为失败，并可选写入错误信息。
+
+    参数:
+        task: ReportTask 模型实例
+        error_message: 可选的错误日志内容
+    """
     try:
+        update_fields = ['task_status', 'updated_at']
         task.task_status = ReportTask.STATUS_FAILED
-        task.save(update_fields=['task_status', 'updated_at'])
+        if error_message is not None:
+            task.error_message = error_message
+            update_fields.append('error_message')
+        task.save(update_fields=update_fields)
         logger.info('[任务 %s] 已标记为失败', task.id)
     except Exception as exc:
         logger.error('[任务 %s] 标记失败状态时出错: %s', task.id, exc, exc_info=True)
@@ -1119,16 +1268,13 @@ def _generate_report_word_fallback(task: ReportTask, output_dir: str, record_dat
 
 def start_task_async(task_id: int) -> None:
     """
-    在后台线程中异步执行报告任务。
+    将报告任务提交到全局线程池异步执行。
 
     参数:
-        task_id: report_task 表的 id
+        task_id: 任务ID
     """
-    thread = threading.Thread(
-        target=execute_report_task,
-        args=(task_id,),
-        name=f'ReportTask-{task_id}',
-        daemon=True,
+    future = _TASK_EXECUTOR.submit(execute_report_task, task_id)
+    logger.info('[任务 %s] 已提交到全局线程池', task_id)
+    future.add_done_callback(
+        lambda f: logger.info('[任务 %s] 线程池执行完毕', task_id)
     )
-    thread.start()
-    logger.info('[任务 %s] 已启动后台线程 %s', task_id, thread.name)

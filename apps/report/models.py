@@ -76,16 +76,18 @@ class ReportTask(models.Model):
     """
 
     # 任务状态常量
-    STATUS_CREATED = 0   # 刚创建
-    STATUS_RUNNING = 1   # 正在执行
-    STATUS_SUCCESS = 2   # 执行成功
-    STATUS_FAILED = 3    # 执行失败
+    STATUS_CREATED    = 0   # 刚创建
+    STATUS_RUNNING    = 1   # 正在执行
+    STATUS_SUCCESS    = 2   # 执行成功
+    STATUS_FAILED     = 3   # 执行失败
+    STATUS_CANCELLING = 4   # 任务取消中
 
     STATUS_CHOICES = [
-        (STATUS_CREATED, '刚创建'),
-        (STATUS_RUNNING, '正在执行'),
-        (STATUS_SUCCESS, '执行成功'),
-        (STATUS_FAILED, '执行失败'),
+        (STATUS_CREATED,    '刚创建'),
+        (STATUS_RUNNING,    '正在执行'),
+        (STATUS_SUCCESS,    '执行成功'),
+        (STATUS_FAILED,     '执行失败'),
+        (STATUS_CANCELLING, '任务取消中'),
     ]
 
     # 插值算法选项
@@ -131,6 +133,9 @@ class ReportTask(models.Model):
         verbose_name='任务状态'
     )
     success_time = models.DateTimeField(null=True, blank=True, verbose_name='任务完成时间')
+    progress = models.PositiveSmallIntegerField(default=0, verbose_name='任务处理进度（1-100）')
+    message = models.CharField(max_length=1000, null=True, blank=True, verbose_name='状态描述（已完成图片追加记录）')
+    error_message = models.CharField(max_length=1000, null=True, blank=True, verbose_name='错误日志')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
