@@ -587,7 +587,11 @@
             // 任务结束（非执行中/取消中）时停止轮询
             if (d.task_status !== 1 && d.task_status !== 4) {
                 stopProgressPolling();
-                runningTable.reload();
+                {#runningTable.reload();#}
+                // 延迟2秒后自动刷新页面，让用户看到最终进度状态
+                setTimeout(function() {
+                    window.location.reload();
+                }, 2000);
             }
         }).fail(function() {
             // 网络错误不停止轮询，下次继续重试

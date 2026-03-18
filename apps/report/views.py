@@ -299,8 +299,7 @@ def running_tasks_view(request):
         ReportTask.STATUS_CANCELLING,
     ]
     queryset = ReportTask.objects.filter(
-        user_id=user_id,
-        task_status__in=status_list
+        user_id=user_id
     ).order_by('-updated_at')
 
     total = queryset.count()

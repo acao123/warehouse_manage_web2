@@ -1230,6 +1230,16 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
             context['img9'] = ''
             logger.warning('[任务 %s] 图九不存在: %s', task_id, img9_path)
 
+        # 图片十：newmark
+        img10_path = record.img10_path
+        if img10_path and os.path.exists(img10_path):
+            config = _get_image_size_config('img10')
+            context['img10'] = _create_inline_image(doc, img10_path, **config)
+            logger.info('[任务 %s] 已准备图十: %s', task_id, img10_path)
+        else:
+            context['img10'] = ''
+            logger.warning('[任务 %s] 图十不存在: %s', task_id, img10_path)
+
         # ---- 渲染模板 ----
         doc.render(context)
         logger.info('[任务 %s] 模板渲染完成', task_id)
