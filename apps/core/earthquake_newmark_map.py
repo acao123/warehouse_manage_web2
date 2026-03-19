@@ -252,118 +252,15 @@ NEWMARK_COLORS = [
 # Newmark位移图例分档值表（根据最大值选择对应列）
 # 列索引对应最大值：5, 10, 20, 50, 100, 200, 300, 500, 1000
 NEWMARK_LEGEND_TABLE = {
-    5: [
-0
-,0.01
-,0.1
-,0.2
-,0.5
-,0.8
-,1
-,2
-,3
-,4
-,5
-    ],
-    10: [
-0
-,0.01
-,0.1
-,0.2
-,0.5
-,1
-,2
-,4
-,6
-,8
-,10
-    ],
-    20: [
-0
-,0.01
-,0.1
-,0.2
-,0.5
-,1
-,2
-,5
-,10
-,15
-,20
-
-    ],
-    50: [
-0
-,0.1
-,0.5
-,1
-,2
-,5
-,10
-,20
-,30
-,40
-,50
-
-    ],
-    100: [0
-,0.1
-,0.5
-,1
-,5
-,10
-,20
-,40
-,60
-,80
-,100
-],
-    200: [0
-,0.1
-,1
-,2
-,5
-,10
-,15
-,25
-,50
-,100
-,200
-],
-    300: [0
-,0.1
-,1
-,2
-,5
-,10
-,20
-,50
-,100
-,150
-,300],
-    500: [0
-,0.1
-,1
-,2
-,5
-,10
-,20
-,50
-,100
-,200
-,500],
-    1000: [0
-,1
-,2
-,5
-,10
-,20
-,50
-,100
-,250
-,500
-,1000
-],
+    5:    [0, 0.01, 0.1, 0.2, 0.5, 0.8, 1, 2, 3, 4, 5],
+    10:   [0, 0.01, 0.1, 0.2, 0.5, 1, 2, 4, 6, 8, 10],
+    20:   [0, 0.01, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 20],
+    50:   [0, 0.1, 0.5, 1, 2, 5, 10, 20, 30, 40, 50],
+    100:  [0, 0.1, 0.5, 1, 5, 10, 20, 40, 60, 80, 100],
+    200:  [0, 0.1, 1, 2, 5, 10, 15, 25, 50, 100, 200],
+    300:  [0, 0.1, 1, 2, 5, 10, 20, 50, 100, 150, 300],
+    500:  [0, 0.1, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    1000: [0, 1, 2, 5, 10, 20, 50, 100, 250, 500, 1000],
 }
 
 # 最大值阈值列表（用于选择对应的分档列）
@@ -399,139 +296,158 @@ def download_tianditu_annotation_tiles(extent, width_px, height_px, output_path)
     返回:
         QgsRasterLayer或None, 渲染后的栅格图层
     """
-    tk = TIANDITU_TK
+    try:
+        tk = TIANDITU_TK
 
-    # 计算合适的缩放级别
-    lon_range = extent.xMaximum() - extent.xMinimum()
-    zoom = int(math.log2(360 / lon_range * width_px / 256))
-    zoom = max(1, min(zoom, 18))
+        # 计算合适的缩放级别
+        lon_range = extent.xMaximum() - extent.xMinimum()
+        zoom = int(math.log2(360 / lon_range * width_px / 256))
+        zoom = max(1, min(zoom, 18))
 
-    print(f"[信息] 下载天地图注记瓦片，缩放级别: {zoom}")
+        logger.info('下载天地图注记瓦片，缩放级别: %d', zoom)
+        print(f"[信息] 下载天地图注记瓦片，缩放级别: {zoom}")
 
-    def lon_to_tile_x(lon, z):
-        """经度转瓦片X坐标"""
-        n = 2 ** z
-        x = int((lon + 180.0) / 360.0 * n)
-        return max(0, min(n - 1, x))
+        def lon_to_tile_x(lon, z):
+            """经度转瓦片X坐标"""
+            n = 2 ** z
+            x = int((lon + 180.0) / 360.0 * n)
+            return max(0, min(n - 1, x))
 
-    def lat_to_tile_y(lat, z):
-        """纬度转瓦片Y坐标 (天地图c系列)"""
-        n = 2 ** (z - 1)
-        y = int((90.0 - lat) / 180.0 * n)
-        return max(0, min(n - 1, y))
+        def lat_to_tile_y(lat, z):
+            """纬度转瓦片Y坐标 (天地图c系列)"""
+            n = 2 ** (z - 1)
+            y = int((90.0 - lat) / 180.0 * n)
+            return max(0, min(n - 1, y))
 
-    def tile_x_to_lon(x, z):
-        """瓦片X坐标转经度（左边界）"""
-        n = 2 ** z
-        return x / n * 360.0 - 180.0
+        def tile_x_to_lon(x, z):
+            """瓦片X坐标转经度（左边界）"""
+            n = 2 ** z
+            return x / n * 360.0 - 180.0
 
-    def tile_y_to_lat(y, z):
-        """瓦片Y坐标转纬度（上边界）"""
-        n = 2 ** (z - 1)
-        return 90.0 - y / n * 180.0
+        def tile_y_to_lat(y, z):
+            """瓦片Y坐标转纬度（上边界）"""
+            n = 2 ** (z - 1)
+            return 90.0 - y / n * 180.0
 
-    # 获取瓦片范围
-    tile_x_min = lon_to_tile_x(extent.xMinimum(), zoom)
-    tile_x_max = lon_to_tile_x(extent.xMaximum(), zoom)
-    tile_y_min = lat_to_tile_y(extent.yMaximum(), zoom)
-    tile_y_max = lat_to_tile_y(extent.yMinimum(), zoom)
+        # 获取瓦片范围
+        tile_x_min = lon_to_tile_x(extent.xMinimum(), zoom)
+        tile_x_max = lon_to_tile_x(extent.xMaximum(), zoom)
+        tile_y_min = lat_to_tile_y(extent.yMaximum(), zoom)
+        tile_y_max = lat_to_tile_y(extent.yMinimum(), zoom)
 
-    if tile_y_min > tile_y_max:
-        tile_y_min, tile_y_max = tile_y_max, tile_y_min
+        if tile_y_min > tile_y_max:
+            tile_y_min, tile_y_max = tile_y_max, tile_y_min
 
-    print(f"[信息] 瓦片范围: x={tile_x_min}-{tile_x_max}, y={tile_y_min}-{tile_y_max}")
+        logger.info('瓦片范围: x=%d-%d, y=%d-%d', tile_x_min, tile_x_max, tile_y_min, tile_y_max)
+        print(f"[信息] 瓦片范围: x={tile_x_min}-{tile_x_max}, y={tile_y_min}-{tile_y_max}")
 
-    num_tiles_x = tile_x_max - tile_x_min + 1
-    num_tiles_y = tile_y_max - tile_y_min + 1
-    total_tiles = num_tiles_x * num_tiles_y
-    print(f"[信息] 需要下载 {total_tiles} 个注记瓦片 ({num_tiles_x} x {num_tiles_y})")
+        num_tiles_x = tile_x_max - tile_x_min + 1
+        num_tiles_y = tile_y_max - tile_y_min + 1
+        total_tiles = num_tiles_x * num_tiles_y
+        logger.info('需要下载 %d 个注记瓦片 (%d x %d)', total_tiles, num_tiles_x, num_tiles_y)
+        print(f"[信息] 需要下载 {total_tiles} 个注记瓦片 ({num_tiles_x} x {num_tiles_y})")
 
-    tile_size = 256
-    mosaic_width = num_tiles_x * tile_size
-    mosaic_height = num_tiles_y * tile_size
-    # 使用RGBA模式，支持透明背景
-    mosaic = Image.new('RGBA', (mosaic_width, mosaic_height), (0, 0, 0, 0))
+        tile_size = 256
+        mosaic_width = num_tiles_x * tile_size
+        mosaic_height = num_tiles_y * tile_size
+        # 使用RGBA模式，支持透明背景
+        mosaic = Image.new('RGBA', (mosaic_width, mosaic_height), (0, 0, 0, 0))
 
-    downloaded = 0
-    failed = 0
-    servers = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7']
+        downloaded = 0
+        failed = 0
+        servers = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7']
 
-    for ty in range(tile_y_min, tile_y_max + 1):
-        for tx in range(tile_x_min, tile_x_max + 1):
-            server = servers[(tx + ty) % len(servers)]
+        for ty in range(tile_y_min, tile_y_max + 1):
+            for tx in range(tile_x_min, tile_x_max + 1):
+                server = servers[(tx + ty) % len(servers)]
 
-            # 只下载天地图注记URL (cva_c - EPSG:4326)
-            cva_url = (
-                f"http://{server}.tianditu.gov.cn/cva_c/wmts?"
-                f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-                f"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
-                f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
-                f"&tk={tk}"
-            )
+                # 只下载天地图注记URL (cva_c - EPSG:4326)
+                cva_url = (
+                    f"http://{server}.tianditu.gov.cn/cva_c/wmts?"
+                    f"SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+                    f"&LAYER=cva&STYLE=default&TILEMATRIXSET=c"
+                    f"&FORMAT=tiles&TILEMATRIX={zoom}&TILEROW={ty}&TILECOL={tx}"
+                    f"&tk={tk}"
+                )
 
-            try:
-                resp_cva = requests.get(cva_url, timeout=10)
-                if resp_cva.status_code == 200:
-                    tile_cva = Image.open(BytesIO(resp_cva.content)).convert('RGBA')
+                try:
+                    resp_cva = requests.get(cva_url, timeout=10)
+                    if resp_cva.status_code == 200:
+                        tile_cva = Image.open(BytesIO(resp_cva.content)).convert('RGBA')
 
-                    # 粘贴到拼接图像（保留透明度）
-                    paste_x = (tx - tile_x_min) * tile_size
-                    paste_y = (ty - tile_y_min) * tile_size
-                    mosaic.paste(tile_cva, (paste_x, paste_y), tile_cva)
-                    downloaded += 1
-                else:
+                        # 粘贴到拼接图像（保留透明度）
+                        paste_x = (tx - tile_x_min) * tile_size
+                        paste_y = (ty - tile_y_min) * tile_size
+                        mosaic.paste(tile_cva, (paste_x, paste_y), tile_cva)
+                        downloaded += 1
+                    else:
+                        failed += 1
+                        logger.warning('注记瓦片下载失败: %d,%d - 状态码: %d', tx, ty, resp_cva.status_code)
+                        print(f"[警告] 注记瓦片下载失败: {tx},{ty} - 状态码: {resp_cva.status_code}")
+                except Exception as e:
                     failed += 1
-                    print(f"[警告] 注记瓦片下载失败: {tx},{ty} - 状态码: {resp_cva.status_code}")
-            except Exception as e:
-                failed += 1
-                print(f"[警告] 注记瓦片下载异常: {tx},{ty} - {e}")
+                    logger.warning('注记瓦片下载异常: %d,%d - %s', tx, ty, e)
+                    print(f"[警告] 注记瓦片下载异常: {tx},{ty} - {e}")
 
-    print(f"[信息] 注记瓦片下载完成: 成功 {downloaded}, 失败 {failed}")
+        logger.info('注记瓦片下载完成: 成功 %d, 失败 %d', downloaded, failed)
+        print(f"[信息] 注记瓦片下载完成: 成功 {downloaded}, 失败 {failed}")
 
-    if downloaded == 0:
-        print("[错误] 没有成功下载任何注记瓦片")
-        return None
+        if downloaded == 0:
+            logger.error('没有成功下载任何注记瓦片')
+            print("[错误] 没有成功下载任何注记瓦片")
+            return None
 
-    actual_lon_min = tile_x_to_lon(tile_x_min, zoom)
-    actual_lon_max = tile_x_to_lon(tile_x_max + 1, zoom)
-    actual_lat_max = tile_y_to_lat(tile_y_min, zoom)
-    actual_lat_min = tile_y_to_lat(tile_y_max + 1, zoom)
+        actual_lon_min = tile_x_to_lon(tile_x_min, zoom)
+        actual_lon_max = tile_x_to_lon(tile_x_max + 1, zoom)
+        actual_lat_max = tile_y_to_lat(tile_y_min, zoom)
+        actual_lat_min = tile_y_to_lat(tile_y_max + 1, zoom)
 
-    crop_left = int((extent.xMinimum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_right = int((extent.xMaximum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
-    crop_top = int((actual_lat_max - extent.yMaximum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
-    crop_bottom = int((actual_lat_max - extent.yMinimum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
+        crop_left = int((extent.xMinimum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
+        crop_right = int((extent.xMaximum() - actual_lon_min) / (actual_lon_max - actual_lon_min) * mosaic_width)
+        crop_top = int((actual_lat_max - extent.yMaximum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
+        crop_bottom = int((actual_lat_max - extent.yMinimum()) / (actual_lat_max - actual_lat_min) * mosaic_height)
 
-    crop_left = max(0, min(mosaic_width - 1, crop_left))
-    crop_right = max(crop_left + 1, min(mosaic_width, crop_right))
-    crop_top = max(0, min(mosaic_height - 1, crop_top))
-    crop_bottom = max(crop_top + 1, min(mosaic_height, crop_bottom))
+        crop_left = max(0, min(mosaic_width - 1, crop_left))
+        crop_right = max(crop_left + 1, min(mosaic_width, crop_right))
+        crop_top = max(0, min(mosaic_height - 1, crop_top))
+        crop_bottom = max(crop_top + 1, min(mosaic_height, crop_bottom))
 
-    cropped = mosaic.crop((crop_left, crop_top, crop_right, crop_bottom))
-    final_image = cropped.resize((width_px, height_px), Image.LANCZOS)
+        try:
+            cropped = mosaic.crop((crop_left, crop_top, crop_right, crop_bottom))
+            final_image = cropped.resize((width_px, height_px), Image.LANCZOS)
 
-    # 保存为PNG格式（支持透明度）
-    final_image.save(output_path, 'PNG')
-    print(f"[信息] 注记底图已保存: {output_path}")
+            # 保存为PNG格式（支持透明度）
+            final_image.save(output_path, 'PNG')
+            logger.info('注记底图已保存: %s', output_path)
+            print(f"[信息] 注记底图已保存: {output_path}")
+        except Exception as exc:
+            logger.error('图片拼接或保存失败: %s', exc, exc_info=True)
+            raise
 
-    world_file_path = output_path.replace(".png", ".pgw")
-    x_res = (extent.xMaximum() - extent.xMinimum()) / width_px
-    y_res = (extent.yMaximum() - extent.yMinimum()) / height_px
-    with open(world_file_path, 'w') as f:
-        f.write(f"{x_res}\n")
-        f.write("0\n")
-        f.write("0\n")
-        f.write(f"{-y_res}\n")
-        f.write(f"{extent.xMinimum()}\n")
-        f.write(f"{extent.yMaximum()}\n")
+        world_file_path = output_path.replace(".png", ".pgw")
+        x_res = (extent.xMaximum() - extent.xMinimum()) / width_px
+        y_res = (extent.yMaximum() - extent.yMinimum()) / height_px
+        with open(world_file_path, 'w') as f:
+            f.write(f"{x_res}\n")
+            f.write("0\n")
+            f.write("0\n")
+            f.write(f"{-y_res}\n")
+            f.write(f"{extent.xMinimum()}\n")
+            f.write(f"{extent.yMaximum()}\n")
 
-    raster_layer = QgsRasterLayer(output_path, "天地图注记", "gdal")
-    if raster_layer.isValid():
-        print(f"[信息] 成功加载注记栅格图层")
-        return raster_layer
-    else:
-        print(f"[错误] 无法加载注记栅格图层")
-        return None
+        raster_layer = QgsRasterLayer(output_path, "天地图注记", "gdal")
+        if raster_layer.isValid():
+            logger.info('成功加载注记栅格图层')
+            print(f"[信息] 成功加载注记栅格图层")
+            return raster_layer
+        else:
+            logger.error('无法加载注记栅格图层')
+            print(f"[错误] 无法加载注记栅格图层")
+            return None
+
+    except Exception as exc:
+        logger.error('下载天地图注记瓦片失败: %s', exc, exc_info=True)
+        raise
 
 
 # ============================================================
@@ -728,16 +644,19 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
         str: 成功返回输出文件路径，失败返回None
     """
     if not GDAL_AVAILABLE:
+        logger.warning('GDAL不可用，无法进行栅格裁剪')
         print("[警告] GDAL不可用，无法进行栅格裁剪")
         return None
 
     if not os.path.exists(input_path):
+        logger.error('输入栅格文件不存在: %s', input_path)
         print(f"[错误] 输入栅格文件不存在: {input_path}")
         return None
 
     try:
         src_ds = gdal.Open(input_path, gdal.GA_ReadOnly)
         if src_ds is None:
+            logger.error('无法打开栅格文件: %s', input_path)
             print(f"[错误] 无法打开栅格文件: {input_path}")
             return None
 
@@ -745,6 +664,7 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
         src_height = src_ds.RasterYSize
         src_bands = src_ds.RasterCount
 
+        logger.info('源栅格信息: %dx%d, %d波段', src_width, src_height, src_bands)
         print(f"[信息] 源栅格信息: {src_width}x{src_height}, {src_bands}波段")
 
         clip_xmin = extent.xMinimum() - buffer_degrees
@@ -752,6 +672,7 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
         clip_ymin = extent.yMinimum() - buffer_degrees
         clip_ymax = extent.yMaximum() + buffer_degrees
 
+        logger.info('裁剪范围: (%.4f, %.4f) - (%.4f, %.4f)', clip_xmin, clip_ymin, clip_xmax, clip_ymax)
         print(f"[信息] 裁剪范围: ({clip_xmin:.4f}, {clip_ymin:.4f}) - ({clip_xmax:.4f}, {clip_ymax:.4f})")
 
         translate_options = gdal.TranslateOptions(
@@ -767,10 +688,12 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
             ]
         )
 
+        logger.info('正在裁剪栅格数据...')
         print(f"[信息] 正在裁剪栅格数据...")
         dst_ds = gdal.Translate(output_path, src_ds, options=translate_options)
 
         if dst_ds is None:
+            logger.error('栅格裁剪失败')
             print(f"[错误] 栅格裁剪失败")
             src_ds = None
             return None
@@ -784,21 +707,23 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
         src_size = os.path.getsize(input_path) / (1024 * 1024 * 1024)
         dst_size = os.path.getsize(output_path) / (1024 * 1024)
 
+        logger.info('裁剪完成: %dx%d, 原文件: %.2fGB -> 裁剪后: %.2fMB', dst_width, dst_height, src_size, dst_size)
         print(f"[信息] 裁剪完成: {dst_width}x{dst_height}")
         print(f"[信息] 原文件: {src_size:.2f}GB -> 裁剪后: {dst_size:.2f}MB")
 
         return output_path
 
-    except Exception as e:
-        print(f"[错误] 栅格裁剪异常: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+    except Exception as exc:
+        logger.error('栅格裁剪异常: %s', exc, exc_info=True)
+        print(f"[错误] 栅格裁剪异常: {exc}")
+        raise
 
 
 def create_vrt_for_extent(input_path, output_vrt_path, extent, buffer_degrees=CLIP_BUFFER_DEGREES):
     """
     创建虚拟栅格(VRT)文件，只引用指定范围的数据
+
+    备用函数：当前主流程使用 clip_raster_to_extent 进行裁剪，此函数保留作为备用方案。
 
     参数:
         input_path (str): 输入栅格文件路径
@@ -938,17 +863,20 @@ def get_raster_max_value_in_extent(tif_path, extent, buffer_degrees=CLIP_BUFFER_
         float: 范围内栅格最大值，失败返回None
     """
     if not GDAL_AVAILABLE:
+        logger.warning('GDAL不可用，无法读取栅格最大值')
         print("[警告] GDAL不可用，无法读取栅格最大值")
         return None
 
     abs_path = resolve_path(tif_path) if not os.path.isabs(tif_path) else tif_path
     if not os.path.exists(abs_path):
+        logger.error('栅格文件不存在: %s', abs_path)
         print(f"[错误] 栅格文件不存在: {abs_path}")
         return None
 
     try:
         ds = gdal.Open(abs_path, gdal.GA_ReadOnly)
         if ds is None:
+            logger.error('无法打开栅格文件: %s', abs_path)
             print(f"[错误] 无法打开栅格文件: {abs_path}")
             return None
 
@@ -986,6 +914,8 @@ def get_raster_max_value_in_extent(tif_path, extent, buffer_degrees=CLIP_BUFFER_
         read_width = px_xmax - px_xmin
         read_height = px_ymax - px_ymin
 
+        logger.info('读取栅格范围: 像素(%d,%d) - (%d,%d), 尺寸: %dx%d',
+                    px_xmin, px_ymin, px_xmax, px_ymax, read_width, read_height)
         print(f"[信息] 读取栅格范围: 像素({px_xmin},{px_ymin}) - ({px_xmax},{px_ymax})")
         print(f"[信息] 读取尺寸: {read_width} x {read_height} 像素")
 
@@ -997,6 +927,7 @@ def get_raster_max_value_in_extent(tif_path, extent, buffer_degrees=CLIP_BUFFER_
         data = band.ReadAsArray(px_xmin, px_ymin, read_width, read_height)
 
         if data is None:
+            logger.error('无法读取栅格数据: %s', abs_path)
             print(f"[错误] 无法读取栅格数据")
             ds = None
             return None
@@ -1008,6 +939,7 @@ def get_raster_max_value_in_extent(tif_path, extent, buffer_degrees=CLIP_BUFFER_
             valid_data = data[~np.isnan(data)]
 
         if valid_data.size == 0:
+            logger.warning('范围内没有有效数据: %s', abs_path)
             print(f"[警告] 范围内没有有效数据")
             ds = None
             return None
@@ -1015,14 +947,14 @@ def get_raster_max_value_in_extent(tif_path, extent, buffer_degrees=CLIP_BUFFER_
         max_value = float(np.max(valid_data))
 
         ds = None
+        logger.info('范围内栅格最大值: %.4f', max_value)
         print(f"[信息] 范围内栅格最大值: {max_value:.4f}")
         return max_value
 
-    except Exception as e:
-        print(f"[错误] 读取栅格最大值异常: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+    except Exception as exc:
+        logger.error('读取栅格最大值异常: %s', exc, exc_info=True)
+        print(f"[错误] 读取栅格最大值异常: {exc}")
+        raise
 
 
 def get_raster_max_value(tif_path):
@@ -1068,6 +1000,9 @@ def get_clipped_raster_max_value(tif_path):
     """
     获取裁剪后栅格文件中的最大值（用于已裁剪的临时文件）
 
+    备用函数：当前主流程使用 get_raster_max_value_in_extent 在裁剪前直接读取最大值，
+    此函数保留作为备用方案（适用于已有裁剪后文件时）。
+
     参数:
         tif_path (str): TIF文件路径（绝对路径）
 
@@ -1111,13 +1046,20 @@ def select_legend_column(max_value):
 
     返回:
         list: 对应的11个分档值列表（包含0到最大值的11个档位），
-              如果max_value > 1000则返回None（不显示图例）
+              如果max_value <= 0 或 > 1000则返回None（不显示图例）；
+              如果max_value is None则返回默认分档列（最大值10）
     """
     if max_value is None:
         print("[警告] 最大值为None，使用默认分档（最大值10）")
         return NEWMARK_LEGEND_TABLE[10]
 
+    if max_value <= 0:
+        logger.info('Dn最大值 %.4f <= 0，不显示Newmark位移图例', max_value)
+        print(f"[信息] Dn最大值 {max_value} <= 0，不显示Newmark位移图例")
+        return None
+
     if max_value > 1000:
+        logger.info('最大值 %.4f > 1000，图例文字不显示', max_value)
         print(f"[信息] 最大值 {max_value} > 1000，图例文字不显示")
         return None
 
@@ -1131,6 +1073,7 @@ def select_legend_column(max_value):
     if selected_threshold is None:
         selected_threshold = 1000
 
+    logger.info('Dn最大值: %.2f, 选择分档列: %d', max_value, selected_threshold)
     print(f"[信息] Dn最大值: {max_value:.2f}, 选择分档列: {selected_threshold}")
     return NEWMARK_LEGEND_TABLE[selected_threshold]
 
@@ -1205,6 +1148,7 @@ def apply_newmark_renderer(raster_layer, legend_values):
         bool: 是否成功应用渲染器
     """
     if raster_layer is None or not raster_layer.isValid():
+        logger.error('无效的栅格图层，无法应用渲染器')
         print("[错误] 无效的栅格图层，无法应用渲染器")
         return False
 
@@ -1239,17 +1183,22 @@ def apply_newmark_renderer(raster_layer, legend_values):
         raster_layer.setRenderer(renderer)
         raster_layer.triggerRepaint()
 
+        logger.info('Newmark位移图层渲染器设置完成，使用10档分类')
         print("[信息] Newmark位移图层渲染器设置完成，使用10档分类")
         return True
 
-    except Exception as e:
-        print(f"[错误] 应用Newmark渲染器失败: {e}")
-        return False
+    except Exception as exc:
+        logger.error('应用Newmark渲染器失败: %s', exc, exc_info=True)
+        print(f"[错误] 应用Newmark渲染器失败: {exc}")
+        raise
 
 
 def build_newmark_legend_list(legend_values):
     """
     构建Newmark位移图例列表（用于边界标签样式）
+
+    工具函数：当前 _add_legend 中直接使用 legend_values 和 NEWMARK_COLORS 绘制图例，
+    此函数保留作为工具函数，供外部调用或未来扩展使用。
 
     参数:
         legend_values (list): 11个分档值列表
@@ -1293,6 +1242,7 @@ def parse_intensity_kml(kml_path):
         list: 烈度圈数据列表，每项包含intensity和coords
     """
     if not kml_path or not os.path.exists(kml_path):
+        logger.warning('KML文件不存在或未提供: %s', kml_path)
         print(f"[警告] KML文件不存在或未提供: {kml_path}")
         return []
 
@@ -1317,9 +1267,12 @@ def parse_intensity_kml(kml_path):
                     "intensity": intensity,
                     "coords": coords,
                 })
+        logger.info('从KML解析到 %d 个烈度圈', len(intensity_data))
         print(f"[信息] 从KML解析到 {len(intensity_data)} 个烈度圈")
-    except Exception as e:
-        print(f"[错误] 解析KML文件失败: {e}")
+    except Exception as exc:
+        logger.error('解析KML文件失败: %s', exc, exc_info=True)
+        print(f"[错误] 解析KML文件失败: {exc}")
+        raise
     return intensity_data
 
 
@@ -1375,53 +1328,59 @@ def create_intensity_layer(intensity_data):
     if not intensity_data:
         return None
 
-    layer = QgsVectorLayer("LineString?crs=EPSG:4326", "烈度圈", "memory")
-    provider = layer.dataProvider()
-    provider.addAttributes([
-        QgsField("intensity", QVariant.Int),
-        QgsField("label", QVariant.String),
-    ])
-    layer.updateFields()
+    try:
+        layer = QgsVectorLayer("LineString?crs=EPSG:4326", "烈度圈", "memory")
+        provider = layer.dataProvider()
+        provider.addAttributes([
+            QgsField("intensity", QVariant.Int),
+            QgsField("label", QVariant.String),
+        ])
+        layer.updateFields()
 
-    features = []
-    for item in intensity_data:
-        intensity = item["intensity"]
-        coords = item["coords"]
-        if len(coords) < 2:
-            continue
-        points = [QgsPointXY(lon, lat) for lon, lat in coords]
-        geom = QgsGeometry.fromPolylineXY(points)
-        feat = QgsFeature(layer.fields())
-        feat.setGeometry(geom)
-        feat.setAttribute("intensity", intensity)
-        feat.setAttribute("label", int_to_roman(intensity))
-        features.append(feat)
+        features = []
+        for item in intensity_data:
+            intensity = item["intensity"]
+            coords = item["coords"]
+            if len(coords) < 2:
+                continue
+            points = [QgsPointXY(lon, lat) for lon, lat in coords]
+            geom = QgsGeometry.fromPolylineXY(points)
+            feat = QgsFeature(layer.fields())
+            feat.setGeometry(geom)
+            feat.setAttribute("intensity", intensity)
+            feat.setAttribute("label", int_to_roman(intensity))
+            features.append(feat)
 
-    provider.addFeatures(features)
-    layer.updateExtents()
+        provider.addFeatures(features)
+        layer.updateExtents()
 
-    halo_sl = QgsSimpleLineSymbolLayer()
-    halo_sl.setColor(INTENSITY_HALO_COLOR)
-    halo_sl.setWidth(INTENSITY_HALO_WIDTH_MM)
-    halo_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    halo_sl.setPenStyle(Qt.SolidLine)
+        halo_sl = QgsSimpleLineSymbolLayer()
+        halo_sl.setColor(INTENSITY_HALO_COLOR)
+        halo_sl.setWidth(INTENSITY_HALO_WIDTH_MM)
+        halo_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
+        halo_sl.setPenStyle(Qt.SolidLine)
 
-    line_sl = QgsSimpleLineSymbolLayer()
-    line_sl.setColor(INTENSITY_LINE_COLOR)
-    line_sl.setWidth(INTENSITY_LINE_WIDTH_MM)
-    line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    line_sl.setPenStyle(Qt.SolidLine)
+        line_sl = QgsSimpleLineSymbolLayer()
+        line_sl.setColor(INTENSITY_LINE_COLOR)
+        line_sl.setWidth(INTENSITY_LINE_WIDTH_MM)
+        line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
+        line_sl.setPenStyle(Qt.SolidLine)
 
-    symbol = QgsLineSymbol()
-    symbol.changeSymbolLayer(0, halo_sl)
-    symbol.appendSymbolLayer(line_sl)
+        symbol = QgsLineSymbol()
+        symbol.changeSymbolLayer(0, halo_sl)
+        symbol.appendSymbolLayer(line_sl)
 
-    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
-    _setup_intensity_labels(layer)
-    layer.triggerRepaint()
+        layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+        _setup_intensity_labels(layer)
+        layer.triggerRepaint()
 
-    print(f"[信息] 创建烈度圈图层，共 {len(features)} 条烈度线")
-    return layer
+        logger.info('创建烈度圈图层，共 %d 条烈度线', len(features))
+        print(f"[信息] 创建烈度圈图层，共 {len(features)} 条烈度线")
+        return layer
+
+    except Exception as exc:
+        logger.error('创建烈度圈图层失败: %s', exc, exc_info=True)
+        raise
 
 
 def _setup_intensity_labels(layer):
@@ -1458,53 +1417,105 @@ def _setup_intensity_labels(layer):
 def load_newmark_raster_optimized(tif_path, extent):
     """
     优化加载Newmark位移TIF栅格图层（针对大文件优化）
+
+    当 Dn.tif 范围内最大值 <= 0 或无法获取时，不应用渐变渲染器，legend_values 返回 None。
     """
-    abs_path = resolve_path(tif_path)
-    if not os.path.exists(abs_path):
-        print(f"[错误] Newmark位移底图文件不存在: {abs_path}")
-        return None, None
+    try:
+        abs_path = resolve_path(tif_path)
+        if not os.path.exists(abs_path):
+            logger.error('Newmark位移底图文件不存在: %s', abs_path)
+            print(f"[错误] Newmark位移底图文件不存在: {abs_path}")
+            return None, None
 
-    file_size_gb = os.path.getsize(abs_path) / (1024 * 1024 * 1024)
-    print(f"[信息] Newmark位移文件大小: {file_size_gb:.2f}GB")
+        file_size_gb = os.path.getsize(abs_path) / (1024 * 1024 * 1024)
+        logger.info('Newmark位移文件大小: %.2fGB', file_size_gb)
+        print(f"[信息] Newmark位移文件大小: {file_size_gb:.2f}GB")
 
-    clipped_path = None
-    legend_values = None
+        legend_values = None
+        # 标记是否已通过GDAL明确判断过max_value（区分"GDAL不可用/未计算"与"已计算但<=0"两种情况）
+        max_value_determined = False
 
-    if GDAL_AVAILABLE:
-        print(f"[信息] 读取指定范围内的数据计算最大值...")
-        max_value = get_raster_max_value_in_extent(abs_path, extent)
-        legend_values = select_legend_column(max_value)
+        if GDAL_AVAILABLE:
+            logger.info('读取指定范围内的数据计算最大值...')
+            print(f"[信息] 读取指定范围内的数据计算最大值...")
+            try:
+                max_value = get_raster_max_value_in_extent(abs_path, extent)
+            except Exception as exc:
+                logger.warning('读取范围内最大值失败，将尝试直接加载: %s', exc)
+                print(f"[警告] 读取范围内最大值失败，将尝试直接加载: {exc}")
+                max_value = None
 
-        if file_size_gb > 0.1:
-            print(f"[信息] 文件较大，启用裁剪优化...")
-            temp_manager = get_temp_manager()
-            clipped_path = temp_manager.get_temp_file(suffix="_newmark_clipped.tif")
-            result_path = clip_raster_to_extent(abs_path, clipped_path, extent)
+            max_value_determined = True
 
-            if result_path and os.path.exists(result_path):
-                layer = QgsRasterLayer(result_path, "Newmark位移底图")
-                if layer.isValid():
-                    print(f"[信息] 成功加载裁剪后的Newmark位移底图")
-                    apply_newmark_renderer(layer, legend_values)
-                    return layer, legend_values
-                else:
-                    print(f"[警告] 裁剪后的栅格无效，尝试直接加载原文件")
+            # 关键判断：max_value is None 或 max_value <= 0 时不应用渐变渲染器
+            if max_value is None or max_value <= 0:
+                logger.info('Dn.tif范围内最大值 %s (None或<=0)，不应用渐变渲染器', max_value)
+                print(f"[信息] Dn.tif范围内最大值 {max_value} (None或<=0)，不应用渐变渲染器")
+                legend_values = None
             else:
-                print(f"[警告] 栅格裁剪失败，尝试直接加载原文件")
+                legend_values = select_legend_column(max_value)
 
-    print(f"[信息] 直接加载Newmark位移底图...")
-    if legend_values is None:
-        max_value = get_raster_max_value(tif_path)
-        legend_values = select_legend_column(max_value)
+            if file_size_gb > 0.1:
+                logger.info('文件较大，启用裁剪优化...')
+                print(f"[信息] 文件较大，启用裁剪优化...")
+                temp_manager = get_temp_manager()
+                clipped_path = temp_manager.get_temp_file(suffix="_newmark_clipped.tif")
+                try:
+                    result_path = clip_raster_to_extent(abs_path, clipped_path, extent)
+                except Exception as exc:
+                    logger.warning('栅格裁剪失败，尝试直接加载原文件: %s', exc)
+                    print(f"[警告] 栅格裁剪失败，尝试直接加载原文件: {exc}")
+                    result_path = None
 
-    layer = QgsRasterLayer(abs_path, "Newmark位移底图")
-    if not layer.isValid():
-        print(f"[错误] 无法加载Newmark位移底图: {abs_path}")
-        return None, None
+                if result_path and os.path.exists(result_path):
+                    layer = QgsRasterLayer(result_path, "Newmark位移底图")
+                    if layer.isValid():
+                        logger.info('成功加载裁剪后的Newmark位移底图')
+                        print(f"[信息] 成功加载裁剪后的Newmark位移底图")
+                        if legend_values is not None:
+                            apply_newmark_renderer(layer, legend_values)
+                        return layer, legend_values
+                    else:
+                        logger.warning('裁剪后的栅格无效，尝试直接加载原文件')
+                        print(f"[警告] 裁剪后的栅格无效，尝试直接加载原文件")
+                else:
+                    logger.warning('栅格裁剪失败，尝试直接加载原文件')
+                    print(f"[警告] 栅格裁剪失败，尝试直接加载原文件")
 
-    print(f"[信息] 成功加载Newmark位移底图: {abs_path}")
-    apply_newmark_renderer(layer, legend_values)
-    return layer, legend_values
+        # 直接加载回退逻辑：
+        # - max_value_determined=False 表示 GDAL 不可用，此时尝试整文件扫描
+        # - max_value_determined=True 但裁剪失败时，legend_values 已由上方计算好，无需重新计算
+        logger.info('直接加载Newmark位移底图...')
+        print(f"[信息] 直接加载Newmark位移底图...")
+        if not max_value_determined:
+            # GDAL 不可用时，尝试通过整文件扫描获取最大值
+            try:
+                max_value = get_raster_max_value(tif_path)
+            except Exception as exc:
+                logger.warning('读取栅格最大值失败: %s', exc)
+                print(f"[警告] 读取栅格最大值失败: {exc}")
+                max_value = None
+
+            if max_value is not None and max_value > 0:
+                legend_values = select_legend_column(max_value)
+            else:
+                legend_values = None
+
+        layer = QgsRasterLayer(abs_path, "Newmark位移底图")
+        if not layer.isValid():
+            logger.error('无法加载Newmark位移底图: %s', abs_path)
+            print(f"[错误] 无法加载Newmark位移底图: {abs_path}")
+            return None, None
+
+        logger.info('成功加载Newmark位移底图: %s', abs_path)
+        print(f"[信息] 成功加载Newmark位移底图: {abs_path}")
+        if legend_values is not None:
+            apply_newmark_renderer(layer, legend_values)
+        return layer, legend_values
+
+    except Exception as exc:
+        logger.error('加载Newmark位移栅格失败: %s', exc, exc_info=True)
+        raise
 
 
 def load_vector_layer(shp_path, layer_name):
@@ -1793,43 +1804,48 @@ def create_county_legend_layer():
 def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm,
                         legend_values=None, ordered_layers=None, show_legend_text=True):
     """创建QGIS打印布局"""
-    layout = QgsPrintLayout(project)
-    layout.initializeDefaults()
-    layout.setName("地震Newmark位移分布图")
-    layout.setUnits(QgsUnitTypes.LayoutMillimeters)
+    try:
+        layout = QgsPrintLayout(project)
+        layout.initializeDefaults()
+        layout.setName("地震Newmark位移分布图")
+        layout.setUnits(QgsUnitTypes.LayoutMillimeters)
 
-    output_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
+        output_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
 
-    page = layout.pageCollection().page(0)
-    page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm, QgsUnitTypes.LayoutMillimeters))
+        page = layout.pageCollection().page(0)
+        page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm, QgsUnitTypes.LayoutMillimeters))
 
-    map_left = BORDER_LEFT_MM
-    map_top = BORDER_TOP_MM
+        map_left = BORDER_LEFT_MM
+        map_top = BORDER_TOP_MM
 
-    map_item = QgsLayoutItemMap(layout)
-    map_item.attemptMove(QgsLayoutPoint(map_left, map_top, QgsUnitTypes.LayoutMillimeters))
-    map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, map_height_mm, QgsUnitTypes.LayoutMillimeters))
-    map_item.setExtent(extent)
-    map_item.setCrs(CRS_WGS84)
-    map_item.setFrameEnabled(True)
-    map_item.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    map_item.setFrameStrokeColor(QColor(0, 0, 0))
-    map_item.setBackgroundEnabled(True)
-    map_item.setBackgroundColor(QColor(255, 255, 255))
-    layout.addLayoutItem(map_item)
+        map_item = QgsLayoutItemMap(layout)
+        map_item.attemptMove(QgsLayoutPoint(map_left, map_top, QgsUnitTypes.LayoutMillimeters))
+        map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, map_height_mm, QgsUnitTypes.LayoutMillimeters))
+        map_item.setExtent(extent)
+        map_item.setCrs(CRS_WGS84)
+        map_item.setFrameEnabled(True)
+        map_item.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+        map_item.setFrameStrokeColor(QColor(0, 0, 0))
+        map_item.setBackgroundEnabled(True)
+        map_item.setBackgroundColor(QColor(255, 255, 255))
+        layout.addLayoutItem(map_item)
 
-    layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
-    if layers_to_set:
-        map_item.setLayers(layers_to_set)
-        map_item.setKeepLayerSet(True)
-    map_item.invalidateCache()
+        layers_to_set = ordered_layers if ordered_layers else list(project.mapLayers().values())
+        if layers_to_set:
+            map_item.setLayers(layers_to_set)
+            map_item.setKeepLayerSet(True)
+        map_item.invalidateCache()
 
-    _setup_map_grid(map_item, extent)
-    _add_north_arrow(layout, map_height_mm)
-    _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
-    _add_legend(layout, map_item, project, map_height_mm, output_height_mm, legend_values, show_legend_text)
+        _setup_map_grid(map_item, extent)
+        _add_north_arrow(layout, map_height_mm)
+        _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
+        _add_legend(layout, map_item, project, map_height_mm, output_height_mm, legend_values, show_legend_text)
 
-    return layout
+        return layout
+
+    except Exception as exc:
+        logger.error('创建打印布局失败: %s', exc, exc_info=True)
+        raise
 
 
 def _setup_map_grid(map_item, extent):
@@ -2434,12 +2450,15 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
     config = get_magnitude_config(magnitude)
     half_size_km = config["map_size_km"] / 2.0
     scale = config["scale"]
+    logger.info('震级配置: 范围%dkm, 比例尺1:%d', config['map_size_km'], scale)
     print(f"[信息] 震级配置: 范围{config['map_size_km']}km, 比例尺1:{scale}")
 
     extent = calculate_extent(longitude, latitude, half_size_km)
+    logger.info('地图范围: %s', extent.toString())
     print(f"[信息] 地图范围: {extent.toString()}")
 
     map_height_mm = calculate_map_height_from_extent(extent, MAP_WIDTH_MM)
+    logger.info('地图尺寸: %.1fmm x %.1fmm', MAP_WIDTH_MM, map_height_mm)
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
@@ -2457,64 +2476,124 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
         width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
         height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
 
-        annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
+        # 可降级：天地图注记下载失败不影响整体流程
+        annotation_raster = None
+        try:
+            annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
+        except Exception as exc:
+            logger.warning('天地图注记下载失败，跳过注记图层: %s', exc)
+            print(f"[警告] 天地图注记下载失败，跳过注记图层: {exc}")
 
-        newmark_layer, legend_values = load_newmark_raster_optimized(tif_path, extent)
-        if newmark_layer:
-            project.addMapLayer(newmark_layer)
+        # 可降级：Newmark位移栅格加载失败不影响整体流程
+        newmark_layer = None
+        legend_values = None
+        try:
+            newmark_layer, legend_values = load_newmark_raster_optimized(tif_path, extent)
+            if newmark_layer:
+                project.addMapLayer(newmark_layer)
+        except Exception as exc:
+            logger.warning('加载Newmark位移底图失败，跳过: %s', exc)
+            print(f"[警告] 加载Newmark位移底图失败，跳过: {exc}")
 
+        # show_legend_text 由 legend_values 决定：max_value <= 0 时 legend_values 为 None
         show_legend_text = legend_values is not None
 
-        county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
-        if county_layer:
-            style_county_layer(county_layer)
-            project.addMapLayer(county_layer)
+        # 可降级：矢量边界图层加载失败不影响整体流程
+        county_layer = None
+        try:
+            county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
+            if county_layer:
+                style_county_layer(county_layer)
+                project.addMapLayer(county_layer)
+        except Exception as exc:
+            logger.warning('加载县界图层失败，跳过: %s', exc)
+            print(f"[警告] 加载县界图层失败，跳过: {exc}")
 
-        city_layer = load_vector_layer(CITY_SHP_PATH, "市界_地图")
-        if city_layer:
-            style_city_layer(city_layer)
-            project.addMapLayer(city_layer)
+        city_layer = None
+        try:
+            city_layer = load_vector_layer(CITY_SHP_PATH, "市界_地图")
+            if city_layer:
+                style_city_layer(city_layer)
+                project.addMapLayer(city_layer)
+        except Exception as exc:
+            logger.warning('加载市界图层失败，跳过: %s', exc)
+            print(f"[警告] 加载市界图层失败，跳过: {exc}")
 
-        province_layer = load_vector_layer(PROVINCE_SHP_PATH, "省界_地图")
-        if province_layer:
-            style_province_layer(province_layer)
-            project.addMapLayer(province_layer)
+        province_layer = None
+        try:
+            province_layer = load_vector_layer(PROVINCE_SHP_PATH, "省界_地图")
+            if province_layer:
+                style_province_layer(province_layer)
+                project.addMapLayer(province_layer)
+        except Exception as exc:
+            logger.warning('加载省界图层失败，跳过: %s', exc)
+            print(f"[警告] 加载省界图层失败，跳过: {exc}")
 
-        city_point_layer = create_city_point_layer(extent)
-        if city_point_layer:
-            project.addMapLayer(city_point_layer)
+        city_point_layer = None
+        try:
+            city_point_layer = create_city_point_layer(extent)
+            if city_point_layer:
+                project.addMapLayer(city_point_layer)
+        except Exception as exc:
+            logger.warning('加载地级市点位图层失败，跳过: %s', exc)
+            print(f"[警告] 加载地级市点位图层失败，跳过: {exc}")
 
-        province_legend_layer = create_province_legend_layer()
-        if province_legend_layer:
-            project.addMapLayer(province_legend_layer)
+        province_legend_layer = None
+        try:
+            province_legend_layer = create_province_legend_layer()
+            if province_legend_layer:
+                project.addMapLayer(province_legend_layer)
+        except Exception as exc:
+            logger.warning('创建省界图例图层失败，跳过: %s', exc)
 
-        city_legend_layer = create_city_legend_layer()
-        if city_legend_layer:
-            project.addMapLayer(city_legend_layer)
+        city_legend_layer = None
+        try:
+            city_legend_layer = create_city_legend_layer()
+            if city_legend_layer:
+                project.addMapLayer(city_legend_layer)
+        except Exception as exc:
+            logger.warning('创建市界图例图层失败，跳过: %s', exc)
 
-        county_legend_layer = create_county_legend_layer()
-        if county_legend_layer:
-            project.addMapLayer(county_legend_layer)
+        county_legend_layer = None
+        try:
+            county_legend_layer = create_county_legend_layer()
+            if county_legend_layer:
+                project.addMapLayer(county_legend_layer)
+        except Exception as exc:
+            logger.warning('创建县界图例图层失败，跳过: %s', exc)
 
-        intensity_legend_layer = create_intensity_legend_layer()
-        if intensity_legend_layer:
-            project.addMapLayer(intensity_legend_layer)
+        intensity_legend_layer = None
+        try:
+            intensity_legend_layer = create_intensity_legend_layer()
+            if intensity_legend_layer:
+                project.addMapLayer(intensity_legend_layer)
+        except Exception as exc:
+            logger.warning('创建烈度图例图层失败，跳过: %s', exc)
 
         intensity_data = []
         intensity_layer = None
         if kml_path:
-            abs_kml = kml_path
-            if not os.path.isabs(kml_path):
-                abs_kml = resolve_path(kml_path)
-            intensity_data = parse_intensity_kml(abs_kml)
-            if intensity_data:
-                intensity_layer = create_intensity_layer(intensity_data)
-                if intensity_layer:
-                    project.addMapLayer(intensity_layer)
+            try:
+                abs_kml = kml_path
+                if not os.path.isabs(kml_path):
+                    abs_kml = resolve_path(kml_path)
+                intensity_data = parse_intensity_kml(abs_kml)
+                if intensity_data:
+                    intensity_layer = create_intensity_layer(intensity_data)
+                    if intensity_layer:
+                        project.addMapLayer(intensity_layer)
+            except Exception as exc:
+                logger.warning('加载烈度圈图层失败，跳过: %s', exc)
+                print(f"[警告] 加载烈度圈图层失败，跳过: {exc}")
 
-        epicenter_layer = create_epicenter_layer(longitude, latitude)
-        if epicenter_layer:
-            project.addMapLayer(epicenter_layer)
+        epicenter_layer = None
+        try:
+            epicenter_layer = create_epicenter_layer(longitude, latitude)
+            if epicenter_layer:
+                project.addMapLayer(epicenter_layer)
+        except Exception as exc:
+            logger.warning('创建震中图层失败，跳过: %s', exc)
+            print(f"[警告] 创建震中图层失败，跳过: {exc}")
 
         if annotation_raster:
             project.addMapLayer(annotation_raster)
@@ -2530,11 +2609,21 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
             newmark_layer,
         ] if lyr is not None]
 
-        layout = create_print_layout(project, longitude, latitude, magnitude,
-                                     extent, scale, map_height_mm, legend_values,
-                                     ordered_layers, show_legend_text)
+        # 关键步骤：布局创建失败则抛出异常
+        try:
+            layout = create_print_layout(project, longitude, latitude, magnitude,
+                                         extent, scale, map_height_mm, legend_values,
+                                         ordered_layers, show_legend_text)
+        except Exception as exc:
+            logger.error('创建打印布局失败: %s', exc, exc_info=True)
+            raise
 
-        result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
+        # 关键步骤：导出失败则抛出异常
+        try:
+            result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
+        except Exception as exc:
+            logger.error('导出PNG失败: %s', exc, exc_info=True)
+            raise
 
     finally:
         temp_manager.cleanup()
@@ -2557,8 +2646,10 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
 
     print("=" * 60)
     if result:
+        logger.info('Newmark位移分布图已输出: %s', result)
         print(f"[完成] Newmark位移分布图已输出: {result}")
     else:
+        logger.error('Newmark位移分布图输出失败')
         print("[失败] Newmark位移分布图输出失败")
     print("=" * 60)
     return result
@@ -2566,32 +2657,39 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
 
 def export_layout_to_png(layout, output_path, dpi=150):
     """将打印布局导出为PNG图片"""
-    out_dir = os.path.dirname(os.path.abspath(output_path))
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir, exist_ok=True)
+    try:
+        out_dir = os.path.dirname(os.path.abspath(output_path))
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok=True)
 
-    exporter = QgsLayoutExporter(layout)
-    settings = QgsLayoutExporter.ImageExportSettings()
-    settings.dpi = dpi
-    settings.cropToContents = False
+        exporter = QgsLayoutExporter(layout)
+        settings = QgsLayoutExporter.ImageExportSettings()
+        settings.dpi = dpi
+        settings.cropToContents = False
 
-    abs_path = os.path.abspath(output_path)
-    result = exporter.exportToImage(abs_path, settings)
+        abs_path = os.path.abspath(output_path)
+        result = exporter.exportToImage(abs_path, settings)
 
-    if result == QgsLayoutExporter.Success:
-        print(f"[信息] PNG导出成功: {abs_path}")
-        return abs_path
-    else:
-        error_map = {
-            QgsLayoutExporter.FileError: "文件错误",
-            QgsLayoutExporter.MemoryError: "内存错误",
-            QgsLayoutExporter.SvgLayerError: "SVG图层错误",
-            QgsLayoutExporter.PrintError: "打印错误",
-            QgsLayoutExporter.Canceled: "已取消",
-        }
-        msg = error_map.get(result, f"未知错误(代码:{result})")
-        print(f"[错误] PNG导出失败: {msg}")
-        return None
+        if result == QgsLayoutExporter.Success:
+            logger.info('PNG导出成功: %s', abs_path)
+            print(f"[信息] PNG导出成功: {abs_path}")
+            return abs_path
+        else:
+            error_map = {
+                QgsLayoutExporter.FileError: "文件错误",
+                QgsLayoutExporter.MemoryError: "内存错误",
+                QgsLayoutExporter.SvgLayerError: "SVG图层错误",
+                QgsLayoutExporter.PrintError: "打印错误",
+                QgsLayoutExporter.Canceled: "已取消",
+            }
+            msg = error_map.get(result, f"未知错误(代码:{result})")
+            logger.error('PNG导出失败: %s', msg)
+            print(f"[错误] PNG导出失败: {msg}")
+            return None
+
+    except Exception as exc:
+        logger.error('PNG导出异常: %s', exc, exc_info=True)
+        raise
 
 
 # ============================================================
@@ -2643,6 +2741,14 @@ def run_all_tests():
     legend_over = select_legend_column(1500)
     assert legend_over is None
     print(f"  最大值1500 -> 返回None ✓")
+
+    legend_zero = select_legend_column(0)
+    assert legend_zero is None
+    print(f"  最大值0 -> 返回None ✓")
+
+    legend_neg = select_legend_column(-1)
+    assert legend_neg is None
+    print(f"  最大值-1 -> 返回None ✓")
 
     # 测试数值格式化
     print("\n--- 测试: format_legend_value ---")
