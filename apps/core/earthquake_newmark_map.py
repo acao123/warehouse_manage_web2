@@ -1658,7 +1658,7 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
     """创建省份标注点图层，支持震中附近省份标注自动偏移。
 
     通过将省份质心坐标写入独立的内存点图层来控制标注位置：
-    - 距震中 < 阈值的省份：沿"震中→质心"方向偏移标注点，避免遮挡五角星
+    - 距震中 < 阈值的省份：沿"质心→震中"反方向偏移标注点（即向省份边界内部偏移），避免遮挡五角星
     - 其余省份：标注点保持在质心位置不变
     点图层的标记符号设为完全透明，仅通过标注文字呈现省份名称。
 
@@ -1712,15 +1712,15 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         dist = (dx ** 2 + dy ** 2) ** 0.5
         px, py = cx, cy
         if dist < threshold:
-            # 沿"震中→质心"方向偏移标注点，使标注远离五角星
+            # 沿"质心→震中"反方向偏移标注点，使标注向省份边界内部偏移，避免遮挡五角星
             if dist > PROVINCE_LABEL_DISTANCE_EPSILON:
                 nx = dx / dist
                 ny = dy / dist
             else:
                 # 质心与震中完全重合时，默认向右偏移
                 nx, ny = 1.0, 0.0
-            px = cx + nx * offset_amount
-            py = cy + ny * offset_amount
+            px = cx - nx * offset_amount
+            py = cy - ny * offset_amount
 
         prov_name = feat[field_name]
         new_feat = QgsFeature()
@@ -2759,6 +2759,7 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
             annotation_raster,
             intensity_layer,
             city_point_layer,
+            province_label_layer,
             province_layer,
             city_layer,
             county_layer,
