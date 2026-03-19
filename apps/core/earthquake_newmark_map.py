@@ -185,20 +185,6 @@ PROVINCE_LINE_WIDTH_MM = 0.4
 PROVINCE_LABEL_FONT_SIZE_PT = 8
 PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
 
-# === 省份标注偏移（避开震中五角星）===
-# 省份质心与震中距离阈值（占地图短半幅的比例），超过此比例不偏移
-PROVINCE_LABEL_OFFSET_THRESHOLD_RATIO = 0.17
-# 偏移量基准（占地图短半幅的比例）
-PROVINCE_LABEL_OFFSET_BASE_RATIO = 0.08
-# 偏移量最小值（度）
-PROVINCE_LABEL_MIN_OFFSET_DEG = 0.05
-# 偏移量最大值（度）
-PROVINCE_LABEL_MAX_OFFSET_DEG = 0.5
-# 当 extent 未传入时使用的默认地图尺寸（度）
-PROVINCE_LABEL_DEFAULT_MAP_SIZE_DEG = 10.0
-# 近零距离容差（度），防止除零
-PROVINCE_LABEL_DISTANCE_EPSILON = 1e-9
-
 # === 市界样式 ===
 CITY_COLOR = QColor(160, 160, 160)
 CITY_LINE_WIDTH_MM = 0.24
@@ -1658,7 +1644,7 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
     """创建省份标注点图层，支持震中附近省份标注自动偏移。
 
     通过将省份质心坐标写入独立的内存点图层来控制标注位置：
-    - 距震中 < 阈值的省份：沿"质心→震中"反方向偏移标注点（即向省份边界内部偏移），避免遮挡五角星
+    - 当省份质心经纬度与震中经纬度完全相同时：向左和向下偏移3mm（转换为对应的度数）
     - 其余省份：标注点保持在质心位置不变
     点图层的标记符号设为完全透明，仅通过标注文字呈现省份名称。
 
@@ -1666,7 +1652,7 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         province_layer: 省界多边形图层
         epicenter_lon: 震中经度（度）
         epicenter_lat: 震中纬度（度）
-        extent: 地图范围（QgsRectangle），用于计算自适应偏移量
+        extent: 地图范围（QgsRectangle），用于计算偏移量
 
     Returns:
         配置好标注的 QgsVectorLayer 内存点图层，失败时返回 None
@@ -1676,18 +1662,20 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         print("[警告] 未找到省份名称字段，跳过省份标注图层创建")
         return None
 
-    # 计算偏移阈值和偏移量（自适应地图范围）
+    # 计算3mm对应的度数偏移量
+    # 根据地图范围计算：3mm / 地图宽度mm * 经度范围度 = 经度偏移量
     if extent is not None:
-        map_width = extent.width()   # 经度跨度（度）
-        map_height = extent.height() # 纬度跨度（度）
+        map_width_deg = extent.width()   # 经度跨度（度）
+        map_height_deg = extent.height() # 纬度跨度（度）
     else:
-        map_width = PROVINCE_LABEL_DEFAULT_MAP_SIZE_DEG
-        map_height = PROVINCE_LABEL_DEFAULT_MAP_SIZE_DEG
-    # 阈值：地图短半幅 × 阈值比例
-    threshold = min(map_width, map_height) * 0.5 * PROVINCE_LABEL_OFFSET_THRESHOLD_RATIO
-    # 偏移量：地图短半幅 × 偏移比例，并限制在 [min, max] 范围内
-    raw_offset = min(map_width, map_height) * 0.5 * PROVINCE_LABEL_OFFSET_BASE_RATIO
-    offset_amount = max(PROVINCE_LABEL_MIN_OFFSET_DEG, min(PROVINCE_LABEL_MAX_OFFSET_DEG, raw_offset))
+        map_width_deg = 10.0  # 默认值
+        map_height_deg = 10.0
+    offset_mm = 3.0  # 偏移量：3mm
+    lon_offset_deg = offset_mm / MAP_WIDTH_MM * map_width_deg   # 向左偏移（经度减小）
+    lat_offset_deg = offset_mm / MAP_WIDTH_MM * map_height_deg  # 向下偏移（纬度减小）
+
+    # 判断经纬度相同的容差（用于浮点数比较）
+    coord_epsilon = 1e-6
 
     # 创建内存点图层，字段 province_name 存储省份名称
     label_layer = QgsVectorLayer("Point?crs=EPSG:4326", "省份标注", "memory")
@@ -1711,23 +1699,14 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         cx = centroid.asPoint().x()
         cy = centroid.asPoint().y()
 
-        # 判断质心是否在震中附近，决定是否偏移
-        dx = cx - epicenter_lon
-        dy = cy - epicenter_lat
-        dist = (dx ** 2 + dy ** 2) ** 0.5
+        # 判断质心是否与震中经纬度完全相同（在容差范围内）
         px, py = cx, cy
-        if dist < threshold:
-            # 沿"质心→震中"反方向偏移标注点（即向省份边界内部偏移，远离震中），避免遮挡五角星
-            # dx = cx - epicenter_lon 指向从震中到质心的方向，+偏移量即远离震中
-            if dist > PROVINCE_LABEL_DISTANCE_EPSILON:
-                nx = dx / dist
-                ny = dy / dist
-            else:
-                # 质心与震中完全重合时，默认向右偏移
-                nx, ny = 1.0, 0.0
-            px = cx + nx * offset_amount
-            py = cy + ny * offset_amount
+        if abs(cx - epicenter_lon) < coord_epsilon and abs(cy - epicenter_lat) < coord_epsilon:
+            # 向左偏移（经度减小）和向下偏移（纬度减小）3mm
+            px = cx - lon_offset_deg
+            py = cy - lat_offset_deg
             offset_count += 1
+            print(f"[信息] 省份标注偏移：质心({cx:.6f}, {cy:.6f}) -> 偏移后({px:.6f}, {py:.6f})")
 
         prov_name = feat[field_name]
         new_feat = QgsFeature(layer_fields)
@@ -1735,7 +1714,7 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         new_feat.setAttribute("province_name", prov_name)
         feats_to_add.append(new_feat)
 
-    print(f"[信息] 省份标注：共 {len(feats_to_add)} 个省份，其中 {offset_count} 个省份因靠近震中进行了偏移")
+    print(f"[信息] 省份标注：共 {len(feats_to_add)} 个省份，其中 {offset_count} 个省份因与震中重合进行了偏移（向左向下3mm）")
     total_input = province_layer.featureCount()
     skipped = total_input - len(feats_to_add)
     if skipped > 0:
@@ -1783,7 +1762,7 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
     label_layer.setLabeling(labeling)
 
     print(f"[信息] 省份标注图层创建完成，共 {label_layer.featureCount()} 个标注点，"
-          f"偏移阈值 {threshold:.3f}°，偏移量 {offset_amount:.3f}°")
+          f"偏移量 3mm（经度: {lon_offset_deg:.6f}°，纬度: {lat_offset_deg:.6f}°）")
     return label_layer
 
 
