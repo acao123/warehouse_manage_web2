@@ -1552,12 +1552,12 @@ if __name__ == "__main__":
         resolution=30,  # 输出分辨率(米)；推荐10~100
 
         # 采样参数
-        sample_interval=1,  # 等值线采样间隔；推荐3~10，越小采样越密
+        sample_interval=5,  # 等值线采样间隔；推荐3~10，越小采样越密
         max_sample_points=10000,  # 最大采样点数；超过时随机抽样，避免内存溢出
 
         # ========== 选择插值方法 ==========
         # 推荐方法（平滑，无突变）
-        interp_method='scipy_tin',  # scipy TIN - 平滑无突变（默认推荐）
+        interp_method='kriging',  # scipy TIN - 平滑无突变（默认推荐）
         # interp_method='radial',   # 径向插值 - 专为同心圈，完美单调递增
 
         # 其他可用方法
