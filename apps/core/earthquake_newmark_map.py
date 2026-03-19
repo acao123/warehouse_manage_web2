@@ -1691,11 +1691,16 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
 
     # 创建内存点图层，字段 province_name 存储省份名称
     label_layer = QgsVectorLayer("Point?crs=EPSG:4326", "省份标注", "memory")
+    if not label_layer.isValid():
+        print("[错误] 无法创建省份标注内存图层（QgsVectorLayer 创建失败，请检查 QGIS 是否正确初始化）")
+        return None
     provider = label_layer.dataProvider()
     provider.addAttributes([QgsField("province_name", QVariant.String)])
     label_layer.updateFields()
 
+    layer_fields = label_layer.fields()
     feats_to_add = []
+    offset_count = 0
     for feat in province_layer.getFeatures():
         geom = feat.geometry()
         if geom is None or geom.isEmpty():
@@ -1712,24 +1717,35 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         dist = (dx ** 2 + dy ** 2) ** 0.5
         px, py = cx, cy
         if dist < threshold:
-            # 沿"质心→震中"反方向偏移标注点，使标注向省份边界内部偏移，避免遮挡五角星
+            # 沿"质心→震中"反方向偏移标注点（即向省份边界内部偏移，远离震中），避免遮挡五角星
+            # dx = cx - epicenter_lon 指向从震中到质心的方向，+偏移量即远离震中
             if dist > PROVINCE_LABEL_DISTANCE_EPSILON:
                 nx = dx / dist
                 ny = dy / dist
             else:
                 # 质心与震中完全重合时，默认向右偏移
                 nx, ny = 1.0, 0.0
-            px = cx - nx * offset_amount
-            py = cy - ny * offset_amount
+            px = cx + nx * offset_amount
+            py = cy + ny * offset_amount
+            offset_count += 1
 
         prov_name = feat[field_name]
-        new_feat = QgsFeature()
+        new_feat = QgsFeature(layer_fields)
         new_feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(px, py)))
-        new_feat.setAttributes([prov_name])
+        new_feat.setAttribute("province_name", prov_name)
         feats_to_add.append(new_feat)
 
+    print(f"[信息] 省份标注：共 {len(feats_to_add)} 个省份，其中 {offset_count} 个省份因靠近震中进行了偏移")
+    total_input = province_layer.featureCount()
+    skipped = total_input - len(feats_to_add)
+    if skipped > 0:
+        print(f"[信息] 省份标注：{skipped} 个省份因空几何或空质心被跳过（输入共 {total_input} 个）")
     if feats_to_add:
-        provider.addFeatures(feats_to_add)
+        success, added_feats = provider.addFeatures(feats_to_add)
+        if not success:
+            print(f"[警告] 省份标注要素添加失败（期望添加 {len(feats_to_add)} 个，实际添加 {len(added_feats)} 个）")
+    else:
+        print(f"[警告] 未找到任何有效省份要素（省界图层共 {total_input} 个要素，均因无效几何被跳过）")
     label_layer.updateExtents()
 
     # 设置透明点标记渲染器（点不可见，只显示标注文字）
@@ -2680,10 +2696,18 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
                     province_layer, longitude, latitude, extent
                 )
                 if province_label_layer:
-                    project.addMapLayer(province_label_layer)
+                    project.addMapLayer(province_label_layer, False)
+                    print(f"[信息] 省份标注图层已添加到项目，要素数量: {province_label_layer.featureCount()}")
+                else:
+                    print("[警告] 省份标注图层创建失败，回退到在省界图层上直接配置标注")
+                    _setup_province_labels(province_layer)
             except Exception as exc:
                 logger.warning('创建省份标注图层失败，跳过: %s', exc)
-                print(f"[警告] 创建省份标注图层失败，跳过: {exc}")
+                print(f"[警告] 创建省份标注图层失败，回退到在省界图层上直接配置标注: {exc}")
+                try:
+                    _setup_province_labels(province_layer)
+                except Exception as fallback_exc:
+                    logger.warning('回退标注配置也失败: %s', fallback_exc)
 
         city_point_layer = None
         try:
