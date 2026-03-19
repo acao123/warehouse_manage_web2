@@ -10,8 +10,8 @@ Newmark位移图例说明：
 - 十档颜色从低到高：rgb(148,193,146), rgb(251,245,195), rgb(250,236,150),
   rgb(246,215,75), rgb(246,200,0), rgb(242,182,11), rgb(218,89,49),
   rgb(214,82,11), rgb(192,2,28), rgb(81,52,130)
-- 图例显示：色块连接 + 边界位移值（从0到最大值，共11个标签）
-- 图例标题：Newmark位移（厘米）- Newmark使用Times New Roman字体
+- 图例显示：色块连接 + 边界位移值（从第二个值开始到最大值，共10个标签）
+- 图例标题：Newmark位移(cm) - Newmark和cm使用Times New Roman字体，位移()使用SimHei字体
 
 优化说明：
 - 针对大文件TIF进行优化，只裁剪加载需要范围内的数据
@@ -2343,7 +2343,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     if legend_values and show_legend_text:
         newmark_title_y = top_legend_start_y + top_legend_height + 2.0
 
-        # 标题 "Newmark位移（厘米）" - Newmark使用Times New Roman
+        # 标题 "Newmark位移(cm)" - Newmark和cm使用Times New Roman，位移()使用SimHei
         newmark_en_format = QgsTextFormat()
         newmark_en_font = QFont(LEGEND_FONT_TIMES_NEW_ROMAN)
         newmark_en_font.setPointSizeF(10.0)
@@ -2360,11 +2360,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         newmark_title_cn_format.setSizeUnit(QgsUnitTypes.RenderPoints)
         newmark_title_cn_format.setColor(QColor(0, 0, 0))
 
+        # 标题 "Newmark位移(cm)" 分四段绘制：
+        # "Newmark" -> Times New Roman, "位移(" -> SimHei, "cm" -> Times New Roman, ")" -> SimHei
         newmark_text = "Newmark"
-        cn_text = "位移（厘米）"
-        newmark_width_est = len(newmark_text) * 2.2
-        cn_width_est = len(cn_text) * 3.5
-        total_width_est = newmark_width_est + cn_width_est
+        cn_text_left = "位移("
+        cm_text = "cm"
+        cn_text_right = ")"
+        newmark_width_est = len(newmark_text) * 2.2  # ~15.4mm
+        cn_left_width_est = 8.5   # 位移( in SimHei
+        cm_width_est = 4.0        # cm in Times New Roman
+        cn_right_width_est = 1.8  # ) in SimHei
+        total_width_est = newmark_width_est + cn_left_width_est + cm_width_est + cn_right_width_est
         title_start_x = legend_x + (legend_width - total_width_est) / 2.0
 
         newmark_en_label = QgsLayoutItemLabel(layout)
@@ -2378,17 +2384,43 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         newmark_en_label.setBackgroundEnabled(False)
         layout.addLayoutItem(newmark_en_label)
 
-        cn_label = QgsLayoutItemLabel(layout)
-        cn_label.setText(cn_text)
-        cn_label.setTextFormat(newmark_title_cn_format)
-        cn_label.attemptMove(QgsLayoutPoint(title_start_x + newmark_width_est, newmark_title_y,
-                                            QgsUnitTypes.LayoutMillimeters))
-        cn_label.attemptResize(QgsLayoutSize(cn_width_est + 2, 5.0, QgsUnitTypes.LayoutMillimeters))
-        cn_label.setHAlign(Qt.AlignLeft)
-        cn_label.setVAlign(Qt.AlignVCenter)
-        cn_label.setFrameEnabled(False)
-        cn_label.setBackgroundEnabled(False)
-        layout.addLayoutItem(cn_label)
+        cn_left_label = QgsLayoutItemLabel(layout)
+        cn_left_label.setText(cn_text_left)
+        cn_left_label.setTextFormat(newmark_title_cn_format)
+        cn_left_label.attemptMove(QgsLayoutPoint(title_start_x + newmark_width_est, newmark_title_y,
+                                                 QgsUnitTypes.LayoutMillimeters))
+        cn_left_label.attemptResize(QgsLayoutSize(cn_left_width_est + 1, 5.0, QgsUnitTypes.LayoutMillimeters))
+        cn_left_label.setHAlign(Qt.AlignLeft)
+        cn_left_label.setVAlign(Qt.AlignVCenter)
+        cn_left_label.setFrameEnabled(False)
+        cn_left_label.setBackgroundEnabled(False)
+        layout.addLayoutItem(cn_left_label)
+
+        cm_label = QgsLayoutItemLabel(layout)
+        cm_label.setText(cm_text)
+        cm_label.setTextFormat(newmark_en_format)
+        # 轻微上移，修正 Times New Roman 字母的视觉基线偏低问题
+        cm_label.attemptMove(QgsLayoutPoint(title_start_x + newmark_width_est + cn_left_width_est,
+                                            newmark_title_y - 0.4, QgsUnitTypes.LayoutMillimeters))
+        cm_label.attemptResize(QgsLayoutSize(cm_width_est + 1, 5.0, QgsUnitTypes.LayoutMillimeters))
+        cm_label.setHAlign(Qt.AlignLeft)
+        cm_label.setVAlign(Qt.AlignVCenter)
+        cm_label.setFrameEnabled(False)
+        cm_label.setBackgroundEnabled(False)
+        layout.addLayoutItem(cm_label)
+
+        cn_right_label = QgsLayoutItemLabel(layout)
+        cn_right_label.setText(cn_text_right)
+        cn_right_label.setTextFormat(newmark_title_cn_format)
+        cn_right_label.attemptMove(
+            QgsLayoutPoint(title_start_x + newmark_width_est + cn_left_width_est + cm_width_est,
+                           newmark_title_y, QgsUnitTypes.LayoutMillimeters))
+        cn_right_label.attemptResize(QgsLayoutSize(cn_right_width_est + 1, 5.0, QgsUnitTypes.LayoutMillimeters))
+        cn_right_label.setHAlign(Qt.AlignLeft)
+        cn_right_label.setVAlign(Qt.AlignVCenter)
+        cn_right_label.setFrameEnabled(False)
+        cn_right_label.setBackgroundEnabled(False)
+        layout.addLayoutItem(cn_right_label)
 
         # 色块和标签区域
         colorbar_start_y = newmark_title_y + 6.0
@@ -2443,13 +2475,13 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         border_box.setFrameEnabled(False)
         layout.addLayoutItem(border_box)
 
-        # 绘制11个边界标签（从0开始，标签与色块边界对齐）
+        # 绘制10个边界标签（从第二个值开始，标签与色块底部边界对齐）
         label_x = legend_x + colorbar_left_pad + colorbar_width + label_gap
         label_width = legend_width - colorbar_left_pad - colorbar_width - label_gap - 2.0
         label_height_mm = 4.0  # 标签高度
 
-        for i in range(11):
-            # 标签的Y位置：与色块边界对齐（第一个标签与第一个色块顶部对齐）
+        for i in range(1, 11):
+            # 标签的Y位置：与色块底部边界对齐
             label_y = colorbar_start_y + i * colorbar_height - label_height_mm / 2.0
 
             # 获取对应的数值标签
@@ -2467,7 +2499,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
             value_label.setBackgroundEnabled(False)
             layout.addLayoutItem(value_label)
 
-        print(f"[信息] Newmark位移图例添加完成，共10个色块，11个边界标签")
+        print(f"[信息] Newmark位移图例添加完成，共10个色块，10个边界标签")
     elif legend_values and not show_legend_text:
         print("[信息] Dn最大值超过1000，不显示Newmark位移图例文字")
     else:
