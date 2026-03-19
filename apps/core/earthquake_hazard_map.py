@@ -713,7 +713,8 @@ def compute_jenks_breaks(data_flat, num_classes):
     if not isinstance(data_flat, np.ndarray):
         data_flat = np.asarray(data_flat, dtype=np.float32)
 
-    data_sorted = np.sort(data_flat.astype(np.float32))
+    data_sorted = np.sort(data_flat.astype(np.float32) if JENKSPY_AVAILABLE
+                         else data_flat.astype(np.float64))
     n = len(data_sorted)
 
     if n == 0:
@@ -747,7 +748,7 @@ def compute_jenks_breaks(data_flat, num_classes):
     #   按分位数将数据分为 NUM_STRATA 层，各层按比例采样，
     #   确保低概率密集区和高概率稀疏区均有充足代表性样本
     # ----------------------------------------------------------------
-    MAX_SAMPLES = 500000     # 最大样本数：jenkspy 处理此量级非常快，无需过度降采样
+    MAX_SAMPLES = 1000000    # 最大样本数：jenkspy 处理此量级非常快，无需过度降采样
     NUM_STRATA = 20         # 分层数
 
     if n > MAX_SAMPLES:
@@ -1005,7 +1006,7 @@ def compute_hazard_raster(dn_array, nodata_value, a, b, c):
     对整个Dn栅格数组逐像素计算危险性概率（向量化计算，效率高）
 
     处理规则：
-    - 无效值（NoData）保持为 -1（特殊标记，不参与分类）
+    - 无效值（NoData）直接判定为不危险，概率为 0
     - Dn <= DN_SAFE_THRESHOLD 的像素概率为 0
     - 其余像素按公式 P(f) = a * (1 - EXP(b * Dn^c)) 计算
 
@@ -1018,10 +1019,10 @@ def compute_hazard_raster(dn_array, nodata_value, a, b, c):
 
     返回:
         numpy.ndarray: 与输入同形状的危险性概率二维浮点数组
-                       NoData位置值为 -1.0，其余值为 [0, 1]
+                       所有值为 [0, 1]，NoData和Dn<=0.1cm的位置值为0
     """
-    # 创建输出数组，初始化为-1（代表NoData/无效）
-    prob_array = np.full(dn_array.shape, -1.0, dtype=np.float32)
+    # 创建输出数组，初始化为0（所有像素默认为不危险）
+    prob_array = np.zeros(dn_array.shape, dtype=np.float32)
 
     # 构建有效像素掩膜（排除NoData值）
     if nodata_value is not None:
@@ -1030,11 +1031,10 @@ def compute_hazard_raster(dn_array, nodata_value, a, b, c):
     else:
         valid_mask = ~np.isnan(dn_array)
 
-    # 安全区掩膜：Dn <= 阈值 的有效像素概率为0
-    safe_mask = valid_mask & (dn_array <= DN_SAFE_THRESHOLD)
-    prob_array[safe_mask] = 0.0
+    # NoData位置概率已经是0（初始化值），无需额外处理
+    # Dn <= 阈值 的有效像素概率也是0（初始化值），无需额外处理
 
-    # 危险区掩膜：Dn > 阈值 的有效像素进行公式计算
+    # 只需处理危险区：Dn > 阈值 的有效像素进行公式计算
     hazard_mask = valid_mask & (dn_array > DN_SAFE_THRESHOLD)
 
     if np.any(hazard_mask):
@@ -1152,10 +1152,9 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
         print(f"[信息] 计算危险性概率，参数: a={a}, b={b}, c={c}")
         prob_array = compute_hazard_raster(dn_array, nodata_value, a, b, c)
 
-        # 提取所有有效像素（prob>=0，即非NoData）的概率值，用于Jenks分类
-        prob_valid_mask = prob_array >= 0
-        prob_flat = prob_array[prob_valid_mask].flatten()
-        print(f"[信息] 有效像素数: {len(prob_flat)}，概率范围: [{float(np.min(prob_flat)):.4f}, {float(np.max(prob_flat)):.4f}]")
+        # 所有像素都参与统计（NoData已被设为0，不再是-1）
+        prob_flat = prob_array.flatten()
+        print(f"[信息] 总像素数: {len(prob_flat)}，概率范围: [{float(np.min(prob_flat)):.4f}, {float(np.max(prob_flat)):.4f}]")
 
         # 计算输出栅格的地理变换参数（基于裁剪后的左上角坐标）
         out_x_origin = gt[0] + px_xmin * gt[1]
@@ -1187,7 +1186,6 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
             out_ds.SetProjection(srs.ExportToWkt())
 
         out_band = out_ds.GetRasterBand(1)
-        out_band.SetNoDataValue(-1.0)
         out_band.WriteArray(prob_array)
         out_band.FlushCache()
 
@@ -3300,9 +3298,9 @@ def run_all_tests():
         prob_result = compute_hazard_raster(test_dn, nodata_value=-9999.0,
                                             a=0.335, b=-0.048, c=0.565)
 
-        # NoData位置应为-1
-        assert prob_result[1, 1] == -1.0, f"NoData位置应为-1，实际{prob_result[1, 1]}"
-        print(f"  NoData(-9999)位置: prob={prob_result[1, 1]} ✓")
+        # NoData位置应为0（判定为不危险）
+        assert prob_result[1, 1] == 0.0, f"NoData位置应为0（不危险），实际{prob_result[1, 1]}"
+        print(f"  NoData(-9999)位置: prob={prob_result[1, 1]}（判定为不危险）✓")
 
         # Dn <= 0.1cm 的位置应为0
         assert prob_result[0, 0] == 0.0, f"Dn=0位置应为0，实际{prob_result[0, 0]}"
@@ -3319,10 +3317,10 @@ def run_all_tests():
         print(f"  Dn>0.1cm时概率正确计算，且随Dn增大而增大 ✓")
 
         # 所有有效概率值应在[0,1]范围内
-        valid_probs = prob_result[prob_result >= 0]
-        assert float(np.min(valid_probs)) >= 0.0, "所有有效概率应>=0"
-        assert float(np.max(valid_probs)) <= 1.0, "所有有效概率应<=1"
-        print(f"  所有有效概率值均在[0,1]范围内 ✓")
+        # 所有概率值应在[0,1]范围内（NoData也被设为0）
+        assert float(np.min(prob_result)) >= 0.0, "所有概率应>=0"
+        assert float(np.max(prob_result)) <= 1.0, "所有概率应<=1"
+        print(f"  所有概率值均在[0,1]范围内 ✓")
     else:
         print("\n--- 测试5: compute_hazard_raster (GDAL不可用，跳过) ---")
 
