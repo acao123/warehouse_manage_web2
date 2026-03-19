@@ -88,6 +88,7 @@ from qgis.core import (
     QgsColorRampShader,
     QgsSingleBandPseudoColorRenderer,
     QgsCoordinateTransform,
+    QgsProperty,
 )
 from qgis.PyQt.QtCore import Qt, QVariant
 from qgis.PyQt.QtGui import QColor, QFont
@@ -184,6 +185,20 @@ PROVINCE_COLOR = QColor(160, 160, 160)
 PROVINCE_LINE_WIDTH_MM = 0.4
 PROVINCE_LABEL_FONT_SIZE_PT = 8
 PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
+
+# === 省份标注偏移（避开震中五角星）===
+# 省份质心与震中距离阈值（占地图短半幅的比例），超过此比例不偏移
+PROVINCE_LABEL_OFFSET_THRESHOLD_RATIO = 0.17
+# 偏移量基准（占地图短半幅的比例）
+PROVINCE_LABEL_OFFSET_BASE_RATIO = 0.08
+# 偏移量最小值（度）
+PROVINCE_LABEL_MIN_OFFSET_DEG = 0.05
+# 偏移量最大值（度）
+PROVINCE_LABEL_MAX_OFFSET_DEG = 0.5
+# 当 extent 未传入时使用的默认地图尺寸（度）
+PROVINCE_LABEL_DEFAULT_MAP_SIZE_DEG = 10.0
+# 近零距离容差（度），防止除零
+PROVINCE_LABEL_DISTANCE_EPSILON = 1e-9
 
 # === 市界样式 ===
 CITY_COLOR = QColor(160, 160, 160)
@@ -1536,7 +1551,7 @@ def load_vector_layer(shp_path, layer_name):
 # 图层样式设置函数
 # ============================================================
 
-def style_province_layer(layer):
+def style_province_layer(layer, epicenter_lon=None, epicenter_lat=None, extent=None):
     """设置省界图层样式"""
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
@@ -1548,7 +1563,7 @@ def style_province_layer(layer):
     symbol = QgsFillSymbol()
     symbol.changeSymbolLayer(0, fill_sl)
     layer.renderer().setSymbol(symbol)
-    _setup_province_labels(layer)
+    _setup_province_labels(layer, epicenter_lon, epicenter_lat, extent)
     layer.triggerRepaint()
     print("[信息] 省界图层样式设置完成")
 
@@ -1595,17 +1610,91 @@ def style_county_layer(layer):
     print(f"[信息] 县界图层样式设置完成")
 
 
-def _setup_province_labels(layer):
+def _setup_province_labels(layer, epicenter_lon=None, epicenter_lat=None, extent=None):
     """配置省界图层标注"""
     field_name = _find_name_field(layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
     if not field_name:
         print("[警告] 未找到省份名称字段，跳过标注设置")
         return
 
+    # 计算偏移阈值和偏移量（自适应地图范围）
+    offset_map = {}  # {feature_id: (offset_x, offset_y)} in degrees
+    if epicenter_lon is not None and epicenter_lat is not None:
+        if extent is not None:
+            map_width = extent.width()   # 经度跨度
+            map_height = extent.height() # 纬度跨度
+        else:
+            map_width = PROVINCE_LABEL_DEFAULT_MAP_SIZE_DEG
+            map_height = PROVINCE_LABEL_DEFAULT_MAP_SIZE_DEG
+        # 阈值：地图短半幅乘以阈值比例
+        threshold = min(map_width, map_height) * 0.5 * PROVINCE_LABEL_OFFSET_THRESHOLD_RATIO
+        # 偏移量：地图短半幅乘以偏移比例，并限制在 [min, max] 范围内
+        raw_offset = min(map_width, map_height) * 0.5 * PROVINCE_LABEL_OFFSET_BASE_RATIO
+        offset_amount = max(PROVINCE_LABEL_MIN_OFFSET_DEG, min(PROVINCE_LABEL_MAX_OFFSET_DEG, raw_offset))
+
+        for feat in layer.getFeatures():
+            geom = feat.geometry()
+            if geom is None or geom.isEmpty():
+                continue
+            centroid = geom.centroid()
+            if centroid is None or centroid.isEmpty():
+                continue
+            cx = centroid.asPoint().x()
+            cy = centroid.asPoint().y()
+            dx = cx - epicenter_lon
+            dy = cy - epicenter_lat
+            dist = (dx ** 2 + dy ** 2) ** 0.5
+            if dist < threshold:
+                # 从震中向省份质心方向偏移标注
+                if dist > PROVINCE_LABEL_DISTANCE_EPSILON:
+                    nx = dx / dist
+                    ny = dy / dist
+                else:
+                    nx, ny = 1.0, 0.0
+                off_x = nx * offset_amount
+                off_y = ny * offset_amount
+                offset_map[feat.id()] = (off_x, off_y)
+
+    # 如果有需要偏移的省份，添加辅助字段存储偏移量
+    if offset_map:
+        provider = layer.dataProvider()
+        fields = layer.fields()
+        fields_to_add = []
+        if fields.indexOf("_lbl_off_x") == -1:
+            fields_to_add.append(QgsField("_lbl_off_x", QVariant.Double))
+        if fields.indexOf("_lbl_off_y") == -1:
+            fields_to_add.append(QgsField("_lbl_off_y", QVariant.Double))
+        if fields_to_add:
+            provider.addAttributes(fields_to_add)
+            layer.updateFields()
+
+        off_x_idx = layer.fields().indexOf("_lbl_off_x")
+        off_y_idx = layer.fields().indexOf("_lbl_off_y")
+        layer.startEditing()
+        for fid, (off_x, off_y) in offset_map.items():
+            layer.changeAttributeValue(fid, off_x_idx, off_x)
+            layer.changeAttributeValue(fid, off_y_idx, off_y)
+        layer.commitChanges()
+
     settings = QgsPalLayerSettings()
     settings.fieldName = field_name
     settings.placement = Qgis.LabelPlacement.OverPoint
     settings.displayAll = True
+
+    if offset_map:
+        # 使用数据驱动属性设置标注 X/Y 偏移（单位：度，映射为 MapUnits）
+        dd_props = settings.dataDefinedProperties()
+
+        offset_expr = (
+            "CASE WHEN \"_lbl_off_x\" IS NOT NULL"
+            " AND (\"_lbl_off_x\" != 0 OR \"_lbl_off_y\" != 0)"
+            " THEN to_string(\"_lbl_off_x\") || ',' || to_string(\"_lbl_off_y\")"
+            " ELSE '0,0' END"
+        )
+        prop = QgsProperty.fromExpression(offset_expr)
+        dd_props.setProperty(QgsPalLayerSettings.Property.OffsetXY, prop)
+
+        settings.setDataDefinedProperties(dd_props)
 
     text_format = QgsTextFormat()
     font = QFont("SimHei", PROVINCE_LABEL_FONT_SIZE_PT)
@@ -2523,7 +2612,7 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
         try:
             province_layer = load_vector_layer(PROVINCE_SHP_PATH, "省界_地图")
             if province_layer:
-                style_province_layer(province_layer)
+                style_province_layer(province_layer, longitude, latitude, extent)
                 project.addMapLayer(province_layer)
         except Exception as exc:
             logger.warning('加载省界图层失败，跳过: %s', exc)
