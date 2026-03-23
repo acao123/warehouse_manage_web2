@@ -107,8 +107,10 @@ BORDER_TOP_MM = 4.0
 BORDER_BOTTOM_MM = 2.0
 # 右边距（毫米）
 BORDER_RIGHT_MM = 1.0
-# 地图内容宽度（图例叠加在底图内部，不占额外列）
-MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - BORDER_RIGHT_MM
+# 图例宽度（毫米），图例位于右侧独立区域
+LEGEND_WIDTH_MM = 50.0
+# 地图内容宽度（右侧为独立图例区域，不与底图重叠）
+MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
 
 # 输出DPI
 OUTPUT_DPI = 150
@@ -183,10 +185,8 @@ EPICENTER_STROKE_COLOR = QColor(255, 255, 255)
 EPICENTER_STROKE_WIDTH_MM = 0.4
 
 # ============================================================
-# 图例配置（底图左下角）
+# 图例配置（右侧独立区域）
 # ============================================================
-# 图例宽度（毫米）
-LEGEND_WIDTH_MM = 42.0
 # 图例标题字体大小（磅）
 LEGEND_TITLE_FONT_SIZE_PT = 12
 # 图例项目字体大小（磅）
@@ -1348,8 +1348,8 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale,
     _add_north_arrow(layout, map_height_mm)
     # 比例尺（地图右下角）
     _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
-    # 图例（底图左下角）
-    _add_legend(layout, map_left, map_top, map_height_mm, has_faults)
+    # 图例（右侧独立区域）
+    _add_legend(layout, map_height_mm, has_faults)
 
     return layout
 
@@ -1418,23 +1418,6 @@ def _add_north_arrow(layout, map_height_mm):
     map_top = BORDER_TOP_MM
     arrow_x = map_right - NORTH_ARROW_WIDTH_MM
     arrow_y = map_top
-
-    # 指北针背景白色矩形
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
-                                         QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    bg_shape.setFrameEnabled(True)
-    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(bg_shape)
 
     # 创建指北针SVG并添加图片项
     svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_map_temp.svg")
@@ -1599,52 +1582,50 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
     print(f"[信息] 比例尺添加完成，1:{scale:,}")
 
 
-def _add_legend(layout, map_left_mm, map_top_mm, map_height_mm, has_faults=True):
+def _add_legend(layout, map_height_mm, has_faults=True):
     """
-    添加图例（位于底图左下角）
-    - 图例左边框与底图左边框对齐
-    - 图例下边框与底图下边框对齐
+    添加图例（位于右侧独立区域）
+    - 图例左边框紧接底图右边框
+    - 图例上下与底图对齐
 
     参数:
         layout (QgsPrintLayout): 打印布局
-        map_left_mm (float): 底图左边界X坐标（毫米）
-        map_top_mm (float): 底图顶部Y坐标（毫米）
         map_height_mm (float): 底图高度（毫米）
         has_faults (bool): 是否包含断裂线图例
     """
-    # 构建图例项列表（顺序与原来保持一致）
-    legend_items = []
-    legend_items.append(("震中位置", "star"))
-    legend_items.append(("省界", "solid_line_province"))
-    legend_items.append(("市界", "dash_line_city"))
-    legend_items.append(("县界", "dash_line_county"))
-    if has_faults:
-        legend_items.append(("全新世断层", "solid_line_holocene"))
-        legend_items.append(("晚更新世断层", "solid_line_late_pleistocene"))
-        legend_items.append(("早中更新世断层", "solid_line_early_pleistocene"))
-    # 地震等级从大到小排列
-    legend_items.append(("8.0级以上", "circle_lv4"))
-    legend_items.append(("7.0~7.9级", "circle_lv3"))
-    legend_items.append(("6.0~6.9级", "circle_lv2"))
-    legend_items.append(("4.7~5.9级", "circle_lv1"))
+    legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
+    legend_y = BORDER_TOP_MM
+    legend_width = LEGEND_WIDTH_MM
+    legend_height = map_height_mm
 
-    n_items = len(legend_items)
-    # 计算图例总高度
-    title_height_mm = 6.0
-    legend_height_mm = title_height_mm + n_items * LEGEND_ROW_HEIGHT_MM + LEGEND_PADDING_MM * 2
+    # 公共文本格式
+    title_format = QgsTextFormat()
+    title_format.setFont(QFont("SimHei", LEGEND_TITLE_FONT_SIZE_PT))
+    title_format.setSize(LEGEND_TITLE_FONT_SIZE_PT)
+    title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    title_format.setColor(QColor(0, 0, 0))
 
-    # 图例位置：左边框=底图左边框，下边框=底图下边框
-    legend_x = map_left_mm
-    legend_y = map_top_mm + map_height_mm - legend_height_mm
+    # 中文图例项字体（SimSun，用于行政边界、断层等）
+    item_format_cn = QgsTextFormat()
+    item_format_cn.setFont(QFont("SimSun", LEGEND_ITEM_FONT_SIZE_PT))
+    item_format_cn.setSize(LEGEND_ITEM_FONT_SIZE_PT)
+    item_format_cn.setSizeUnit(QgsUnitTypes.RenderPoints)
+    item_format_cn.setColor(QColor(0, 0, 0))
 
-    # 图例背景矩形（半透明白色）
+    # 英文/数字图例项字体（Times New Roman，用于震级数字和"~"）
+    item_format_en = QgsTextFormat()
+    item_format_en.setFont(QFont("Times New Roman", LEGEND_ITEM_FONT_SIZE_PT))
+    item_format_en.setSize(LEGEND_ITEM_FONT_SIZE_PT)
+    item_format_en.setSizeUnit(QgsUnitTypes.RenderPoints)
+    item_format_en.setColor(QColor(0, 0, 0))
+
+    # 图例背景矩形（白色实心，与地图等高）
     legend_bg = QgsLayoutItemShape(layout)
     legend_bg.setShapeType(QgsLayoutItemShape.Rectangle)
     legend_bg.attemptMove(QgsLayoutPoint(legend_x, legend_y, QgsUnitTypes.LayoutMillimeters))
-    legend_bg.attemptResize(QgsLayoutSize(LEGEND_WIDTH_MM, legend_height_mm,
-                                           QgsUnitTypes.LayoutMillimeters))
+    legend_bg.attemptResize(QgsLayoutSize(legend_width, legend_height, QgsUnitTypes.LayoutMillimeters))
     legend_bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,230',
+        'color': '255,255,255,255',
         'outline_color': '0,0,0,255',
         'outline_width': str(BORDER_WIDTH_MM),
         'outline_width_unit': 'MM',
@@ -1655,18 +1636,12 @@ def _add_legend(layout, map_left_mm, map_top_mm, map_height_mm, has_faults=True)
     layout.addLayoutItem(legend_bg)
 
     # 图例标题 "图  例"
-    title_format = QgsTextFormat()
-    title_format.setFont(QFont("SimHei", LEGEND_TITLE_FONT_SIZE_PT))
-    title_format.setSize(LEGEND_TITLE_FONT_SIZE_PT)
-    title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    title_format.setColor(QColor(0, 0, 0))
-
     title_label = QgsLayoutItemLabel(layout)
     title_label.setText("图  例")
     title_label.setTextFormat(title_format)
-    title_label.attemptMove(QgsLayoutPoint(legend_x, legend_y + LEGEND_PADDING_MM,
-                                           QgsUnitTypes.LayoutMillimeters))
-    title_label.attemptResize(QgsLayoutSize(LEGEND_WIDTH_MM, title_height_mm - 1.0,
+    title_label.attemptMove(QgsLayoutPoint(legend_x, legend_y + 1.0,  # 1.0mm 上内边距
+                                            QgsUnitTypes.LayoutMillimeters))
+    title_label.attemptResize(QgsLayoutSize(legend_width, 5.0,  # 标题行高 5.0mm
                                             QgsUnitTypes.LayoutMillimeters))
     title_label.setHAlign(Qt.AlignHCenter)
     title_label.setVAlign(Qt.AlignVCenter)
@@ -1674,76 +1649,123 @@ def _add_legend(layout, map_left_mm, map_top_mm, map_height_mm, has_faults=True)
     title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(title_label)
 
-    # 图例项文本格式
-    item_format = QgsTextFormat()
-    item_format.setFont(QFont("SimSun", LEGEND_ITEM_FONT_SIZE_PT))
-    item_format.setSize(LEGEND_ITEM_FONT_SIZE_PT)
-    item_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    item_format.setColor(QColor(0, 0, 0))
-
-    item_start_y = legend_y + LEGEND_PADDING_MM + title_height_mm
+    # 图例项起始Y坐标（标题1mm上偏+5mm高度+1mm间距=7mm）
+    current_y = legend_y + 7.0
     icon_x = legend_x + LEGEND_PADDING_MM
     icon_center_offset = LEGEND_ROW_HEIGHT_MM / 2.0
+    text_x = icon_x + LEGEND_ICON_WIDTH_MM + LEGEND_ICON_TEXT_GAP_MM
+    text_width = legend_width - LEGEND_PADDING_MM - LEGEND_ICON_WIDTH_MM - LEGEND_ICON_TEXT_GAP_MM - 1.0
 
-    for idx, (label, draw_type) in enumerate(legend_items):
-        item_y = item_start_y + idx * LEGEND_ROW_HEIGHT_MM
-        icon_center_y = item_y + icon_center_offset
+    def _add_cn_label(label, y):
+        """绘制中文图例文字标签"""
+        lbl = QgsLayoutItemLabel(layout)
+        lbl.setText(label)
+        lbl.setTextFormat(item_format_cn)
+        lbl.attemptMove(QgsLayoutPoint(text_x, y, QgsUnitTypes.LayoutMillimeters))
+        lbl.attemptResize(QgsLayoutSize(text_width, LEGEND_ROW_HEIGHT_MM,
+                                        QgsUnitTypes.LayoutMillimeters))
+        lbl.setHAlign(Qt.AlignLeft)
+        lbl.setVAlign(Qt.AlignVCenter)
+        lbl.setFrameEnabled(False)
+        lbl.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl)
 
-        # 根据类型绘制对应图标
-        if draw_type == "star":
-            _draw_legend_star(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                              LEGEND_ROW_HEIGHT_MM * 0.8)
-        elif draw_type == "solid_line_province":
-            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                              PROVINCE_COLOR, PROVINCE_LINE_WIDTH_MM)
-        elif draw_type == "dash_line_city":
+    def _add_mixed_label(num_text, cn_text, y):
+        """绘制混合字体的震级标签：数字和"~"用Times New Roman，中文用SimSun"""
+        # 数字部分宽度估算（Times New Roman 10pt，每字符约2.0mm，最小6.0mm）
+        num_width = max(len(num_text) * 2.0, 6.0)
+        cn_width = text_width - num_width
+
+        num_lbl = QgsLayoutItemLabel(layout)
+        num_lbl.setText(num_text)
+        num_lbl.setTextFormat(item_format_en)
+        num_lbl.attemptMove(QgsLayoutPoint(text_x, y, QgsUnitTypes.LayoutMillimeters))
+        num_lbl.attemptResize(QgsLayoutSize(num_width, LEGEND_ROW_HEIGHT_MM,
+                                            QgsUnitTypes.LayoutMillimeters))
+        num_lbl.setHAlign(Qt.AlignLeft)
+        num_lbl.setVAlign(Qt.AlignVCenter)
+        num_lbl.setFrameEnabled(False)
+        num_lbl.setBackgroundEnabled(False)
+        layout.addLayoutItem(num_lbl)
+
+        cn_lbl = QgsLayoutItemLabel(layout)
+        cn_lbl.setText(cn_text)
+        cn_lbl.setTextFormat(item_format_cn)
+        cn_lbl.attemptMove(QgsLayoutPoint(text_x + num_width, y, QgsUnitTypes.LayoutMillimeters))
+        cn_lbl.attemptResize(QgsLayoutSize(cn_width, LEGEND_ROW_HEIGHT_MM,
+                                           QgsUnitTypes.LayoutMillimeters))
+        cn_lbl.setHAlign(Qt.AlignLeft)
+        cn_lbl.setVAlign(Qt.AlignVCenter)
+        cn_lbl.setFrameEnabled(False)
+        cn_lbl.setBackgroundEnabled(False)
+        layout.addLayoutItem(cn_lbl)
+
+    # ── 1. 震中位置 ──
+    icon_center_y = current_y + icon_center_offset
+    _draw_legend_star(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                      LEGEND_ROW_HEIGHT_MM * 0.8)
+    _add_cn_label("震中位置", current_y)
+    current_y += LEGEND_ROW_HEIGHT_MM
+
+    # ── 2. 行政边界 ──
+    for label, color, line_width, dash_gap in [
+        ("省界", PROVINCE_COLOR, PROVINCE_LINE_WIDTH_MM, None),
+        ("市界", CITY_COLOR, CITY_LINE_WIDTH_MM, CITY_DASH_GAP_MM),
+        ("县界", COUNTY_COLOR, COUNTY_LINE_WIDTH_MM, COUNTY_DASH_GAP_MM),
+    ]:
+        icon_center_y = current_y + icon_center_offset
+        if dash_gap is None:
+            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM, color, line_width)
+        else:
             _draw_legend_dash_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                                   CITY_COLOR, CITY_LINE_WIDTH_MM, CITY_DASH_GAP_MM)
-        elif draw_type == "dash_line_county":
-            _draw_legend_dash_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                                   COUNTY_COLOR, COUNTY_LINE_WIDTH_MM, COUNTY_DASH_GAP_MM)
-        elif draw_type == "solid_line_holocene":
-            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                              FAULT_HOLOCENE_COLOR, FAULT_HOLOCENE_WIDTH_MM)
-        elif draw_type == "solid_line_late_pleistocene":
-            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                              FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH_MM)
-        elif draw_type == "solid_line_early_pleistocene":
-            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                              FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH_MM)
-        elif draw_type == "circle_lv4":
-            _draw_legend_circle(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                                EARTHQUAKE_LEVEL_CONFIG[4]["color"],
-                                EARTHQUAKE_LEVEL_CONFIG[4]["size_mm"])
-        elif draw_type == "circle_lv3":
-            _draw_legend_circle(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                                EARTHQUAKE_LEVEL_CONFIG[3]["color"],
-                                EARTHQUAKE_LEVEL_CONFIG[3]["size_mm"])
-        elif draw_type == "circle_lv2":
-            _draw_legend_circle(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                                EARTHQUAKE_LEVEL_CONFIG[2]["color"],
-                                EARTHQUAKE_LEVEL_CONFIG[2]["size_mm"])
-        elif draw_type == "circle_lv1":
-            _draw_legend_circle(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                                EARTHQUAKE_LEVEL_CONFIG[1]["color"],
-                                EARTHQUAKE_LEVEL_CONFIG[1]["size_mm"])
+                                   color, line_width, dash_gap)
+        _add_cn_label(label, current_y)
+        current_y += LEGEND_ROW_HEIGHT_MM
 
-        # 绘制文字标签
-        text_x = icon_x + LEGEND_ICON_WIDTH_MM + LEGEND_ICON_TEXT_GAP_MM
-        text_width = LEGEND_WIDTH_MM - LEGEND_PADDING_MM - LEGEND_ICON_WIDTH_MM - LEGEND_ICON_TEXT_GAP_MM - 1.0
-        text_label = QgsLayoutItemLabel(layout)
-        text_label.setText(label)
-        text_label.setTextFormat(item_format)
-        text_label.attemptMove(QgsLayoutPoint(text_x, item_y, QgsUnitTypes.LayoutMillimeters))
-        text_label.attemptResize(QgsLayoutSize(text_width, LEGEND_ROW_HEIGHT_MM,
-                                               QgsUnitTypes.LayoutMillimeters))
-        text_label.setHAlign(Qt.AlignLeft)
-        text_label.setVAlign(Qt.AlignVCenter)
-        text_label.setFrameEnabled(False)
-        text_label.setBackgroundEnabled(False)
-        layout.addLayoutItem(text_label)
+    # ── 3. 断裂线（可选）──
+    if has_faults:
+        for label, color, line_width in [
+            ("全新世断层",    FAULT_HOLOCENE_COLOR,       FAULT_HOLOCENE_WIDTH_MM),
+            ("晚更新世断层",  FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH_MM),
+            ("早中更新世断层", FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH_MM),
+        ]:
+            icon_center_y = current_y + icon_center_offset
+            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM, color, line_width)
+            _add_cn_label(label, current_y)
+            current_y += LEGEND_ROW_HEIGHT_MM
 
-    print(f"[信息] 图例添加完成，共 {n_items} 项")
+    # ── 4. 震级标题 ──
+    mag_title_label = QgsLayoutItemLabel(layout)
+    mag_title_label.setText("震级")
+    mag_title_label.setTextFormat(title_format)
+    mag_title_label.attemptMove(QgsLayoutPoint(legend_x, current_y, QgsUnitTypes.LayoutMillimeters))
+    mag_title_label.attemptResize(QgsLayoutSize(legend_width, LEGEND_ROW_HEIGHT_MM,
+                                                QgsUnitTypes.LayoutMillimeters))
+    mag_title_label.setHAlign(Qt.AlignHCenter)
+    mag_title_label.setVAlign(Qt.AlignVCenter)
+    mag_title_label.setFrameEnabled(False)
+    mag_title_label.setBackgroundEnabled(False)
+    layout.addLayoutItem(mag_title_label)
+    current_y += LEGEND_ROW_HEIGHT_MM
+
+    # ── 5. 震级图例项（混合字体：数字/~用Times New Roman，中文用SimSun）──
+    mag_items = [
+        ("8.0",    "级以上", 4),
+        ("7.0~7.9", "级",   3),
+        ("6.0~6.9", "级",   2),
+        ("4.7~5.9", "级",   1),
+    ]
+    for num_text, cn_text, lv in mag_items:
+        icon_center_y = current_y + icon_center_offset
+        _draw_legend_circle(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
+                            EARTHQUAKE_LEVEL_CONFIG[lv]["color"],
+                            EARTHQUAKE_LEVEL_CONFIG[lv]["size_mm"])
+        _add_mixed_label(num_text, cn_text, current_y)
+        current_y += LEGEND_ROW_HEIGHT_MM
+
+    n_basic = 1 + 3 + (3 if has_faults else 0)
+    n_mag = len(mag_items)
+    print(f"[信息] 图例添加完成，共 {n_basic + n_mag + 1} 项（含震级标题）")
 
 
 def _draw_legend_star(layout, x, center_y, width, height):
