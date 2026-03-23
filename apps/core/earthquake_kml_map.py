@@ -81,7 +81,7 @@ from qgis.core import (
     QgsLayoutExporter,
 )
 from qgis.PyQt.QtCore import Qt, QVariant
-from qgis.PyQt.QtGui import QColor, QFont
+from qgis.PyQt.QtGui import QColor, QFont, QFontMetrics
 
 # ============================================================
 # 【配置常量区域】
@@ -261,6 +261,9 @@ EPICENTER_STROKE_WIDTH_MM = 0.4
 # WGS84坐标系
 CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 
+# 文本换行：用于在标点符号和空格处分割的正则模式
+PUNCTUATION_SPLIT_PATTERN = re.compile(r'([，。；！？、,.;!? ])')
+
 
 # ============================================================
 # 【工具函数】
@@ -285,6 +288,59 @@ def int_to_roman(num):
             num -= val[i]
         i += 1
     return roman_num
+
+
+def wrap_text_to_width(text, width_mm, font_size_pt, font_family="SimSun", dpi=96):
+    """
+    智能换行文本以适应指定宽度（基于QFontMetrics精确计算）
+
+    参数:
+        text (str): 原始文本
+        width_mm (float): 最大宽度（毫米）
+        font_size_pt (int): 字体大小（磅）
+        font_family (str): 字体族名称
+        dpi (int): 分辨率（DPI），默认96
+    返回:
+        str: 带换行符的文本
+    """
+    # 将毫米转换为像素
+    width_px = int(width_mm / 25.4 * dpi)
+
+    # 创建字体和度量对象
+    font = QFont(font_family, font_size_pt)
+    metrics = QFontMetrics(font)
+
+    # 在标点符号和空格后分割，但保留分隔符
+    tokens = PUNCTUATION_SPLIT_PATTERN.split(text)
+
+    lines = []
+    current_line = ""
+
+    for token in tokens:
+        if not token:
+            continue
+
+        # 尝试添加当前token
+        test_line = current_line + token
+        line_width = metrics.horizontalAdvance(test_line)
+
+        if line_width <= width_px:
+            current_line = test_line
+        else:
+            # 如果当前行不为空，保存当前行
+            if current_line:
+                lines.append(current_line)
+                current_line = token
+            else:
+                # 如果单个token就超过宽度，强制添加
+                lines.append(token)
+                current_line = ""
+
+    # 添加最后一行
+    if current_line:
+        lines.append(current_line)
+
+    return '\n'.join(lines)
 
 
 def get_scale_by_magnitude(magnitude):
@@ -1493,8 +1549,19 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
 
     # ── 上部：说明文字区（固定65mm高，位于图例区顶部）──
     if description_text:
+        # 计算可用宽度（减去左右边距）
+        available_width = legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2
+
+        # 先对文本进行智能换行处理
+        wrapped_text = wrap_text_to_width(
+            description_text,
+            available_width,
+            DESCRIPTION_FONT_SIZE_PT,
+            FONT_PATH_SONGTI
+        )
+
         # 首行缩进：添加两个全角空格
-        indented_text = "　　" + description_text
+        indented_text = "　　" + wrapped_text
 
         # 创建说明文字格式（与图例项一致：SimSun字体，可配置字号，1.5倍行距）
         desc_format = QgsTextFormat()
