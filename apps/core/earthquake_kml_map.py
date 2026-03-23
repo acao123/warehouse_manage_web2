@@ -32,7 +32,7 @@ except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
 
-from core.tianditu_basemap_downloader import (
+from tianditu_basemap_downloader import (
     download_tianditu_basemap_tiles,
     download_tianditu_annotation_tiles,
 )
@@ -170,7 +170,7 @@ FONT_PATH_TIMES = "Times New Roman"
 # ============================================================
 # 【字体大小常量】
 # ============================================================
-INFO_TEXT_FONT_SIZE_PT = 10
+INFO_TEXT_FONT_SIZE_PT = 6
 LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
 INTENSITY_LABEL_FONT_SIZE_PT = 10
@@ -197,6 +197,8 @@ PROVINCE_COLOR = QColor(160, 160, 160)
 PROVINCE_LINE_WIDTH_MM = 0.4
 PROVINCE_LABEL_FONT_SIZE_PT = 8
 PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
+# 省份质心与震中坐标重合判断容差（约0.1米精度，用于浮点数相等比较）
+PROVINCE_EPICENTER_COINCIDENCE_TOL = 1e-6
 
 CITY_COLOR = QColor(100, 100, 100)
 CITY_LINE_WIDTH_MM = 0.24
@@ -1462,7 +1464,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     item_format_en.setColor(QColor(0, 0, 0))
 
     # 说明文字区高度（固定80mm）
-    INFO_TEXT_AREA_HEIGHT_MM = 80.0
+    INFO_TEXT_AREA_HEIGHT_MM = 65.0
 
     # 图例背景矩形（白色实心，与地图等高）
     legend_bg = QgsLayoutItemShape(layout)
@@ -2059,7 +2061,7 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
     areas = calculate_intensity_areas(intensity_data)
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()
@@ -2338,9 +2340,7 @@ def _create_test_kml(kml_path):
 if __name__ == "__main__":
     INPUT_KML_PATH = r"../../data/geology/n0432881302350072.kml"
     INPUT_DESCRIPTION = (
-        "据中国地震台网正式测定： 2026年01月26日14时56分甘肃甘南州迭部县"
-        "(103.25°，34.06°)发生5.5级地震，震源深度10千米。"
-        "综合考虑震中附近地质构造背景、地震波衰减特性，"
+        " 综合考虑震中附近地质构造背景、地震波衰减特性，"
         "估计了本次地震的地震动预测图。"
     )
     INPUT_MAGNITUDE = 7.5
