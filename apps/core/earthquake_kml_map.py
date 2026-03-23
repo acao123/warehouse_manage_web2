@@ -266,6 +266,63 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 # 【工具函数】
 # ============================================================
 
+def _auto_wrap_text(text, max_width_mm, font_size_pt):
+    """
+    根据指定宽度自动换行文本（基于字符宽度估算）
+
+    参数:
+        text (str): 原始文本
+        max_width_mm (float): 最大宽度（毫米）
+        font_size_pt (int): 字体大小（磅）
+    返回:
+        str: 包含换行符的文本
+    """
+    # 1pt ≈ 0.353mm
+    # 中文字符宽度约等于字体大小（pt转mm）
+    cn_char_width_mm = font_size_pt * 0.353
+    # 英文/数字字符宽度约为中文的0.5倍
+    en_char_width_mm = cn_char_width_mm * 0.5
+
+    lines = []
+    current_line = ""
+    current_width_mm = 0
+
+    for char in text:
+        # 判断字符类型
+        if '\u4e00' <= char <= '\u9fff' or '\u3000' <= char <= '\u303f':
+            # 中文字符或中文标点
+            char_width = cn_char_width_mm
+        elif char in '，。！？；：""''（）《》【】':
+            # 中文标点
+            char_width = cn_char_width_mm
+        else:
+            # 英文、数字、西文标点
+            char_width = en_char_width_mm
+
+        # 检查是否需要换行（考虑标点不在行首的规则）
+        if current_width_mm + char_width > max_width_mm and current_line:
+            # 避免标点符号出现在行首
+            if char in '，。！？；：""''）》】':
+                # 标点跟在前一行
+                current_line += char
+                lines.append(current_line)
+                current_line = ""
+                current_width_mm = 0
+            else:
+                # 当前行已满，字符移到新行
+                lines.append(current_line)
+                current_line = char
+                current_width_mm = char_width
+        else:
+            current_line += char
+            current_width_mm += char_width
+
+    # 添加最后一行
+    if current_line:
+        lines.append(current_line)
+
+    return '\n'.join(lines)
+
 def int_to_roman(num):
     """
     将阿拉伯数字转换为罗马数字
@@ -1493,19 +1550,28 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
 
     # ── 上部：说明文字区（固定65mm高，位于图例区顶部）──
     if description_text:
-        # 首行缩进：添加两个全角空格
-        indented_text = "　　" + description_text
+        # 计算可用宽度
+        available_width_mm = legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2
 
-        # 创建说明文字格式（与图例项一致：SimSun字体，可配置字号，1.5倍行距）
+        # 自动换行处理
+        wrapped_text = _auto_wrap_text(description_text, available_width_mm, DESCRIPTION_FONT_SIZE_PT)
+
+        # 首行缩进：在第一行前添加两个全角空格
+        lines = wrapped_text.split('\n')
+        if lines:
+            lines[0] = "　　" + lines[0]
+        indented_text = '\n'.join(lines)
+
+        # 创建说明文字格式（SimSun字体，1.5倍行距）
         desc_format = QgsTextFormat()
         desc_format.setFont(QFont(FONT_PATH_SONGTI, DESCRIPTION_FONT_SIZE_PT))
         desc_format.setSize(DESCRIPTION_FONT_SIZE_PT)
         desc_format.setSizeUnit(QgsUnitTypes.RenderPoints)
         desc_format.setColor(QColor(0, 0, 0))
 
-        # 设置1.5倍行距
-        desc_format.setLineHeight(1.5)
-        desc_format.setLineHeightUnit(QgsUnitTypes.RenderPercentage)  # 百分比单位（150% = 1.5倍）
+        # 设置1.5倍行距（150% = 1.5倍）
+        desc_format.setLineHeight(150.0)
+        desc_format.setLineHeightUnit(QgsUnitTypes.RenderPercentage)
 
         desc_label = QgsLayoutItemLabel(layout)
         desc_label.setMode(QgsLayoutItemLabel.ModeFont)  # 使用纯文本模式（非HTML）
@@ -1522,7 +1588,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         desc_label.setFrameEnabled(False)
         desc_label.setBackgroundEnabled(False)
         layout.addLayoutItem(desc_label)
-        print(f"[信息] 说明文字添加到图例区完成（字体: SimSun {DESCRIPTION_FONT_SIZE_PT}pt，行距: 1.5倍）")
+        print(f"[信息] 说明文字添加到图例区完成（字体: SimSun {DESCRIPTION_FONT_SIZE_PT}pt，行距: 1.5倍，已自动换行）")
 
     # ── 分隔线（位于说明文字区底部）──
     sep_shape = QgsLayoutItemShape(layout)
