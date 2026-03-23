@@ -97,7 +97,7 @@ TIANDITU_TK = (
 # 布局尺寸常量（参考 earthquake_map.py）
 # ============================================================
 # 输出图总宽度（毫米）
-MAP_TOTAL_WIDTH_MM = 280.0
+MAP_TOTAL_WIDTH_MM = 220.0
 # 左边距（毫米）
 BORDER_LEFT_MM = 4.0
 # 上边距（毫米）
@@ -171,7 +171,7 @@ FONT_PATH_TIMES = "Times New Roman"
 # 【字体大小常量】
 # ============================================================
 INFO_TEXT_FONT_SIZE_PT = 6
-DESCRIPTION_FONT_SIZE_PT = 8  # 新增：说明文字字体大小
+DESCRIPTION_FONT_SIZE_PT = 10  # 新增：说明文字字体大小
 LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
 INTENSITY_LABEL_FONT_SIZE_PT = 10
@@ -1465,7 +1465,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     item_format_en.setColor(QColor(0, 0, 0))
 
     # 说明文字区高度（固定80mm）
-    INFO_TEXT_AREA_HEIGHT_MM = 65.0
+    INFO_TEXT_AREA_HEIGHT_MM = 25.0
 
     # 图例背景矩形（白色实心，与地图等高）
     legend_bg = QgsLayoutItemShape(layout)
@@ -2358,7 +2358,7 @@ if __name__ == "__main__":
     else:
         result = generate_earthquake_kml_map(
             kml_path=INPUT_KML_PATH,
-            description_text=INPUT_DESCRIPTION,
+            description_text='',
             magnitude=INPUT_MAGNITUDE,
             output_path=OUTPUT_PATH
         )
