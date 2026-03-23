@@ -748,7 +748,7 @@ def compute_jenks_breaks(data_flat, num_classes):
     #   按分位数将数据分为 NUM_STRATA 层，各层按比例采样，
     #   确保低概率密集区和高概率稀疏区均有充足代表性样本
     # ----------------------------------------------------------------
-    MAX_SAMPLES = 1000000    # 最大样本数：jenkspy 处理此量级非常快，无需过度降采样
+    MAX_SAMPLES = 100000    # 最大样本数：jenkspy 处理此量级非常快，无需过度降采样
     NUM_STRATA = 20         # 分层数
 
     if n > MAX_SAMPLES:
