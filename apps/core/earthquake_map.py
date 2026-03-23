@@ -252,6 +252,21 @@ KMZ_FAULT_PATH = (
     if _DJANGO_AVAILABLE else
     _DEFAULT_BASE + '断层/全国六代图断裂.KMZ'
 )
+# 地级市点位数据
+CITY_POINTS_SHP_PATH = (
+    getattr(_django_settings, 'CITY_POINTS_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市点.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市点.shp'
+)
+
+# ============================================================
+# 地级市点图层样式常量
+# ============================================================
+CITY_POINT_COLOR = QColor(0, 0, 0)
+CITY_POINT_SIZE_MM = 1.5
+CITY_LABEL_FONT_SIZE_PT = 9
+CITY_LABEL_COLOR = QColor(0, 0, 0)
 
 # WGS84坐标系
 CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -1084,6 +1099,65 @@ def style_county_layer(layer):
 # QGIS矢量图层创建函数
 # ============================================================
 
+def create_city_point_layer(extent):
+    """
+    加载地级市点位数据，配置黑色圆形标记，只显示在地图范围内的城市
+
+    参数:
+        extent (QgsRectangle): 地图范围（WGS84）
+
+    返回:
+        QgsVectorLayer 或 None
+    """
+    abs_path = resolve_path(CITY_POINTS_SHP_PATH)
+    if not os.path.exists(abs_path):
+        print(f"[警告] 地级市点位数据不存在: {abs_path}")
+        return None
+
+    layer = QgsVectorLayer(abs_path, "地级市", "ogr")
+    if not layer.isValid():
+        print(f"[错误] 无法加载地级市点位图层: {abs_path}")
+        return None
+
+    symbol_size_mm = CITY_POINT_SIZE_MM
+
+    bg_sl = QgsSimpleMarkerSymbolLayer()
+    bg_sl.setShape(Qgis.MarkerShape.Circle)
+    bg_sl.setColor(QColor(255, 255, 255))
+    bg_sl.setStrokeColor(QColor(0, 0, 0))
+    bg_sl.setStrokeWidth(0.15)
+    bg_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
+    bg_sl.setSize(symbol_size_mm * 1.4)
+    bg_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+
+    outer_sl = QgsSimpleMarkerSymbolLayer()
+    outer_sl.setShape(Qgis.MarkerShape.Circle)
+    outer_sl.setColor(QColor(0, 0, 0, 0))
+    outer_sl.setStrokeColor(QColor(0, 0, 0))
+    outer_sl.setStrokeWidth(0.15)
+    outer_sl.setStrokeWidthUnit(QgsUnitTypes.RenderMillimeters)
+    outer_sl.setSize(symbol_size_mm)
+    outer_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+
+    inner_sl = QgsSimpleMarkerSymbolLayer()
+    inner_sl.setShape(Qgis.MarkerShape.Circle)
+    inner_sl.setColor(QColor(0, 0, 0))
+    inner_sl.setStrokeColor(QColor(0, 0, 0))
+    inner_sl.setStrokeWidth(0)
+    inner_sl.setSize(symbol_size_mm * 0.45)
+    inner_sl.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+
+    symbol = QgsMarkerSymbol()
+    symbol.changeSymbolLayer(0, bg_sl)
+    symbol.appendSymbolLayer(outer_sl)
+    symbol.appendSymbolLayer(inner_sl)
+    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+    layer.setLabelsEnabled(False)
+    layer.triggerRepaint()
+    print(f"[信息] 加载地级市点位图层完成")
+    return layer
+
+
 def create_epicenter_layer(longitude, latitude):
     """
     创建震中标记图层（红色五角星+白边）
@@ -1657,7 +1731,7 @@ def _add_legend(layout, map_height_mm, has_faults=True):
     text_width = legend_width - LEGEND_PADDING_MM - LEGEND_ICON_WIDTH_MM - LEGEND_ICON_TEXT_GAP_MM - 1.0
 
     def _add_cn_label(label, y):
-        """绘制中文图例文字标签"""
+        """绘制中文图例文字标签（单列）"""
         lbl = QgsLayoutItemLabel(layout)
         lbl.setText(label)
         lbl.setTextFormat(item_format_cn)
@@ -1672,8 +1746,8 @@ def _add_legend(layout, map_height_mm, has_faults=True):
 
     def _add_mixed_label(num_text, cn_text, y):
         """绘制混合字体的震级标签：数字和"~"用Times New Roman，中文用SimSun"""
-        # 数字部分宽度估算（Times New Roman 10pt，每字符约2.0mm，最小6.0mm）
-        num_width = max(len(num_text) * 2.0, 6.0)
+        # 数字部分宽度估算（Times New Roman 10pt，每字符约1.6mm，最小5.0mm）
+        num_width = max(len(num_text) * 1.6, 5.0)
         cn_width = text_width - num_width
 
         num_lbl = QgsLayoutItemLabel(layout)
@@ -1700,29 +1774,64 @@ def _add_legend(layout, map_height_mm, has_faults=True):
         cn_lbl.setBackgroundEnabled(False)
         layout.addLayoutItem(cn_lbl)
 
-    # ── 1. 震中位置 ──
-    icon_center_y = current_y + icon_center_offset
-    _draw_legend_star(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                      LEGEND_ROW_HEIGHT_MM * 0.8)
-    _add_cn_label("震中位置", current_y)
-    current_y += LEGEND_ROW_HEIGHT_MM
+    # ── 1~2. 两列基本图例项（震中位置、地级市、省界、市界、县界）──
+    # 布局：左列第1行=震中位置, 右列第1行=地级市,
+    #       左列第2行=省界, 右列第2行=市界,
+    #       左列第3行=县界（右列第3行空）
+    col_count = 2
+    col_width = (legend_width - 2 * LEGEND_PADDING_MM) / col_count
+    basic_icon_width = 4.0
+    basic_icon_height = 2.5
+    basic_icon_text_gap = 1.0
 
-    # ── 2. 行政边界 ──
-    for label, color, line_width, dash_gap in [
-        ("省界", PROVINCE_COLOR, PROVINCE_LINE_WIDTH_MM, None),
-        ("市界", CITY_COLOR, CITY_LINE_WIDTH_MM, CITY_DASH_GAP_MM),
-        ("县界", COUNTY_COLOR, COUNTY_LINE_WIDTH_MM, COUNTY_DASH_GAP_MM),
-    ]:
-        icon_center_y = current_y + icon_center_offset
-        if dash_gap is None:
-            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM, color, line_width)
-        else:
-            _draw_legend_dash_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM,
-                                   color, line_width, dash_gap)
-        _add_cn_label(label, current_y)
-        current_y += LEGEND_ROW_HEIGHT_MM
+    basic_items = [
+        ("震中位置", "star"),
+        ("地级市",  "city_dot"),
+        ("省界",    "solid_line"),
+        ("市界",    "dash_city"),
+        ("县界",    "dash_county"),
+    ]
 
-    # ── 3. 断裂线（可选）──
+    basic_rows = (len(basic_items) + col_count - 1) // col_count  # = 3
+    for idx, (label, draw_type) in enumerate(basic_items):
+        row = idx // col_count
+        col = idx % col_count
+        item_x = legend_x + LEGEND_PADDING_MM + col * col_width
+        item_y = current_y + row * LEGEND_ROW_HEIGHT_MM
+        icon_center_y = item_y + LEGEND_ROW_HEIGHT_MM / 2.0
+
+        if draw_type == "star":
+            _draw_legend_star(layout, item_x, icon_center_y, basic_icon_width, basic_icon_height)
+        elif draw_type == "city_dot":
+            _draw_legend_city_dot(layout, item_x, icon_center_y, basic_icon_width)
+        elif draw_type == "solid_line":
+            _draw_legend_line(layout, item_x, icon_center_y, basic_icon_width,
+                              PROVINCE_COLOR, PROVINCE_LINE_WIDTH_MM)
+        elif draw_type == "dash_city":
+            _draw_legend_dash_line(layout, item_x, icon_center_y, basic_icon_width,
+                                   CITY_COLOR, CITY_LINE_WIDTH_MM, CITY_DASH_GAP_MM)
+        elif draw_type == "dash_county":
+            _draw_legend_dash_line(layout, item_x, icon_center_y, basic_icon_width,
+                                   COUNTY_COLOR, COUNTY_LINE_WIDTH_MM, COUNTY_DASH_GAP_MM)
+
+        item_text_x = item_x + basic_icon_width + basic_icon_text_gap
+        item_text_width = col_width - basic_icon_width - basic_icon_text_gap
+
+        lbl = QgsLayoutItemLabel(layout)
+        lbl.setText(label)
+        lbl.setTextFormat(item_format_cn)
+        lbl.attemptMove(QgsLayoutPoint(item_text_x, item_y, QgsUnitTypes.LayoutMillimeters))
+        lbl.attemptResize(QgsLayoutSize(item_text_width, LEGEND_ROW_HEIGHT_MM,
+                                        QgsUnitTypes.LayoutMillimeters))
+        lbl.setHAlign(Qt.AlignLeft)
+        lbl.setVAlign(Qt.AlignVCenter)
+        lbl.setFrameEnabled(False)
+        lbl.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl)
+
+    current_y += basic_rows * LEGEND_ROW_HEIGHT_MM
+
+    # ── 3. 断裂线（可选，单列）──
     if has_faults:
         for label, color, line_width in [
             ("全新世断层",    FAULT_HOLOCENE_COLOR,       FAULT_HOLOCENE_WIDTH_MM),
@@ -1763,7 +1872,7 @@ def _add_legend(layout, map_height_mm, has_faults=True):
         _add_mixed_label(num_text, cn_text, current_y)
         current_y += LEGEND_ROW_HEIGHT_MM
 
-    n_basic = 1 + 3 + (3 if has_faults else 0)
+    n_basic = len(basic_items) + (3 if has_faults else 0)
     n_mag = len(mag_items)
     print(f"[信息] 图例添加完成，共 {n_basic + n_mag + 1} 项（含震级标题）")
 
@@ -1796,6 +1905,34 @@ def _draw_legend_star(layout, x, center_y, width, height):
     star_label.setFrameEnabled(False)
     star_label.setBackgroundEnabled(False)
     layout.addLayoutItem(star_label)
+
+
+def _draw_legend_city_dot(layout, x, center_y, width):
+    """
+    在图例中绘制地级市黑色实心圆点图标（约2mm）
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        x (float): 起始X坐标
+        center_y (float): 中心Y坐标
+        width (float): 图标区域宽度
+    """
+    dot_size = 2.0  # 图例中约2mm
+    center_x = x + width / 2.0
+
+    circle_shape = QgsLayoutItemShape(layout)
+    circle_shape.setShapeType(QgsLayoutItemShape.Ellipse)
+    circle_shape.attemptMove(QgsLayoutPoint(center_x - dot_size / 2.0,
+                                            center_y - dot_size / 2.0,
+                                            QgsUnitTypes.LayoutMillimeters))
+    circle_shape.attemptResize(QgsLayoutSize(dot_size, dot_size, QgsUnitTypes.LayoutMillimeters))
+    circle_symbol = QgsFillSymbol.createSimple({
+        'color': '0,0,0,255',
+        'outline_style': 'no',
+    })
+    circle_shape.setSymbol(circle_symbol)
+    circle_shape.setFrameEnabled(False)
+    layout.addLayoutItem(circle_shape)
 
 
 def _draw_legend_line(layout, x, center_y, width, color, line_width_mm):
@@ -2101,6 +2238,16 @@ def _generate_earthquake_map_impl(center_lon, center_lat, magnitude, csv_path,
                     _setup_province_labels(province_layer)
                 except Exception as fallback_exc:
                     logger.warning('回退标注配置也失败: %s', fallback_exc)
+
+        # 创建地级市点图层
+        city_point_layer = None
+        try:
+            city_point_layer = create_city_point_layer(extent)
+            if city_point_layer:
+                project.addMapLayer(city_point_layer)
+        except Exception as exc:
+            logger.warning('加载地级市点位图层失败，跳过: %s', exc)
+            print(f"[警告] 加载地级市点位图层失败，跳过: {exc}")
         print()
 
         # [6/8] 解析断裂KMZ并创建QGIS图层
@@ -2143,11 +2290,14 @@ def _generate_earthquake_map_impl(center_lon, center_lat, magnitude, csv_path,
         print()
 
         # 按渲染顺序排列图层（列表第一项在最上层渲染）
-        # 图层顺序：震中 -> 注记 -> 地震点 -> 断裂线 -> 行政边界 -> 底图
+        # 图层顺序：震中 -> 地级市 -> 注记 -> 地震点 -> 断裂线 -> 行政边界 -> 底图
         ordered_layers = []
         # 震中五角星（最顶层）
         if epicenter_layer:
             ordered_layers.append(epicenter_layer)
+        # 地级市点（震中五角星下方）
+        if city_point_layer:
+            ordered_layers.append(city_point_layer)
         # 天地图矢量注记
         if annotation_raster:
             ordered_layers.append(annotation_raster)
