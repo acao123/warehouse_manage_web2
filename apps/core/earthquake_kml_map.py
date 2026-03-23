@@ -287,7 +287,7 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
         return ""
 
     # 1pt ≈ 0.353mm
-    # SimSun 字体中文字符实际宽度约为字号的 0.38-0.4 倍（实测值）
+    # SimSun 字体中文字符宽度约为字号的 0.4 倍
     cn_char_width_mm = font_size_pt * 0.40
     # 英文/数字字符宽度约为中文的 0.5 倍
     en_char_width_mm = cn_char_width_mm * 0.5
