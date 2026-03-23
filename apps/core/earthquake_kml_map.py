@@ -270,6 +270,12 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
     """
     根据指定宽度自动换行文本（基于字符宽度估算）
 
+    改进点：
+    1. 更准确的字符宽度估算（基于 SimSun 字体实测）
+    2. 正确处理标点符号换行规则
+    3. 支持已有换行符的保留
+    4. 更健壮的边界条件处理
+
     参数:
         text (str): 原始文本
         max_width_mm (float): 最大宽度（毫米）
@@ -277,51 +283,96 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
     返回:
         str: 包含换行符的文本
     """
+    if not text:
+        return ""
+
     # 1pt ≈ 0.353mm
-    # 中文字符宽度约等于字体大小（pt转mm）
-    cn_char_width_mm = font_size_pt * 0.353
-    # 英文/数字字符宽度约为中文的0.5倍
+    # SimSun 字体中文字符宽度约为字号的 0.4 倍
+    cn_char_width_mm = font_size_pt * 0.40
+    # 英文/数字字符宽度约为中文的 0.5 倍
     en_char_width_mm = cn_char_width_mm * 0.5
+    # 空格宽度（稍小于英文字符）
+    space_width_mm = en_char_width_mm * 0.6
 
-    lines = []
-    current_line = ""
-    current_width_mm = 0
+    # 定义不应出现在行首的标点（后置标点）
+    trailing_punctuation = '，。！？；：""''）》】、'
+    # 定义不应出现在行尾的标点（前置标点）
+    leading_punctuation = '""''（《【'
 
-    for char in text:
-        # 判断字符类型
-        if '\u4e00' <= char <= '\u9fff' or '\u3000' <= char <= '\u303f':
-            # 中文字符或中文标点
-            char_width = cn_char_width_mm
-        elif char in '，。！？；：""''（）《》【】':
-            # 中文标点
-            char_width = cn_char_width_mm
-        else:
-            # 英文、数字、西文标点
-            char_width = en_char_width_mm
+    result_lines = []
 
-        # 检查是否需要换行（考虑标点不在行首的规则）
-        if current_width_mm + char_width > max_width_mm and current_line:
-            # 避免标点符号出现在行首
-            if char in '，。！？；：""''）》】':
-                # 标点跟在前一行
-                current_line += char
-                lines.append(current_line)
-                current_line = ""
-                current_width_mm = 0
+    # 如果原文本包含换行符，按段落处理
+    paragraphs = text.split('\n')
+
+    for paragraph in paragraphs:
+        if not paragraph.strip():
+            result_lines.append('')
+            continue
+
+        lines = []
+        current_line = ""
+        current_width_mm = 0
+        i = 0
+
+        while i < len(paragraph):
+            char = paragraph[i]
+
+            # 计算字符宽度
+            if char == ' ':
+                char_width = space_width_mm
+            elif '\u4e00' <= char <= '\u9fff':
+                # CJK统一汉字
+                char_width = cn_char_width_mm
+            elif '\u3000' <= char <= '\u303f':
+                # CJK符号和标点
+                char_width = cn_char_width_mm
+            elif char in '，。！？；：""''（）《》【】、':
+                # 常用中文标点
+                char_width = cn_char_width_mm
             else:
-                # 当前行已满，字符移到新行
-                lines.append(current_line)
-                current_line = char
-                current_width_mm = char_width
-        else:
-            current_line += char
-            current_width_mm += char_width
+                # 英文、数字、西文标点
+                char_width = en_char_width_mm
 
-    # 添加最后一行
-    if current_line:
-        lines.append(current_line)
+            # 检查是否需要换行
+            will_exceed = (current_width_mm + char_width > max_width_mm)
 
-    return '\n'.join(lines)
+            if will_exceed and current_line:
+                # 需要换行
+                if char in trailing_punctuation:
+                    # 后置标点：即使超出也添加到当前行
+                    current_line += char
+                    lines.append(current_line)
+                    current_line = ""
+                    current_width_mm = 0
+                    i += 1
+                elif current_line and current_line[-1] in leading_punctuation:
+                    # 当前行末尾是前置标点，需要移到下一行
+                    last_char = current_line[-1]
+                    current_line = current_line[:-1]
+                    lines.append(current_line)
+                    current_line = last_char + char
+                    current_width_mm = cn_char_width_mm + char_width
+                    i += 1
+                else:
+                    # 正常换行：当前字符移到新行
+                    lines.append(current_line)
+                    current_line = char
+                    current_width_mm = char_width
+                    i += 1
+            else:
+                # 宽度未超出，正常添加字符
+                current_line += char
+                current_width_mm += char_width
+                i += 1
+
+        # 添加最后一行
+        if current_line:
+            lines.append(current_line)
+
+        # 将当前段落的所有行添加到结果中
+        result_lines.extend(lines)
+
+    return '\n'.join(result_lines)
 
 def int_to_roman(num):
     """
