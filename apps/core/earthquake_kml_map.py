@@ -839,8 +839,16 @@ def load_vector_layer(shp_path, layer_name):
     return layer
 
 
-def style_province_layer(layer):
-    """设置省界图层样式"""
+def style_province_layer(layer, center_lon=None, center_lat=None, extent=None):
+    """
+    设置省界图层样式（深灰色实线+省名标注）
+
+    参数:
+        layer (QgsVectorLayer): 省界图层
+        center_lon (float 或 None): 震中经度，用于标注偏移判断
+        center_lat (float 或 None): 震中纬度，用于标注偏移判断
+        extent (QgsRectangle 或 None): 地图范围，用于计算偏移量
+    """
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
     fill_sl.setStrokeColor(PROVINCE_COLOR)
@@ -850,8 +858,161 @@ def style_province_layer(layer):
     symbol = QgsFillSymbol()
     symbol.changeSymbolLayer(0, fill_sl)
     layer.renderer().setSymbol(symbol)
+    if center_lon is None:
+        # 无震中信息时，直接在省界图层上配置标注
+        _setup_province_labels(layer)
     layer.triggerRepaint()
     print("[信息] 省界图层样式设置完成")
+
+
+def _setup_province_labels(layer):
+    """
+    配置省界图层标注
+
+    参数:
+        layer (QgsVectorLayer): 省界图层
+    """
+    field_name = _find_name_field(layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
+    if not field_name:
+        print("[警告] 未找到省份名称字段，跳过标注设置")
+        return
+
+    settings = QgsPalLayerSettings()
+    settings.fieldName = field_name
+    settings.placement = Qgis.LabelPlacement.OverPoint
+    settings.displayAll = True
+
+    text_format = QgsTextFormat()
+    font = QFont("SimHei", PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setFont(font)
+    text_format.setSize(PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    text_format.setColor(PROVINCE_LABEL_COLOR)
+
+    buffer_settings = QgsTextBufferSettings()
+    buffer_settings.setEnabled(True)
+    buffer_settings.setSize(0.8)
+    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+    buffer_settings.setColor(QColor(255, 255, 255))
+    text_format.setBuffer(buffer_settings)
+
+    settings.setFormat(text_format)
+    labeling = QgsVectorLayerSimpleLabeling(settings)
+    layer.setLabelsEnabled(True)
+    layer.setLabeling(labeling)
+    print(f"[信息] 省界标注已配置，字段: {field_name}")
+
+
+def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, extent):
+    """
+    创建省份标注点图层，支持震中附近省份标注自动偏移。
+
+    当省份质心与震中坐标重合时，标注点向右下角偏移3mm，避免遮挡震中五角星标识。
+
+    参数:
+        province_layer (QgsVectorLayer): 省界多边形图层
+        epicenter_lon (float): 震中经度（度）
+        epicenter_lat (float): 震中纬度（度）
+        extent (QgsRectangle 或 None): 地图范围，用于计算偏移量（mm转度）
+
+    返回:
+        QgsVectorLayer 或 None: 配置好标注的内存点图层，失败返回None
+    """
+    field_name = _find_name_field(province_layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
+    if not field_name:
+        print("[警告] 未找到省份名称字段，跳过省份标注图层创建")
+        return None
+
+    # 计算3mm对应的经纬度偏移量
+    if extent is not None:
+        map_width_deg = extent.width()
+        map_height_deg = extent.height()
+    else:
+        map_width_deg = 10.0
+        map_height_deg = 10.0
+
+    offset_mm = 3.0
+    lon_offset_deg = offset_mm / MAP_WIDTH_MM * map_width_deg   # 向右偏移（经度增大）
+    lat_offset_deg = offset_mm / MAP_WIDTH_MM * map_height_deg  # 向下偏移（纬度减小）
+
+    # 创建内存点图层
+    label_layer = QgsVectorLayer("Point?crs=EPSG:4326", "省份标注", "memory")
+    if not label_layer.isValid():
+        print("[错误] 无法创建省份标注内存图层")
+        return None
+
+    provider = label_layer.dataProvider()
+    provider.addAttributes([QgsField("province_name", QVariant.String)])
+    label_layer.updateFields()
+
+    layer_fields = label_layer.fields()
+    feats_to_add = []
+    offset_count = 0
+
+    for feat in province_layer.getFeatures():
+        geom = feat.geometry()
+        if geom is None or geom.isEmpty():
+            continue
+        centroid = geom.centroid()
+        if centroid is None or centroid.isEmpty():
+            continue
+        cx = centroid.asPoint().x()
+        cy = centroid.asPoint().y()
+
+        px, py = cx, cy
+        if (abs(cx - epicenter_lon) < PROVINCE_EPICENTER_COINCIDENCE_TOL
+                and abs(cy - epicenter_lat) < PROVINCE_EPICENTER_COINCIDENCE_TOL):
+            # 质心与震中重合，向右下角偏移3mm
+            px = cx + lon_offset_deg
+            py = cy - lat_offset_deg
+            offset_count += 1
+            print(f"[信息] 省份标注偏移：质心({cx:.6f}, {cy:.6f}) -> 偏移后({px:.6f}, {py:.6f})")
+
+        prov_name = feat[field_name]
+        new_feat = QgsFeature(layer_fields)
+        new_feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(px, py)))
+        new_feat.setAttribute("province_name", prov_name)
+        feats_to_add.append(new_feat)
+
+    if feats_to_add:
+        provider.addFeatures(feats_to_add)
+    label_layer.updateExtents()
+
+    print(f"[信息] 省份标注：共 {len(feats_to_add)} 个省份，其中 {offset_count} 个进行了偏移（向右下角3mm）")
+
+    # 设置透明点符号（只显示标注文字）
+    marker_symbol = QgsMarkerSymbol.createSimple({
+        "name": "circle", "size": "0",
+        "color": "0,0,0,0", "outline_color": "0,0,0,0",
+    })
+    label_layer.setRenderer(QgsSingleSymbolRenderer(marker_symbol))
+
+    # 配置标注样式
+    settings = QgsPalLayerSettings()
+    settings.fieldName = "province_name"
+    settings.placement = Qgis.LabelPlacement.OverPoint
+    settings.displayAll = True
+
+    text_format = QgsTextFormat()
+    font = QFont("SimHei", PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setFont(font)
+    text_format.setSize(PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    text_format.setColor(PROVINCE_LABEL_COLOR)
+
+    buffer_settings = QgsTextBufferSettings()
+    buffer_settings.setEnabled(True)
+    buffer_settings.setSize(0.8)
+    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+    buffer_settings.setColor(QColor(255, 255, 255))
+    text_format.setBuffer(buffer_settings)
+
+    settings.setFormat(text_format)
+    labeling = QgsVectorLayerSimpleLabeling(settings)
+    label_layer.setLabelsEnabled(True)
+    label_layer.setLabeling(labeling)
+
+    return label_layer
 
 
 def style_city_layer(layer):
@@ -1300,6 +1461,9 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     item_format_en.setSizeUnit(QgsUnitTypes.RenderPoints)
     item_format_en.setColor(QColor(0, 0, 0))
 
+    # 说明文字区高度（固定80mm）
+    INFO_TEXT_AREA_HEIGHT_MM = 80.0
+
     # 图例背景矩形（白色实心，与地图等高）
     legend_bg = QgsLayoutItemShape(layout)
     legend_bg.setShapeType(QgsLayoutItemShape.Rectangle)
@@ -1316,11 +1480,58 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
     layout.addLayoutItem(legend_bg)
 
+    # ── 上部：说明文字区（固定80mm高，位于图例区顶部）──
+    desc_left_margin = 2.0
+    desc_right_margin = 2.0
+    if description_text:
+        escaped = (description_text
+                   .replace('&', '&amp;')
+                   .replace('<', '&lt;')
+                   .replace('>', '&gt;'))
+        html_content = (
+            f'<p style="font-family: SimSun; font-size: {INFO_TEXT_FONT_SIZE_PT}pt; '
+            f'line-height: {LINE_SPACING_FACTOR}; color: #000000; margin: 0; padding: 0;">'
+            + escaped.replace('\n', '<br>')
+            + '</p>'
+        )
+        desc_label = QgsLayoutItemLabel(layout)
+        desc_label.setMode(QgsLayoutItemLabel.ModeHtml)
+        desc_label.setText(html_content)
+        desc_label.attemptMove(QgsLayoutPoint(legend_x + desc_left_margin, legend_y,
+                                              QgsUnitTypes.LayoutMillimeters))
+        desc_label.attemptResize(QgsLayoutSize(legend_width - desc_left_margin - desc_right_margin,
+                                               INFO_TEXT_AREA_HEIGHT_MM,
+                                               QgsUnitTypes.LayoutMillimeters))
+        desc_label.setHAlign(Qt.AlignLeft)
+        desc_label.setVAlign(Qt.AlignTop)
+        desc_label.setFrameEnabled(False)
+        desc_label.setBackgroundEnabled(False)
+        layout.addLayoutItem(desc_label)
+        print("[信息] 说明文字添加到图例区完成")
+
+    # ── 分隔线（位于说明文字区底部）──
+    sep_shape = QgsLayoutItemShape(layout)
+    sep_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+    sep_shape.attemptMove(QgsLayoutPoint(legend_x, legend_y + INFO_TEXT_AREA_HEIGHT_MM,
+                                         QgsUnitTypes.LayoutMillimeters))
+    sep_shape.attemptResize(QgsLayoutSize(legend_width, BORDER_WIDTH_MM,
+                                          QgsUnitTypes.LayoutMillimeters))
+    sep_symbol = QgsFillSymbol.createSimple({
+        'color': '0,0,0,255',
+        'outline_style': 'no',
+    })
+    sep_shape.setSymbol(sep_symbol)
+    sep_shape.setFrameEnabled(False)
+    layout.addLayoutItem(sep_shape)
+
+    # 图例区起始Y坐标（分隔线底部）
+    legend_items_y = legend_y + INFO_TEXT_AREA_HEIGHT_MM + BORDER_WIDTH_MM
+
     # 图例标题 "图  例"
     title_label = QgsLayoutItemLabel(layout)
     title_label.setText("图  例")
     title_label.setTextFormat(title_format)
-    title_label.attemptMove(QgsLayoutPoint(legend_x, legend_y + 1.0,
+    title_label.attemptMove(QgsLayoutPoint(legend_x, legend_items_y + 1.0,
                                             QgsUnitTypes.LayoutMillimeters))
     title_label.attemptResize(QgsLayoutSize(legend_width, 5.0,
                                             QgsUnitTypes.LayoutMillimeters))
@@ -1331,7 +1542,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     layout.addLayoutItem(title_label)
 
     # 图例项起始Y坐标（标题1mm上偏+5mm高度+1mm间距=7mm）
-    current_y = legend_y + 7.0
+    current_y = legend_items_y + 7.0
     icon_x = legend_x + LEGEND_PADDING_MM
     icon_center_offset = LEGEND_ROW_HEIGHT_MM / 2.0
     text_x_single = icon_x + LEGEND_ICON_WIDTH_MM + LEGEND_ICON_TEXT_GAP_MM
@@ -1495,43 +1706,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
 
         current_y += int_rows * LEGEND_ROW_HEIGHT_MM
 
-    # ── 5. 说明文字（比例尺上方）──
-    if description_text:
-        desc_left_margin = 2.0
-        desc_right_margin = 2.0
-        # 说明文字区域：从 current_y 到比例尺顶部，预留足够垂直空间
-        # 比例尺底部留 4mm，比例尺高约 18mm，说明文字区顶部为 current_y
-        scale_block_height = 18.0 + 4.0  # 比例尺区域总高度（含底部间距）
-        desc_height = legend_height - (current_y - legend_y) - scale_block_height
-        desc_height = max(desc_height, 10.0)
-
-        escaped = (description_text
-                   .replace('&', '&amp;')
-                   .replace('<', '&lt;')
-                   .replace('>', '&gt;'))
-        html_content = (
-            f'<p style="font-family: SimSun; font-size: {INFO_TEXT_FONT_SIZE_PT}pt; '
-            f'line-height: {LINE_SPACING_FACTOR}; color: #000000; margin: 0; padding: 0;">'
-            + escaped.replace('\n', '<br>')
-            + '</p>'
-        )
-
-        desc_label = QgsLayoutItemLabel(layout)
-        desc_label.setMode(QgsLayoutItemLabel.ModeHtml)
-        desc_label.setText(html_content)
-        desc_label.attemptMove(QgsLayoutPoint(legend_x + desc_left_margin, current_y,
-                                              QgsUnitTypes.LayoutMillimeters))
-        desc_label.attemptResize(QgsLayoutSize(legend_width - desc_left_margin - desc_right_margin,
-                                               desc_height,
-                                               QgsUnitTypes.LayoutMillimeters))
-        desc_label.setHAlign(Qt.AlignLeft)
-        desc_label.setVAlign(Qt.AlignTop)
-        desc_label.setFrameEnabled(False)
-        desc_label.setBackgroundEnabled(False)
-        layout.addLayoutItem(desc_label)
-        print("[信息] 说明文字添加到图例区完成")
-
-    # ── 6. 比例尺（位于图例区底部）──
+    # ── 5. 比例尺（位于图例区底部）──
     if scale is not None and extent is not None and center_lat is not None:
         lon_range_deg = extent.xMaximum() - extent.xMinimum()
         map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
@@ -1930,8 +2105,28 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
 
         province_layer = load_vector_layer(SHP_PROVINCE_PATH, "省界")
         if province_layer:
-            style_province_layer(province_layer)
+            style_province_layer(province_layer, center_lon, center_lat, extent)
             project.addMapLayer(province_layer)
+
+        # 创建省份标注点图层
+        province_label_layer = None
+        if province_layer:
+            try:
+                province_label_layer = create_province_label_layer(
+                    province_layer, center_lon, center_lat, extent)
+                if province_label_layer:
+                    # False: 不自动将图层添加到图层树，由 ordered_layers 手动控制渲染顺序
+                    project.addMapLayer(province_label_layer, False)
+                    print(f"[信息] 省份标注图层已添加，要素数量: {province_label_layer.featureCount()}")
+                else:
+                    print("[警告] 省份标注图层创建失败，回退到直接配置标注")
+                    _setup_province_labels(province_layer)
+            except Exception as exc:
+                logger.warning('创建省份标注图层失败: %s', exc)
+                try:
+                    _setup_province_labels(province_layer)
+                except Exception as fallback_exc:
+                    logger.warning('回退标注配置也失败: %s', fallback_exc)
 
         # [6/9] 解析断裂并创建图层
         print("\n[6/9] 解析断裂KMZ...")
@@ -1975,6 +2170,9 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
         for ftype in ["holocene", "late_pleistocene", "early_pleistocene", "default"]:
             if ftype in fault_layers:
                 ordered_layers.append(fault_layers[ftype])
+        # 省份标注在省界上层
+        if province_label_layer:
+            ordered_layers.append(province_label_layer)
         if province_layer:
             ordered_layers.append(province_layer)
         if city_layer:
