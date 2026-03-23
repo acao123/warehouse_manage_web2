@@ -110,8 +110,6 @@ BORDER_RIGHT_MM = 1.0
 LEGEND_WIDTH_MM = 50.0
 # 地图内容宽度（右侧为独立图例区域，不与底图重叠）
 MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
-# 说明文字区高度（毫米）
-INFO_TEXT_HEIGHT_MM = 45.0
 # 行间距倍数
 LINE_SPACING_FACTOR = 1.5
 
@@ -1151,8 +1149,8 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     layout.setName("地震烈度分布图")
     layout.setUnits(QgsUnitTypes.LayoutMillimeters)
 
-    # 计算输出总高度：上边距 + 地图高度 + 说明文字区高度 + 下边距
-    output_height_mm = BORDER_TOP_MM + map_height_mm + INFO_TEXT_HEIGHT_MM + BORDER_BOTTOM_MM
+    # 计算输出总高度：上边距 + 地图高度 + 下边距
+    output_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
 
     page = layout.pageCollection().page(0)
     page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm, QgsUnitTypes.LayoutMillimeters))
@@ -1187,11 +1185,8 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     # 右侧独立图例区（与地图等高，含比例尺）
     center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
     _add_legend(layout, map_height_mm, has_faults, scale=scale, extent=extent,
-                center_lat=center_lat, intensity_data=intensity_data)
-
-    # 底部说明文字区（位于地图下方）
-    _add_info_text_panel(layout, map_left, map_top + map_height_mm,
-                         MAP_WIDTH_MM, INFO_TEXT_HEIGHT_MM, description_text)
+                center_lat=center_lat, intensity_data=intensity_data,
+                description_text=description_text)
 
     return layout
 
@@ -1246,21 +1241,6 @@ def _add_north_arrow(layout, map_left, map_top, map_width):
     arrow_x = map_left + map_width - NORTH_ARROW_WIDTH_MM
     arrow_y = map_top
 
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM, QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    bg_shape.setFrameEnabled(True)
-    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(bg_shape)
-
     svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_kml_temp.svg")
     create_north_arrow_svg(svg_path)
 
@@ -1276,118 +1256,8 @@ def _add_north_arrow(layout, map_left, map_top, map_width):
     print("[信息] 指北针添加完成")
 
 
-def _wrap_text_for_panel(text, panel_width_mm, font_size_pt, left_margin_mm=2.0, right_margin_mm=1.0):
-    """
-    根据面板宽度对混合文本（汉字、英文、数字、经纬度符号等）进行自动折行处理。
-
-    参数:
-        text (str): 原始文本
-        panel_width_mm (float): 面板宽度（毫米）
-        font_size_pt (float): 字体大小（磅）
-        left_margin_mm (float): 左边距（毫米）
-        right_margin_mm (float): 右边距（毫米）
-    返回:
-        str: 折行后的文本
-    """
-    # 全角字符（汉字等）宽度 ≈ 字号 × (25.4/72) mm/pt ≈ 字号 × 0.353mm/pt
-    # 半角字符（数字、英文字母、标点符号，含 ° 等 ASCII 符号）宽度约为全角字符的一半
-    full_char_width_mm = font_size_pt * 0.353
-    half_char_width_mm = full_char_width_mm * 0.5
-    available_mm = panel_width_mm - left_margin_mm - right_margin_mm
-
-    def _char_width(ch):
-        """根据 Unicode 东亚字符宽度属性返回显示宽度（毫米）。
-        'W'(Wide) 和 'F'(Fullwidth) 为全角字符（汉字、全角符号等），其余为半角。"""
-        eaw = unicodedata.east_asian_width(ch)
-        if eaw in ('W', 'F'):
-            return full_char_width_mm
-        return half_char_width_mm
-
-    result_lines = []
-    for paragraph in text.split('\n'):
-        if not paragraph:
-            result_lines.append('')
-            continue
-        line = ''
-        line_width = 0.0
-        for char in paragraph:
-            cw = _char_width(char)
-            if line_width + cw > available_mm and line:
-                result_lines.append(line)
-                line = char
-                line_width = cw
-            else:
-                line += char
-                line_width += cw
-        if line:
-            result_lines.append(line)
-    return '\n'.join(result_lines)
-
-
-def _add_info_text_panel(layout, x, y, width, height, description_text):
-    """
-    添加底部说明文字区（位于地图下方）
-
-    参数:
-        layout: 布局对象
-        x, y: 左上角坐标（毫米）
-        width, height: 宽高（毫米）
-        description_text: 说明文字
-    """
-    # 白色背景矩形
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(x, y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(width, height, QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    layout.addLayoutItem(bg_shape)
-
-    LEFT_MARGIN_MM = 2.0
-    RIGHT_MARGIN_MM = 2.0
-    TOP_MARGIN_MM = 2.0
-
-    # 首行缩进（两个全角空格）
-    indent = "　　"
-    indented_text = indent + description_text.replace("\n", "\n" + indent)
-
-    # 使用 HTML 模式实现 1.5 倍行间距
-    escaped = (indented_text
-               .replace('&', '&amp;')
-               .replace('<', '&lt;')
-               .replace('>', '&gt;'))
-    html_lines = escaped.split('\n')
-    html_content = (
-        f'<p style="font-family: SimSun; font-size: {INFO_TEXT_FONT_SIZE_PT}pt; '
-        f'line-height: {LINE_SPACING_FACTOR}; color: #000000; margin: 0; padding: 0;">'
-        + '<br>'.join(html_lines)
-        + '</p>'
-    )
-
-    text_label = QgsLayoutItemLabel(layout)
-    text_label.setMode(QgsLayoutItemLabel.ModeHtml)
-    text_label.setText(html_content)
-    text_label.attemptMove(QgsLayoutPoint(x + LEFT_MARGIN_MM, y + TOP_MARGIN_MM,
-                                          QgsUnitTypes.LayoutMillimeters))
-    text_label.attemptResize(QgsLayoutSize(width - LEFT_MARGIN_MM - RIGHT_MARGIN_MM,
-                                           height - TOP_MARGIN_MM,
-                                           QgsUnitTypes.LayoutMillimeters))
-    text_label.setHAlign(Qt.AlignLeft)
-    text_label.setVAlign(Qt.AlignTop)
-    text_label.setFrameEnabled(False)
-    text_label.setBackgroundEnabled(False)
-    layout.addLayoutItem(text_label)
-
-    print("[信息] 底部说明文字区添加完成")
-
-
 def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
-                center_lat=None, intensity_data=None):
+                center_lat=None, intensity_data=None, description_text=None):
     """
     添加图例（位于右侧独立区域，与地图等高）
     - 图例左边框紧接底图右边框
@@ -1402,6 +1272,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         extent (QgsRectangle): 地图范围（用于计算比例尺）
         center_lat (float): 地图中心纬度（用于计算比例尺）
         intensity_data (dict): 烈度圈数据 {烈度值: [(lon, lat), ...]}
+        description_text (str): 说明文字，显示在比例尺上方
     """
     legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
     legend_y = BORDER_TOP_MM
@@ -1624,7 +1495,43 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
 
         current_y += int_rows * LEGEND_ROW_HEIGHT_MM
 
-    # ── 5. 比例尺（位于图例区底部）──
+    # ── 5. 说明文字（比例尺上方）──
+    if description_text:
+        desc_left_margin = 2.0
+        desc_right_margin = 2.0
+        # 说明文字区域：从 current_y 到比例尺顶部，预留足够垂直空间
+        # 比例尺底部留 4mm，比例尺高约 18mm，说明文字区顶部为 current_y
+        scale_block_height = 18.0 + 4.0  # 比例尺区域总高度（含底部间距）
+        desc_height = legend_height - (current_y - legend_y) - scale_block_height
+        desc_height = max(desc_height, 10.0)
+
+        escaped = (description_text
+                   .replace('&', '&amp;')
+                   .replace('<', '&lt;')
+                   .replace('>', '&gt;'))
+        html_content = (
+            f'<p style="font-family: SimSun; font-size: {INFO_TEXT_FONT_SIZE_PT}pt; '
+            f'line-height: {LINE_SPACING_FACTOR}; color: #000000; margin: 0; padding: 0;">'
+            + escaped.replace('\n', '<br>')
+            + '</p>'
+        )
+
+        desc_label = QgsLayoutItemLabel(layout)
+        desc_label.setMode(QgsLayoutItemLabel.ModeHtml)
+        desc_label.setText(html_content)
+        desc_label.attemptMove(QgsLayoutPoint(legend_x + desc_left_margin, current_y,
+                                              QgsUnitTypes.LayoutMillimeters))
+        desc_label.attemptResize(QgsLayoutSize(legend_width - desc_left_margin - desc_right_margin,
+                                               desc_height,
+                                               QgsUnitTypes.LayoutMillimeters))
+        desc_label.setHAlign(Qt.AlignLeft)
+        desc_label.setVAlign(Qt.AlignTop)
+        desc_label.setFrameEnabled(False)
+        desc_label.setBackgroundEnabled(False)
+        layout.addLayoutItem(desc_label)
+        print("[信息] 说明文字添加到图例区完成")
+
+    # ── 6. 比例尺（位于图例区底部）──
     if scale is not None and extent is not None and center_lat is not None:
         lon_range_deg = extent.xMaximum() - extent.xMinimum()
         map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
