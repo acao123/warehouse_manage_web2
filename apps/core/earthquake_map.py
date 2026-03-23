@@ -1420,10 +1420,9 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale,
     _setup_map_grid(map_item, extent)
     # 指北针（地图右上角）
     _add_north_arrow(layout, map_height_mm)
-    # 比例尺（地图右下角）
-    _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
-    # 图例（右侧独立区域）
-    _add_legend(layout, map_height_mm, has_faults)
+    # 图例（右侧独立区域，含比例尺和制图日期）
+    _add_legend(layout, map_height_mm, has_faults, scale=scale, extent=extent,
+                center_lat=latitude)
 
     return layout
 
@@ -1514,7 +1513,9 @@ def _add_north_arrow(layout, map_height_mm):
 
 def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
     """
-    添加比例尺（地图右下角）
+    【已废弃】添加比例尺（地图右下角）
+    比例尺已移至图例区底部，由 _add_legend 函数绘制。
+    保留此函数以兼容旧调用，但不再被 create_print_layout 调用。
 
     参数:
         layout (QgsPrintLayout): 打印布局
@@ -1656,16 +1657,20 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
     print(f"[信息] 比例尺添加完成，1:{scale:,}")
 
 
-def _add_legend(layout, map_height_mm, has_faults=True):
+def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None, center_lat=None):
     """
     添加图例（位于右侧独立区域）
     - 图例左边框紧接底图右边框
     - 图例上下与底图对齐
+    - 底部包含比例尺和制图日期
 
     参数:
         layout (QgsPrintLayout): 打印布局
         map_height_mm (float): 底图高度（毫米）
         has_faults (bool): 是否包含断裂线图例
+        scale (int): 比例尺分母（用于绘制比例尺）
+        extent (QgsRectangle): 地图范围（用于计算比例尺）
+        center_lat (float): 地图中心纬度（用于计算比例尺）
     """
     legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
     legend_y = BORDER_TOP_MM
@@ -1874,6 +1879,164 @@ def _add_legend(layout, map_height_mm, has_faults=True):
 
     n_basic = len(basic_items) + (3 if has_faults else 0)
     n_mag = len(mag_items)
+
+    # ── 6. 比例尺（位于图例内容下方，制图日期上方）──
+    if scale is not None and extent is not None and center_lat is not None:
+        lon_range_deg = extent.xMaximum() - extent.xMinimum()
+        map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
+        km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
+        target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
+
+        nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+        bar_km = nice_values[0]
+        for nv in nice_values:
+            if nv <= target_bar_km * 1.5:
+                bar_km = nv
+            else:
+                break
+
+        bar_length_mm = bar_km / km_per_mm if km_per_mm > 0 else 20.0
+        bar_length_mm = max(bar_length_mm, 20.0)
+        num_segments = 4
+
+        # 标准尺寸
+        std_bar_width = bar_length_mm + 16.0
+        std_bar_height = 14.0
+
+        # 图例区可用宽度（左右各留 2mm）
+        avail_width = legend_width - 4.0
+        if std_bar_width > avail_width:
+            scale_factor = avail_width / std_bar_width
+            std_bar_width = avail_width
+            bar_length_mm *= scale_factor
+            std_bar_height *= scale_factor
+        else:
+            scale_factor = 1.0
+
+        # 比例尺垂直位置：制图日期上方
+        DATE_SECTION_MM = 10.0
+        sb_height = std_bar_height
+        sb_y = legend_y + legend_height - DATE_SECTION_MM - sb_height - 2.0
+        sb_x = legend_x + (legend_width - std_bar_width) / 2.0
+
+        # 比例尺分母文字
+        scale_font_size = SCALE_FONT_SIZE_PT
+        scale_tf = QgsTextFormat()
+        scale_tf.setFont(QFont("Times New Roman", scale_font_size))
+        scale_tf.setSize(scale_font_size)
+        scale_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        scale_tf.setColor(QColor(0, 0, 0))
+
+        lbl_scale = QgsLayoutItemLabel(layout)
+        lbl_scale.setText(f"1:{scale:,}")
+        lbl_scale.setTextFormat(scale_tf)
+        lbl_scale.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.attemptResize(QgsLayoutSize(std_bar_width, 4.5 * scale_factor,
+                                              QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.setHAlign(Qt.AlignHCenter)
+        lbl_scale.setVAlign(Qt.AlignVCenter)
+        lbl_scale.setFrameEnabled(False)
+        lbl_scale.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_scale)
+
+        # 黑白交替刻度条
+        bar_start_x = sb_x + (std_bar_width - bar_length_mm) / 2.0
+        bar_y = sb_y + 5.5 * scale_factor
+        bar_h = 1.8 * scale_factor
+        seg_width_mm = bar_length_mm / num_segments
+
+        for i in range(num_segments):
+            seg_shape = QgsLayoutItemShape(layout)
+            seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+            seg_x = bar_start_x + i * seg_width_mm
+            seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
+            seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h,
+                                                  QgsUnitTypes.LayoutMillimeters))
+            fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
+            seg_symbol = QgsFillSymbol.createSimple({
+                'color': fill_color,
+                'outline_color': '0,0,0,255',
+                'outline_width': '0.15',
+                'outline_width_unit': 'MM',
+            })
+            seg_shape.setSymbol(seg_symbol)
+            seg_shape.setFrameEnabled(False)
+            layout.addLayoutItem(seg_shape)
+
+        # 刻度标签
+        tick_tf = QgsTextFormat()
+        tick_tf.setFont(QFont("Times New Roman", scale_font_size))
+        tick_tf.setSize(scale_font_size)
+        tick_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        tick_tf.setColor(QColor(0, 0, 0))
+
+        label_y = bar_y + bar_h + 0.3
+        label_h = 3.5 * scale_factor
+
+        lbl_0 = QgsLayoutItemLabel(layout)
+        lbl_0.setText("0")
+        lbl_0.setTextFormat(tick_tf)
+        lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y,
+                                         QgsUnitTypes.LayoutMillimeters))
+        lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_0.setHAlign(Qt.AlignHCenter)
+        lbl_0.setVAlign(Qt.AlignTop)
+        lbl_0.setFrameEnabled(False)
+        lbl_0.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_0)
+
+        mid_km = bar_km // 2
+        if mid_km > 0:
+            lbl_mid = QgsLayoutItemLabel(layout)
+            lbl_mid.setText(str(mid_km))
+            lbl_mid.setTextFormat(tick_tf)
+            mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
+            lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.setHAlign(Qt.AlignHCenter)
+            lbl_mid.setVAlign(Qt.AlignTop)
+            lbl_mid.setFrameEnabled(False)
+            lbl_mid.setBackgroundEnabled(False)
+            layout.addLayoutItem(lbl_mid)
+
+        lbl_end = QgsLayoutItemLabel(layout)
+        lbl_end.setText(f"{bar_km} km")
+        lbl_end.setTextFormat(tick_tf)
+        end_x = bar_start_x + bar_length_mm - 4.0
+        lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.setHAlign(Qt.AlignHCenter)
+        lbl_end.setVAlign(Qt.AlignTop)
+        lbl_end.setFrameEnabled(False)
+        lbl_end.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_end)
+
+        print(f"[信息] 比例尺添加到图例区完成，1:{scale:,}")
+
+    # ── 7. 制图日期（图例区最底部）──
+    date_format = QgsTextFormat()
+    date_format.setFont(QFont("SimSun", 10))
+    date_format.setSize(10)
+    date_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    date_format.setColor(QColor(0, 0, 0))
+
+    current_date = datetime.date.today()
+    date_text = f"制图日期：{current_date.year}年{current_date.month:02d}月{current_date.day:02d}日"
+
+    date_label = QgsLayoutItemLabel(layout)
+    date_label.setText(date_text)
+    date_label.setTextFormat(date_format)
+    date_label.attemptMove(QgsLayoutPoint(legend_x + LEGEND_PADDING_MM,
+                                          legend_y + legend_height - 8.0,
+                                          QgsUnitTypes.LayoutMillimeters))
+    date_label.attemptResize(QgsLayoutSize(legend_width - LEGEND_PADDING_MM - 1.0, 7.0,
+                                           QgsUnitTypes.LayoutMillimeters))
+    date_label.setHAlign(Qt.AlignLeft)
+    date_label.setVAlign(Qt.AlignVCenter)
+    date_label.setFrameEnabled(False)
+    date_label.setBackgroundEnabled(False)
+    layout.addLayoutItem(date_label)
+
     print(f"[信息] 图例添加完成，共 {n_basic + n_mag + 1} 项（含震级标题）")
 
 
