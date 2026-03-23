@@ -1420,7 +1420,7 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale,
     _setup_map_grid(map_item, extent)
     # 指北针（地图右上角）
     _add_north_arrow(layout, map_height_mm)
-    # 图例（右侧独立区域，含比例尺和制图日期）
+    # 图例（右侧独立区域，含比例尺）
     _add_legend(layout, map_height_mm, has_faults, scale=scale, extent=extent,
                 center_lat=latitude)
 
@@ -1662,7 +1662,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     添加图例（位于右侧独立区域）
     - 图例左边框紧接底图右边框
     - 图例上下与底图对齐
-    - 底部包含比例尺和制图日期
+    - 底部包含比例尺
 
     参数:
         layout (QgsPrintLayout): 打印布局
@@ -1886,7 +1886,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     n_basic = len(basic_items) + (3 if has_faults else 0)
     n_mag = len(mag_items)
 
-    # ── 6. 比例尺（位于图例内容下方，制图日期上方）──
+    # ── 6. 比例尺（位于图例内容下方）──
     if scale is not None and extent is not None and center_lat is not None:
         lon_range_deg = extent.xMaximum() - extent.xMinimum()
         map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
@@ -1919,10 +1919,9 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         else:
             scale_factor = 1.0
 
-        # 比例尺垂直位置：制图日期上方
-        DATE_SECTION_MM = 10.0
+        # 比例尺垂直位置：距底部留 4mm 空间
         sb_height = std_bar_height
-        sb_y = legend_y + legend_height - DATE_SECTION_MM - sb_height - 2.0
+        sb_y = legend_y + legend_height - sb_height - 4.0
         sb_x = legend_x + (legend_width - std_bar_width) / 2.0
 
         # 比例尺分母文字
@@ -2018,30 +2017,6 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         layout.addLayoutItem(lbl_end)
 
         print(f"[信息] 比例尺添加到图例区完成，1:{scale:,}")
-
-    # ── 7. 制图日期（图例区最底部）──
-    date_format = QgsTextFormat()
-    date_format.setFont(QFont("SimSun", 10))
-    date_format.setSize(10)
-    date_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    date_format.setColor(QColor(0, 0, 0))
-
-    current_date = datetime.date.today()
-    date_text = f"制图日期：{current_date.year}年{current_date.month:02d}月{current_date.day:02d}日"
-
-    date_label = QgsLayoutItemLabel(layout)
-    date_label.setText(date_text)
-    date_label.setTextFormat(date_format)
-    date_label.attemptMove(QgsLayoutPoint(legend_x + LEGEND_PADDING_MM,
-                                          legend_y + legend_height - 8.0,
-                                          QgsUnitTypes.LayoutMillimeters))
-    date_label.attemptResize(QgsLayoutSize(legend_width - LEGEND_PADDING_MM - 1.0, 7.0,
-                                           QgsUnitTypes.LayoutMillimeters))
-    date_label.setHAlign(Qt.AlignLeft)
-    date_label.setVAlign(Qt.AlignVCenter)
-    date_label.setFrameEnabled(False)
-    date_label.setBackgroundEnabled(False)
-    layout.addLayoutItem(date_label)
 
     print(f"[信息] 图例添加完成，共 {n_basic + n_mag + 1} 项（含震级标题）")
 
