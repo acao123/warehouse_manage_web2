@@ -33,7 +33,7 @@ except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
 
-from core.tianditu_basemap_downloader import (
+from tianditu_basemap_downloader import (
     download_tianditu_basemap_tiles,
     download_tianditu_annotation_tiles,
 )
@@ -1790,7 +1790,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     basic_icon_text_gap = 1.0
 
     basic_items = [
-        ("震中位置", "star"),
+        ("震中", "star"),
         ("地级市",  "city_dot"),
         ("省界",    "solid_line"),
         ("市界",    "dash_city"),
@@ -1849,9 +1849,15 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
             current_y += LEGEND_ROW_HEIGHT_MM
 
     # ── 4. 震级标题 ──
+    mag_title_format = QgsTextFormat()
+    mag_title_format.setFont(QFont("SimHei", 10))
+    mag_title_format.setSize(10)
+    mag_title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    mag_title_format.setColor(QColor(0, 0, 0))
+
     mag_title_label = QgsLayoutItemLabel(layout)
-    mag_title_label.setText("震级")
-    mag_title_label.setTextFormat(title_format)
+    mag_title_label.setText("震  级")
+    mag_title_label.setTextFormat(mag_title_format)
     mag_title_label.attemptMove(QgsLayoutPoint(legend_x, current_y, QgsUnitTypes.LayoutMillimeters))
     mag_title_label.attemptResize(QgsLayoutSize(legend_width, LEGEND_ROW_HEIGHT_MM,
                                                 QgsUnitTypes.LayoutMillimeters))
@@ -2354,7 +2360,7 @@ def _generate_earthquake_map_impl(center_lon, center_lat, magnitude, csv_path,
     print(f"  地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm\n")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()
