@@ -131,6 +131,14 @@ NORTH_ARROW_HEIGHT_MM = 18.0
 LONLAT_FONT_SIZE_PT = 10
 
 # ============================================================
+# 【说明文字区域布局常量】
+# ============================================================
+# 说明文字与图例区上边框的距离（毫米）
+DESCRIPTION_TOP_MARGIN_MM = 2.0
+# 说明文字与图例区左右边框的距离（毫米）
+DESCRIPTION_HORIZONTAL_MARGIN_MM = 2.0
+
+# ============================================================
 # 【SHP文件路径常量】（优先从 Django settings 读取）
 # ============================================================
 _DEFAULT_BASE = "../../data/geology/"
@@ -1484,8 +1492,6 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     layout.addLayoutItem(legend_bg)
 
     # ── 上部：说明文字区（固定65mm高，位于图例区顶部）──
-    desc_left_margin = 2.0
-    desc_right_margin = 2.0
     if description_text:
         # 首行缩进：添加两个全角空格
         indented_text = "　　" + description_text
@@ -1505,10 +1511,11 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         desc_label.setMode(QgsLayoutItemLabel.ModeFont)  # 使用纯文本模式（非HTML）
         desc_label.setText(indented_text)
         desc_label.setTextFormat(desc_format)
-        desc_label.attemptMove(QgsLayoutPoint(legend_x + desc_left_margin, legend_y,
+        desc_label.attemptMove(QgsLayoutPoint(legend_x + DESCRIPTION_HORIZONTAL_MARGIN_MM,
+                                              legend_y + DESCRIPTION_TOP_MARGIN_MM,
                                               QgsUnitTypes.LayoutMillimeters))
-        desc_label.attemptResize(QgsLayoutSize(legend_width - desc_left_margin - desc_right_margin,
-                                               INFO_TEXT_AREA_HEIGHT_MM,
+        desc_label.attemptResize(QgsLayoutSize(legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2,
+                                               INFO_TEXT_AREA_HEIGHT_MM - DESCRIPTION_TOP_MARGIN_MM,
                                                QgsUnitTypes.LayoutMillimeters))
         desc_label.setHAlign(Qt.AlignLeft)
         desc_label.setVAlign(Qt.AlignTop)
