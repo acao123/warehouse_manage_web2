@@ -171,6 +171,7 @@ FONT_PATH_TIMES = "Times New Roman"
 # 【字体大小常量】
 # ============================================================
 INFO_TEXT_FONT_SIZE_PT = 6
+DESCRIPTION_FONT_SIZE_PT = 8  # 新增：说明文字字体大小
 LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
 INTENSITY_LABEL_FONT_SIZE_PT = 10
@@ -1482,23 +1483,28 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
     layout.addLayoutItem(legend_bg)
 
-    # ── 上部：说明文字区（固定80mm高，位于图例区顶部）──
+    # ── 上部：说明文字区（固定65mm高，位于图例区顶部）──
     desc_left_margin = 2.0
     desc_right_margin = 2.0
     if description_text:
-        escaped = (description_text
-                   .replace('&', '&amp;')
-                   .replace('<', '&lt;')
-                   .replace('>', '&gt;'))
-        html_content = (
-            f'<p style="font-family: SimSun; font-size: {INFO_TEXT_FONT_SIZE_PT}pt; '
-            f'line-height: {LINE_SPACING_FACTOR}; color: #000000; margin: 0; padding: 0;">'
-            + escaped.replace('\n', '<br>')
-            + '</p>'
-        )
+        # 首行缩进：添加两个全角空格
+        indented_text = "　　" + description_text
+
+        # 创建说明文字格式（与图例项一致：SimSun字体，可配置字号，1.5倍行距）
+        desc_format = QgsTextFormat()
+        desc_format.setFont(QFont(FONT_PATH_SONGTI, DESCRIPTION_FONT_SIZE_PT))
+        desc_format.setSize(DESCRIPTION_FONT_SIZE_PT)
+        desc_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+        desc_format.setColor(QColor(0, 0, 0))
+
+        # 设置1.5倍行距
+        desc_format.setLineHeight(1.5)
+        desc_format.setLineHeightUnit(QgsUnitTypes.RenderPercentage)  # 百分比单位（150% = 1.5倍）
+
         desc_label = QgsLayoutItemLabel(layout)
-        desc_label.setMode(QgsLayoutItemLabel.ModeHtml)
-        desc_label.setText(html_content)
+        desc_label.setMode(QgsLayoutItemLabel.ModeFont)  # 使用纯文本模式（非HTML）
+        desc_label.setText(indented_text)
+        desc_label.setTextFormat(desc_format)
         desc_label.attemptMove(QgsLayoutPoint(legend_x + desc_left_margin, legend_y,
                                               QgsUnitTypes.LayoutMillimeters))
         desc_label.attemptResize(QgsLayoutSize(legend_width - desc_left_margin - desc_right_margin,
@@ -1509,7 +1515,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         desc_label.setFrameEnabled(False)
         desc_label.setBackgroundEnabled(False)
         layout.addLayoutItem(desc_label)
-        print("[信息] 说明文字添加到图例区完成")
+        print(f"[信息] 说明文字添加到图例区完成（字体: SimSun {DESCRIPTION_FONT_SIZE_PT}pt，行距: 1.5倍）")
 
     # ── 分隔线（位于说明文字区底部）──
     sep_shape = QgsLayoutItemShape(layout)
