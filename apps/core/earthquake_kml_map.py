@@ -20,7 +20,6 @@ import requests
 import re
 from io import BytesIO
 from lxml import etree
-from datetime import datetime
 from PIL import Image
 
 # ============================================================
@@ -107,15 +106,14 @@ BORDER_TOP_MM = 4.0
 BORDER_BOTTOM_MM = 2.0
 # 右边距（毫米）
 BORDER_RIGHT_MM = 1.0
-
-# 右侧说明文字区域宽度（毫米）
-INFO_PANEL_WIDTH_MM = 55.0
-
-# 底部图例区域高度（毫米）
-LEGEND_HEIGHT_MM = 28.0
-
-# 地图内容宽度（毫米）
-MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - BORDER_RIGHT_MM - INFO_PANEL_WIDTH_MM
+# 图例区宽度（毫米），图例位于右侧独立区域
+LEGEND_WIDTH_MM = 50.0
+# 地图内容宽度（右侧为独立图例区域，不与底图重叠）
+MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
+# 说明文字区高度（毫米）
+INFO_TEXT_HEIGHT_MM = 45.0
+# 行间距倍数
+LINE_SPACING_FACTOR = 1.5
 
 # 输出DPI
 OUTPUT_DPI = 150
@@ -177,11 +175,22 @@ FONT_PATH_TIMES = "Times New Roman"
 INFO_TEXT_FONT_SIZE_PT = 10
 LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
-DATE_FONT_SIZE_PT = 10
 INTENSITY_LABEL_FONT_SIZE_PT = 10
 SCALE_FONT_SIZE_PT = 10
-# 比例尺缩小时字体最小值（磅）
-MIN_SCALE_FONT_SIZE_PT = 10
+
+# ============================================================
+# 【图例布局常量】（参考 earthquake_map.py）
+# ============================================================
+# 图例项行高（毫米）
+LEGEND_ROW_HEIGHT_MM = 6.0
+# 图例内边距（毫米）
+LEGEND_PADDING_MM = 2.0
+# 图例图标宽度（毫米）
+LEGEND_ICON_WIDTH_MM = 8.0
+# 图标与文字间距（毫米）
+LEGEND_ICON_TEXT_GAP_MM = 1.5
+# 图例中最多显示的烈度项数（4行×3列）
+MAX_INTENSITY_LEGEND_ITEMS = 12
 
 # ============================================================
 # 【行政边界线样式】
@@ -1142,8 +1151,8 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     layout.setName("地震烈度分布图")
     layout.setUnits(QgsUnitTypes.LayoutMillimeters)
 
-    # 计算输出总高度
-    output_height_mm = BORDER_TOP_MM + map_height_mm + LEGEND_HEIGHT_MM + BORDER_BOTTOM_MM
+    # 计算输出总高度：上边距 + 地图高度 + 说明文字区高度 + 下边距
+    output_height_mm = BORDER_TOP_MM + map_height_mm + INFO_TEXT_HEIGHT_MM + BORDER_BOTTOM_MM
 
     page = layout.pageCollection().page(0)
     page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm, QgsUnitTypes.LayoutMillimeters))
@@ -1175,13 +1184,14 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     # 指北针（地图右上角）
     _add_north_arrow(layout, map_left, map_top, MAP_WIDTH_MM)
 
-    # 右侧说明文字面板
-    _add_info_panel(layout, map_left + MAP_WIDTH_MM, map_top, INFO_PANEL_WIDTH_MM,
-                    map_height_mm, description_text, scale, extent)
+    # 右侧独立图例区（与地图等高，含比例尺）
+    center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
+    _add_legend(layout, map_height_mm, has_faults, scale=scale, extent=extent,
+                center_lat=center_lat, intensity_data=intensity_data)
 
-    # 底部图例
-    _add_legend(layout, map_left, map_top + map_height_mm, MAP_WIDTH_MM + INFO_PANEL_WIDTH_MM,
-                LEGEND_HEIGHT_MM, intensity_data, has_faults)
+    # 底部说明文字区（位于地图下方）
+    _add_info_text_panel(layout, map_left, map_top + map_height_mm,
+                         MAP_WIDTH_MM, INFO_TEXT_HEIGHT_MM, description_text)
 
     return layout
 
@@ -1314,19 +1324,17 @@ def _wrap_text_for_panel(text, panel_width_mm, font_size_pt, left_margin_mm=2.0,
     return '\n'.join(result_lines)
 
 
-def _add_info_panel(layout, x, y, width, height, description_text, scale, extent):
+def _add_info_text_panel(layout, x, y, width, height, description_text):
     """
-    添加右侧说明文字面板（含折行文字和比例尺）
+    添加底部说明文字区（位于地图下方）
 
     参数:
         layout: 布局对象
-        x, y: 左上角坐标
-        width, height: 宽高
+        x, y: 左上角坐标（毫米）
+        width, height: 宽高（毫米）
         description_text: 说明文字
-        scale: 比例尺分母
-        extent: 地图范围（QgsRectangle）
     """
-    # 白色背景
+    # 白色背景矩形
     bg_shape = QgsLayoutItemShape(layout)
     bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
     bg_shape.attemptMove(QgsLayoutPoint(x, y, QgsUnitTypes.LayoutMillimeters))
@@ -1340,349 +1348,414 @@ def _add_info_panel(layout, x, y, width, height, description_text, scale, extent
     bg_shape.setSymbol(bg_symbol)
     layout.addLayoutItem(bg_shape)
 
-    # 说明文字（右侧边框留 1mm ≥ 5px@150DPI，即 5×25.4/150≈0.85mm，取整为 1mm）
     LEFT_MARGIN_MM = 2.0
     RIGHT_MARGIN_MM = 2.0
+    TOP_MARGIN_MM = 2.0
 
-    # 处理首行缩进并自动折行
-    indent = "　　"  # 两个全角空格缩进
+    # 首行缩进（两个全角空格）
+    indent = "　　"
     indented_text = indent + description_text.replace("\n", "\n" + indent)
-    wrapped_text = _wrap_text_for_panel(
-        indented_text, width, INFO_TEXT_FONT_SIZE_PT,
-        left_margin_mm=LEFT_MARGIN_MM, right_margin_mm=RIGHT_MARGIN_MM
+
+    # 使用 HTML 模式实现 1.5 倍行间距
+    escaped = (indented_text
+               .replace('&', '&amp;')
+               .replace('<', '&lt;')
+               .replace('>', '&gt;'))
+    html_lines = escaped.split('\n')
+    html_content = (
+        f'<p style="font-family: SimSun; font-size: {INFO_TEXT_FONT_SIZE_PT}pt; '
+        f'line-height: {LINE_SPACING_FACTOR}; color: #000000; margin: 0; padding: 0;">'
+        + '<br>'.join(html_lines)
+        + '</p>'
     )
 
-    text_format = QgsTextFormat()
-    text_format.setFont(QFont(FONT_PATH_SONGTI, INFO_TEXT_FONT_SIZE_PT))
-    text_format.setSize(INFO_TEXT_FONT_SIZE_PT)
-    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    text_format.setColor(QColor(0, 0, 0))
-
-    # 底部预留：比例尺区域 + 日期 ≈ 30mm
-    BOTTOM_RESERVED_MM = 30.0
-    text_area_height = max(5.0, height - BOTTOM_RESERVED_MM - 2.0)
-
     text_label = QgsLayoutItemLabel(layout)
-    text_label.setText(wrapped_text)
-    text_label.setTextFormat(text_format)
-    text_label.attemptMove(QgsLayoutPoint(x + LEFT_MARGIN_MM, y + 2.0,
+    text_label.setMode(QgsLayoutItemLabel.ModeHtml)
+    text_label.setText(html_content)
+    text_label.attemptMove(QgsLayoutPoint(x + LEFT_MARGIN_MM, y + TOP_MARGIN_MM,
                                           QgsUnitTypes.LayoutMillimeters))
     text_label.attemptResize(QgsLayoutSize(width - LEFT_MARGIN_MM - RIGHT_MARGIN_MM,
-                                           text_area_height,
+                                           height - TOP_MARGIN_MM,
                                            QgsUnitTypes.LayoutMillimeters))
     text_label.setHAlign(Qt.AlignLeft)
     text_label.setVAlign(Qt.AlignTop)
     text_label.setFrameEnabled(False)
     text_label.setBackgroundEnabled(False)
-    text_label.setMode(QgsLayoutItemLabel.ModeFont)
     layout.addLayoutItem(text_label)
 
-    # ----------------------------------------------------------------
-    # 比例尺（参考 earthquake_map.py _add_scale_bar，适配面板宽度）
-    # ----------------------------------------------------------------
-    center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
-    lon_range_deg = extent.xMaximum() - extent.xMinimum()
-    map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
-    km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
-    target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
-
-    nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-    bar_km = nice_values[0]
-    for nv in nice_values:
-        if nv <= target_bar_km * 1.5:
-            bar_km = nv
-        else:
-            break
-
-    bar_length_mm = bar_km / km_per_mm if km_per_mm > 0 else 20.0
-    bar_length_mm = max(bar_length_mm, 20.0)
-    num_segments = 4
-
-    # 标准尺寸
-    std_bar_width = bar_length_mm + 16.0
-    std_bar_height = 14.0
-
-    # 面板内可用宽度（左右各留 2mm）
-    avail_width = width - 4.0
-    if std_bar_width > avail_width:
-        scale_factor = avail_width / std_bar_width
-        std_bar_width = avail_width
-        bar_length_mm *= scale_factor
-        std_bar_height *= scale_factor
-    else:
-        scale_factor = 1.0
-
-    # 比例尺垂直位置：位于日期标签上方，紧靠底部
-    DATE_SECTION_MM = 12.0
-    sb_height = std_bar_height
-    sb_y = y + height - DATE_SECTION_MM - sb_height - 2.0
-    sb_x = x + (width - std_bar_width) / 2.0
-
-    # 比例尺分母文字
-    scale_font_size = max(MIN_SCALE_FONT_SIZE_PT, int(SCALE_FONT_SIZE_PT * scale_factor))
-    scale_tf = QgsTextFormat()
-    scale_tf.setFont(QFont(FONT_PATH_TIMES, scale_font_size))
-    scale_tf.setSize(scale_font_size)
-    scale_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
-    scale_tf.setColor(QColor(0, 0, 0))
-
-    lbl_scale = QgsLayoutItemLabel(layout)
-    lbl_scale.setText(f"1:{scale:,}")
-    lbl_scale.setTextFormat(scale_tf)
-    lbl_scale.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
-    lbl_scale.attemptResize(QgsLayoutSize(std_bar_width, 4.5 * scale_factor,
-                                          QgsUnitTypes.LayoutMillimeters))
-    lbl_scale.setHAlign(Qt.AlignHCenter)
-    lbl_scale.setVAlign(Qt.AlignVCenter)
-    lbl_scale.setFrameEnabled(False)
-    lbl_scale.setBackgroundEnabled(False)
-    layout.addLayoutItem(lbl_scale)
-
-    # 黑白交替刻度条
-    bar_start_x = sb_x + (std_bar_width - bar_length_mm) / 2.0
-    bar_y = sb_y + 5.5 * scale_factor
-    bar_h = 1.8 * scale_factor
-    seg_width_mm = bar_length_mm / num_segments
-
-    for i in range(num_segments):
-        seg_shape = QgsLayoutItemShape(layout)
-        seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-        seg_x = bar_start_x + i * seg_width_mm
-        seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
-        seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h, QgsUnitTypes.LayoutMillimeters))
-        fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
-        seg_symbol = QgsFillSymbol.createSimple({
-            'color': fill_color,
-            'outline_color': '0,0,0,255',
-            'outline_width': '0.15',
-            'outline_width_unit': 'MM',
-        })
-        seg_shape.setSymbol(seg_symbol)
-        seg_shape.setFrameEnabled(False)
-        layout.addLayoutItem(seg_shape)
-
-    # 刻度标签
-    tick_font_size = max(MIN_SCALE_FONT_SIZE_PT, int(SCALE_FONT_SIZE_PT * scale_factor))
-    tick_tf = QgsTextFormat()
-    tick_tf.setFont(QFont(FONT_PATH_TIMES, tick_font_size))
-    tick_tf.setSize(tick_font_size)
-    tick_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
-    tick_tf.setColor(QColor(0, 0, 0))
-
-    label_y = bar_y + bar_h + 0.3
-    label_h = 3.5 * scale_factor
-
-    lbl_0 = QgsLayoutItemLabel(layout)
-    lbl_0.setText("0")
-    lbl_0.setTextFormat(tick_tf)
-    lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y, QgsUnitTypes.LayoutMillimeters))
-    lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
-    lbl_0.setHAlign(Qt.AlignHCenter)
-    lbl_0.setVAlign(Qt.AlignTop)
-    lbl_0.setFrameEnabled(False)
-    lbl_0.setBackgroundEnabled(False)
-    layout.addLayoutItem(lbl_0)
-
-    mid_km = bar_km // 2
-    if mid_km > 0:
-        lbl_mid = QgsLayoutItemLabel(layout)
-        lbl_mid.setText(str(mid_km))
-        lbl_mid.setTextFormat(tick_tf)
-        mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
-        lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
-        lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
-        lbl_mid.setHAlign(Qt.AlignHCenter)
-        lbl_mid.setVAlign(Qt.AlignTop)
-        lbl_mid.setFrameEnabled(False)
-        lbl_mid.setBackgroundEnabled(False)
-        layout.addLayoutItem(lbl_mid)
-
-    lbl_end = QgsLayoutItemLabel(layout)
-    lbl_end.setText(f"{bar_km} km")
-    lbl_end.setTextFormat(tick_tf)
-    end_x = bar_start_x + bar_length_mm - 4.0
-    lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
-    lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
-    lbl_end.setHAlign(Qt.AlignHCenter)
-    lbl_end.setVAlign(Qt.AlignTop)
-    lbl_end.setFrameEnabled(False)
-    lbl_end.setBackgroundEnabled(False)
-    layout.addLayoutItem(lbl_end)
-
-    # ----------------------------------------------------------------
-    # 制图日期
-    # ----------------------------------------------------------------
-    date_format = QgsTextFormat()
-    date_format.setFont(QFont(FONT_PATH_SONGTI, DATE_FONT_SIZE_PT))
-    date_format.setSize(DATE_FONT_SIZE_PT)
-    date_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    date_format.setColor(QColor(0, 0, 0))
-
-    current_date = datetime.now()
-    date_text = f"制图日期：{current_date.year}年{current_date.month:02d}月{current_date.day:02d}日"
-
-    date_label = QgsLayoutItemLabel(layout)
-    date_label.setText(date_text)
-    date_label.setTextFormat(date_format)
-    date_label.attemptMove(QgsLayoutPoint(x + LEFT_MARGIN_MM, y + height - 10.0,
-                                          QgsUnitTypes.LayoutMillimeters))
-    date_label.attemptResize(QgsLayoutSize(width - LEFT_MARGIN_MM - RIGHT_MARGIN_MM, 8.0,
-                                           QgsUnitTypes.LayoutMillimeters))
-    date_label.setHAlign(Qt.AlignLeft)
-    date_label.setVAlign(Qt.AlignVCenter)
-    date_label.setFrameEnabled(False)
-    date_label.setBackgroundEnabled(False)
-    layout.addLayoutItem(date_label)
-
-    print(f"[信息] 右侧说明面板添加完成，比例尺 1:{scale:,}")
+    print("[信息] 底部说明文字区添加完成")
 
 
-def _add_legend(layout, x, y, width, height, intensity_data, has_faults=True):
+def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
+                center_lat=None, intensity_data=None):
     """
-    添加底部图例（动态行列布局）
-    布局规则：
-      - 烈度圈 ≤ 3 个时：两行五列
-      - 烈度圈 ≤ 8 个时：三行五列
-      - 烈度圈 > 8 个时：三行五列，仅展示烈度最大的 8 个
+    添加图例（位于右侧独立区域，与地图等高）
+    - 图例左边框紧接底图右边框
+    - 图例上下与底图对齐
+    - 包含：基本项两列、断裂线单列（可选）、烈度标题、烈度三列、底部比例尺
 
     参数:
-        layout: 布局对象
-        x, y: 左上角坐标
-        width, height: 宽高
-        intensity_data: 烈度圈数据
-        has_faults: 是否有断裂数据
+        layout (QgsPrintLayout): 打印布局
+        map_height_mm (float): 底图高度（毫米）
+        has_faults (bool): 是否包含断裂线图例
+        scale (int): 比例尺分母（用于绘制比例尺）
+        extent (QgsRectangle): 地图范围（用于计算比例尺）
+        center_lat (float): 地图中心纬度（用于计算比例尺）
+        intensity_data (dict): 烈度圈数据 {烈度值: [(lon, lat), ...]}
     """
-    # 图例背景
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(x, y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(width, height, QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    layout.addLayoutItem(bg_shape)
+    legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
+    legend_y = BORDER_TOP_MM
+    legend_width = LEGEND_WIDTH_MM
+    legend_height = map_height_mm
 
-    # 图例标题
+    # 公共文本格式
     title_format = QgsTextFormat()
     title_format.setFont(QFont(FONT_PATH_HEITI, LEGEND_TITLE_FONT_SIZE_PT))
     title_format.setSize(LEGEND_TITLE_FONT_SIZE_PT)
     title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     title_format.setColor(QColor(0, 0, 0))
 
+    # 中文图例项字体（SimSun）
+    item_format_cn = QgsTextFormat()
+    item_format_cn.setFont(QFont(FONT_PATH_SONGTI, LEGEND_ITEM_FONT_SIZE_PT))
+    item_format_cn.setSize(LEGEND_ITEM_FONT_SIZE_PT)
+    item_format_cn.setSizeUnit(QgsUnitTypes.RenderPoints)
+    item_format_cn.setColor(QColor(0, 0, 0))
+
+    # 英文/数字图例项字体（Times New Roman，用于罗马数字）
+    item_format_en = QgsTextFormat()
+    item_format_en.setFont(QFont(FONT_PATH_TIMES, LEGEND_ITEM_FONT_SIZE_PT))
+    item_format_en.setSize(LEGEND_ITEM_FONT_SIZE_PT)
+    item_format_en.setSizeUnit(QgsUnitTypes.RenderPoints)
+    item_format_en.setColor(QColor(0, 0, 0))
+
+    # 图例背景矩形（白色实心，与地图等高）
+    legend_bg = QgsLayoutItemShape(layout)
+    legend_bg.setShapeType(QgsLayoutItemShape.Rectangle)
+    legend_bg.attemptMove(QgsLayoutPoint(legend_x, legend_y, QgsUnitTypes.LayoutMillimeters))
+    legend_bg.attemptResize(QgsLayoutSize(legend_width, legend_height, QgsUnitTypes.LayoutMillimeters))
+    legend_bg_symbol = QgsFillSymbol.createSimple({
+        'color': '255,255,255,255',
+        'outline_color': '0,0,0,255',
+        'outline_width': str(BORDER_WIDTH_MM),
+        'outline_width_unit': 'MM',
+    })
+    legend_bg.setSymbol(legend_bg_symbol)
+    legend_bg.setFrameEnabled(True)
+    legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+    layout.addLayoutItem(legend_bg)
+
+    # 图例标题 "图  例"
     title_label = QgsLayoutItemLabel(layout)
     title_label.setText("图  例")
     title_label.setTextFormat(title_format)
-    title_label.attemptMove(QgsLayoutPoint(x, y + 1, QgsUnitTypes.LayoutMillimeters))
-    title_label.attemptResize(QgsLayoutSize(width, 6, QgsUnitTypes.LayoutMillimeters))
+    title_label.attemptMove(QgsLayoutPoint(legend_x, legend_y + 1.0,
+                                            QgsUnitTypes.LayoutMillimeters))
+    title_label.attemptResize(QgsLayoutSize(legend_width, 5.0,
+                                            QgsUnitTypes.LayoutMillimeters))
     title_label.setHAlign(Qt.AlignHCenter)
     title_label.setVAlign(Qt.AlignVCenter)
     title_label.setFrameEnabled(False)
     title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(title_label)
 
-    # 确定行列数和烈度显示数量
-    n_intensities = len(intensity_data)
-    if n_intensities <= 3:
-        rows = 2
-    else:
-        rows = 3
-    cols = 5
+    # 图例项起始Y坐标（标题1mm上偏+5mm高度+1mm间距=7mm）
+    current_y = legend_y + 7.0
+    icon_x = legend_x + LEGEND_PADDING_MM
+    icon_center_offset = LEGEND_ROW_HEIGHT_MM / 2.0
+    text_x_single = icon_x + LEGEND_ICON_WIDTH_MM + LEGEND_ICON_TEXT_GAP_MM
+    text_width_single = legend_width - LEGEND_PADDING_MM - LEGEND_ICON_WIDTH_MM - LEGEND_ICON_TEXT_GAP_MM - 1.0
 
-    # 按烈度从大到小排序，超过 8 个时只保留最大的 8 个
-    sorted_intensities = sorted(intensity_data.keys(), reverse=True)
-    if n_intensities > 8:
-        sorted_intensities = sorted_intensities[:8]
+    def _add_cn_label(label, y):
+        """绘制中文图例文字标签（单列）"""
+        lbl = QgsLayoutItemLabel(layout)
+        lbl.setText(label)
+        lbl.setTextFormat(item_format_cn)
+        lbl.attemptMove(QgsLayoutPoint(text_x_single, y, QgsUnitTypes.LayoutMillimeters))
+        lbl.attemptResize(QgsLayoutSize(text_width_single, LEGEND_ROW_HEIGHT_MM,
+                                        QgsUnitTypes.LayoutMillimeters))
+        lbl.setHAlign(Qt.AlignLeft)
+        lbl.setVAlign(Qt.AlignVCenter)
+        lbl.setFrameEnabled(False)
+        lbl.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl)
 
-    # 收集图例项
-    legend_items = []
-    legend_items.append(("震中", "epicenter"))
+    # ── 1. 基本图例项（两列布局）──
+    # 第1行左列：震中（红色五角星），右列：省界（灰色实线）
+    # 第2行左列：市界（灰色虚线），右列：县界（浅灰色虚线）
+    col_count = 2
+    col_width = (legend_width - 2 * LEGEND_PADDING_MM) / col_count
+    basic_icon_width = 4.0
+    basic_icon_height = 2.5
+    basic_icon_text_gap = 1.0
 
-    for intensity in sorted_intensities:
-        roman = int_to_roman(intensity)
-        legend_items.append((f"{roman}度区", "intensity", intensity))
+    basic_items = [
+        ("震中",  "star"),
+        ("省界",  "solid_province"),
+        ("市界",  "dash_city"),
+        ("县界",  "dash_county"),
+    ]
 
+    basic_rows = (len(basic_items) + col_count - 1) // col_count  # = 2
+    for idx, (label, draw_type) in enumerate(basic_items):
+        row = idx // col_count
+        col = idx % col_count
+        item_x = legend_x + LEGEND_PADDING_MM + col * col_width
+        item_y = current_y + row * LEGEND_ROW_HEIGHT_MM
+        icon_center_y = item_y + LEGEND_ROW_HEIGHT_MM / 2.0
+
+        if draw_type == "star":
+            _draw_legend_star(layout, item_x, icon_center_y, basic_icon_width, basic_icon_height)
+        elif draw_type == "solid_province":
+            _draw_legend_line(layout, item_x, icon_center_y, basic_icon_width,
+                              PROVINCE_COLOR, PROVINCE_LINE_WIDTH_MM)
+        elif draw_type == "dash_city":
+            _draw_legend_dash_line(layout, item_x, icon_center_y, basic_icon_width,
+                                   CITY_COLOR, CITY_LINE_WIDTH_MM, CITY_DASH_GAP_MM)
+        elif draw_type == "dash_county":
+            _draw_legend_dash_line(layout, item_x, icon_center_y, basic_icon_width,
+                                   COUNTY_COLOR, COUNTY_LINE_WIDTH_MM, COUNTY_DASH_GAP_MM)
+
+        item_text_x = item_x + basic_icon_width + basic_icon_text_gap
+        item_text_width = col_width - basic_icon_width - basic_icon_text_gap
+
+        lbl = QgsLayoutItemLabel(layout)
+        lbl.setText(label)
+        lbl.setTextFormat(item_format_cn)
+        lbl.attemptMove(QgsLayoutPoint(item_text_x, item_y, QgsUnitTypes.LayoutMillimeters))
+        lbl.attemptResize(QgsLayoutSize(item_text_width, LEGEND_ROW_HEIGHT_MM,
+                                        QgsUnitTypes.LayoutMillimeters))
+        lbl.setHAlign(Qt.AlignLeft)
+        lbl.setVAlign(Qt.AlignVCenter)
+        lbl.setFrameEnabled(False)
+        lbl.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl)
+
+    current_y += basic_rows * LEGEND_ROW_HEIGHT_MM
+
+    # ── 2. 断裂线（可选，单列）──
     if has_faults:
-        legend_items.append(("全新世断层", "fault_holocene"))
-        legend_items.append(("晚更新世断层", "fault_late"))
-        legend_items.append(("早中更新世断层", "fault_early"))
+        for label, color, line_width in [
+            ("全新世断层",     FAULT_HOLOCENE_COLOR,         FAULT_HOLOCENE_WIDTH_MM),
+            ("晚更新世断层",   FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH_MM),
+            ("早中更新世断层", FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH_MM),
+        ]:
+            icon_center_y = current_y + icon_center_offset
+            _draw_legend_line(layout, icon_x, icon_center_y, LEGEND_ICON_WIDTH_MM, color, line_width)
+            _add_cn_label(label, current_y)
+            current_y += LEGEND_ROW_HEIGHT_MM
 
-    legend_items.append(("省界", "province"))
-    legend_items.append(("市界", "city"))
-    legend_items.append(("县界", "county"))
+    # ── 3. 地震烈度标题（居中）──
+    int_title_format = QgsTextFormat()
+    int_title_format.setFont(QFont(FONT_PATH_HEITI, 10))
+    int_title_format.setSize(10)
+    int_title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    int_title_format.setColor(QColor(0, 0, 0))
 
-    # 裁剪到可用格数
-    legend_items = legend_items[:rows * cols]
+    int_title_label = QgsLayoutItemLabel(layout)
+    int_title_label.setText("地震烈度")
+    int_title_label.setTextFormat(int_title_format)
+    int_title_label.attemptMove(QgsLayoutPoint(legend_x, current_y, QgsUnitTypes.LayoutMillimeters))
+    int_title_label.attemptResize(QgsLayoutSize(legend_width, LEGEND_ROW_HEIGHT_MM,
+                                                QgsUnitTypes.LayoutMillimeters))
+    int_title_label.setHAlign(Qt.AlignHCenter)
+    int_title_label.setVAlign(Qt.AlignVCenter)
+    int_title_label.setFrameEnabled(False)
+    int_title_label.setBackgroundEnabled(False)
+    layout.addLayoutItem(int_title_label)
+    current_y += LEGEND_ROW_HEIGHT_MM
 
-    col_width = width / cols
-    row_height = (height - 8) / rows
-    start_y = y + 8
+    # ── 4. 烈度图例项（三列布局，罗马数字+度，最多 MAX_INTENSITY_LEGEND_ITEMS 个）──
+    if intensity_data:
+        sorted_intensities = sorted(intensity_data.keys(), reverse=True)
+        if len(sorted_intensities) > MAX_INTENSITY_LEGEND_ITEMS:
+            sorted_intensities = sorted_intensities[:MAX_INTENSITY_LEGEND_ITEMS]
 
-    item_format = QgsTextFormat()
-    item_format.setFont(QFont(FONT_PATH_SONGTI, LEGEND_ITEM_FONT_SIZE_PT))
-    item_format.setSize(LEGEND_ITEM_FONT_SIZE_PT)
-    item_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    item_format.setColor(QColor(0, 0, 0))
+        int_col_count = 3
+        int_col_width = (legend_width - 2 * LEGEND_PADDING_MM) / int_col_count
+        int_icon_width = 4.0
+        int_icon_text_gap = 1.0
+        int_rows = (len(sorted_intensities) + int_col_count - 1) // int_col_count
 
-    icon_width = 8.0
-    text_gap = 1.5
+        for idx, intensity in enumerate(sorted_intensities):
+            row = idx // int_col_count
+            col = idx % int_col_count
+            item_x = legend_x + LEGEND_PADDING_MM + col * int_col_width
+            item_y = current_y + row * LEGEND_ROW_HEIGHT_MM
+            icon_center_y = item_y + LEGEND_ROW_HEIGHT_MM / 2.0
 
-    for idx, item in enumerate(legend_items):
-        row = idx // cols
-        col = idx % cols
-
-        cell_x = x + col * col_width + 2
-        cell_y = start_y + row * row_height + row_height / 2
-
-        item_type = item[1]
-        label = item[0]
-
-        # 绘制图标
-        if item_type == "epicenter":
-            _draw_legend_star(layout, cell_x, cell_y, icon_width, row_height * 0.8)
-            text_x = cell_x + icon_width + text_gap
-        elif item_type == "intensity":
-            intensity = item[2]
             color = INTENSITY_COLORS.get(intensity, QColor(255, 0, 0))
-            _draw_legend_line(layout, cell_x, cell_y, icon_width, color, INTENSITY_LINE_WIDTH_MM)
-            text_x = cell_x + icon_width + text_gap
-        elif item_type == "fault_holocene":
-            _draw_legend_line(layout, cell_x, cell_y, icon_width, FAULT_HOLOCENE_COLOR, FAULT_HOLOCENE_WIDTH_MM)
-            text_x = cell_x + icon_width + text_gap
-        elif item_type == "fault_late":
-            _draw_legend_line(layout, cell_x, cell_y, icon_width, FAULT_LATE_PLEISTOCENE_COLOR, FAULT_LATE_PLEISTOCENE_WIDTH_MM)
-            text_x = cell_x + icon_width + text_gap
-        elif item_type == "fault_early":
-            _draw_legend_line(layout, cell_x, cell_y, icon_width, FAULT_EARLY_PLEISTOCENE_COLOR, FAULT_EARLY_PLEISTOCENE_WIDTH_MM)
-            text_x = cell_x + icon_width + text_gap
-        elif item_type == "province":
-            _draw_legend_line(layout, cell_x, cell_y, icon_width, PROVINCE_COLOR, PROVINCE_LINE_WIDTH_MM)
-            text_x = cell_x + icon_width + text_gap
-        elif item_type == "city":
-            _draw_legend_dash_line(layout, cell_x, cell_y, icon_width, CITY_COLOR, CITY_LINE_WIDTH_MM)
-            text_x = cell_x + icon_width + text_gap
-        elif item_type == "county":
-            _draw_legend_dash_line(layout, cell_x, cell_y, icon_width, COUNTY_COLOR, COUNTY_LINE_WIDTH_MM)
-            text_x = cell_x + icon_width + text_gap
+            _draw_legend_line(layout, item_x, icon_center_y, int_icon_width, color,
+                              INTENSITY_LINE_WIDTH_MM)
+
+            roman = int_to_roman(intensity)
+            text_start_x = item_x + int_icon_width + int_icon_text_gap
+            # 罗马数字宽度估算：Times New Roman 10pt，每字符约1.6mm，最小5.0mm
+            roman_width = max(len(roman) * 1.6, 5.0)
+            du_width = int_col_width - int_icon_width - int_icon_text_gap - roman_width
+
+            # 罗马数字（Times New Roman）
+            num_lbl = QgsLayoutItemLabel(layout)
+            num_lbl.setText(roman)
+            num_lbl.setTextFormat(item_format_en)
+            num_lbl.attemptMove(QgsLayoutPoint(text_start_x, item_y,
+                                               QgsUnitTypes.LayoutMillimeters))
+            num_lbl.attemptResize(QgsLayoutSize(roman_width, LEGEND_ROW_HEIGHT_MM,
+                                                QgsUnitTypes.LayoutMillimeters))
+            num_lbl.setHAlign(Qt.AlignLeft)
+            num_lbl.setVAlign(Qt.AlignVCenter)
+            num_lbl.setFrameEnabled(False)
+            num_lbl.setBackgroundEnabled(False)
+            layout.addLayoutItem(num_lbl)
+
+            # "度"字（SimSun）
+            cn_lbl = QgsLayoutItemLabel(layout)
+            cn_lbl.setText("度")
+            cn_lbl.setTextFormat(item_format_cn)
+            cn_lbl.attemptMove(QgsLayoutPoint(text_start_x + roman_width, item_y,
+                                              QgsUnitTypes.LayoutMillimeters))
+            cn_lbl.attemptResize(QgsLayoutSize(max(du_width, 4.0), LEGEND_ROW_HEIGHT_MM,
+                                               QgsUnitTypes.LayoutMillimeters))
+            cn_lbl.setHAlign(Qt.AlignLeft)
+            cn_lbl.setVAlign(Qt.AlignVCenter)
+            cn_lbl.setFrameEnabled(False)
+            cn_lbl.setBackgroundEnabled(False)
+            layout.addLayoutItem(cn_lbl)
+
+        current_y += int_rows * LEGEND_ROW_HEIGHT_MM
+
+    # ── 5. 比例尺（位于图例区底部）──
+    if scale is not None and extent is not None and center_lat is not None:
+        lon_range_deg = extent.xMaximum() - extent.xMinimum()
+        map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
+        km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
+        target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
+
+        nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+        bar_km = nice_values[0]
+        for nv in nice_values:
+            if nv <= target_bar_km * 1.5:
+                bar_km = nv
+            else:
+                break
+
+        bar_length_mm = bar_km / km_per_mm if km_per_mm > 0 else 20.0
+        bar_length_mm = max(bar_length_mm, 20.0)
+        num_segments = 4
+
+        std_bar_width = bar_length_mm + 16.0
+        std_bar_height = 14.0
+
+        # 图例区可用宽度（左右各留 2mm）
+        avail_width = legend_width - 4.0
+        if std_bar_width > avail_width:
+            scale_factor = avail_width / std_bar_width
+            std_bar_width = avail_width
+            bar_length_mm *= scale_factor
+            std_bar_height *= scale_factor
         else:
-            text_x = cell_x
+            scale_factor = 1.0
 
-        # 绘制文字
-        text_label = QgsLayoutItemLabel(layout)
-        text_label.setText(label)
-        text_label.setTextFormat(item_format)
-        text_label.attemptMove(QgsLayoutPoint(text_x, cell_y - 2.5, QgsUnitTypes.LayoutMillimeters))
-        text_label.attemptResize(QgsLayoutSize(col_width - icon_width - 6, 5, QgsUnitTypes.LayoutMillimeters))
-        text_label.setHAlign(Qt.AlignLeft)
-        text_label.setVAlign(Qt.AlignVCenter)
-        text_label.setFrameEnabled(False)
-        text_label.setBackgroundEnabled(False)
-        layout.addLayoutItem(text_label)
+        # 比例尺垂直位置：距图例区底部留 4mm 空间
+        sb_height = std_bar_height
+        sb_y = legend_y + legend_height - sb_height - 4.0
+        sb_x = legend_x + (legend_width - std_bar_width) / 2.0
 
-    print(f"[信息] 图例添加完成，{rows}行{cols}列，共 {len(legend_items)} 项")
+        # 比例尺分母文字
+        scale_tf = QgsTextFormat()
+        scale_tf.setFont(QFont(FONT_PATH_TIMES, SCALE_FONT_SIZE_PT))
+        scale_tf.setSize(SCALE_FONT_SIZE_PT)
+        scale_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        scale_tf.setColor(QColor(0, 0, 0))
+
+        lbl_scale = QgsLayoutItemLabel(layout)
+        lbl_scale.setText(f"1:{scale:,}")
+        lbl_scale.setTextFormat(scale_tf)
+        lbl_scale.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.attemptResize(QgsLayoutSize(std_bar_width, 4.5 * scale_factor,
+                                              QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.setHAlign(Qt.AlignHCenter)
+        lbl_scale.setVAlign(Qt.AlignVCenter)
+        lbl_scale.setFrameEnabled(False)
+        lbl_scale.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_scale)
+
+        # 黑白交替刻度条
+        bar_start_x = sb_x + (std_bar_width - bar_length_mm) / 2.0
+        bar_y = sb_y + 5.5 * scale_factor
+        bar_h = 1.8 * scale_factor
+        seg_width_mm = bar_length_mm / num_segments
+
+        for i in range(num_segments):
+            seg_shape = QgsLayoutItemShape(layout)
+            seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+            seg_x = bar_start_x + i * seg_width_mm
+            seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
+            seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h,
+                                                  QgsUnitTypes.LayoutMillimeters))
+            fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
+            seg_symbol = QgsFillSymbol.createSimple({
+                'color': fill_color,
+                'outline_color': '0,0,0,255',
+                'outline_width': '0.15',
+                'outline_width_unit': 'MM',
+            })
+            seg_shape.setSymbol(seg_symbol)
+            seg_shape.setFrameEnabled(False)
+            layout.addLayoutItem(seg_shape)
+
+        # 刻度标签
+        tick_tf = QgsTextFormat()
+        tick_tf.setFont(QFont(FONT_PATH_TIMES, SCALE_FONT_SIZE_PT))
+        tick_tf.setSize(SCALE_FONT_SIZE_PT)
+        tick_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        tick_tf.setColor(QColor(0, 0, 0))
+
+        label_y = bar_y + bar_h + 0.3
+        label_h = 3.5 * scale_factor
+
+        lbl_0 = QgsLayoutItemLabel(layout)
+        lbl_0.setText("0")
+        lbl_0.setTextFormat(tick_tf)
+        lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y,
+                                         QgsUnitTypes.LayoutMillimeters))
+        lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_0.setHAlign(Qt.AlignHCenter)
+        lbl_0.setVAlign(Qt.AlignTop)
+        lbl_0.setFrameEnabled(False)
+        lbl_0.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_0)
+
+        mid_km = bar_km // 2
+        if mid_km > 0:
+            lbl_mid = QgsLayoutItemLabel(layout)
+            lbl_mid.setText(str(mid_km))
+            lbl_mid.setTextFormat(tick_tf)
+            mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
+            lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.setHAlign(Qt.AlignHCenter)
+            lbl_mid.setVAlign(Qt.AlignTop)
+            lbl_mid.setFrameEnabled(False)
+            lbl_mid.setBackgroundEnabled(False)
+            layout.addLayoutItem(lbl_mid)
+
+        lbl_end = QgsLayoutItemLabel(layout)
+        lbl_end.setText(f"{bar_km} km")
+        lbl_end.setTextFormat(tick_tf)
+        end_x = bar_start_x + bar_length_mm - 4.0
+        lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.setHAlign(Qt.AlignHCenter)
+        lbl_end.setVAlign(Qt.AlignTop)
+        lbl_end.setFrameEnabled(False)
+        lbl_end.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_end)
+
+        print(f"[信息] 比例尺添加到图例区完成，1:{scale:,}")
+
+    n_intensity = len(intensity_data) if intensity_data else 0
+    print(f"[信息] 图例添加完成，烈度项 {n_intensity} 个，断裂线 {'有' if has_faults else '无'}")
 
 
 def _draw_legend_star(layout, x, center_y, width, height):
@@ -1716,11 +1789,24 @@ def _draw_legend_star(layout, x, center_y, width, height):
 
 
 def _draw_legend_line(layout, x, center_y, width, color, line_width_mm):
-    """绘制图例线条"""
+    """
+    在图例中绘制实线图标
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        x (float): 起始X坐标
+        center_y (float): 中心Y坐标
+        width (float): 图标宽度
+        color (QColor): 线条颜色
+        line_width_mm (float): 线宽（毫米）
+    """
+    line_height = line_width_mm
     line_shape = QgsLayoutItemShape(layout)
     line_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    line_shape.attemptMove(QgsLayoutPoint(x, center_y - line_width_mm / 2, QgsUnitTypes.LayoutMillimeters))
-    line_shape.attemptResize(QgsLayoutSize(width, max(line_width_mm, 0.5), QgsUnitTypes.LayoutMillimeters))
+    line_shape.attemptMove(QgsLayoutPoint(x, center_y - line_height / 2.0,
+                                          QgsUnitTypes.LayoutMillimeters))
+    line_shape.attemptResize(QgsLayoutSize(width, max(line_height, 0.5),
+                                           QgsUnitTypes.LayoutMillimeters))
     color_str = f"{color.red()},{color.green()},{color.blue()},255"
     line_symbol = QgsFillSymbol.createSimple({
         'color': color_str,
@@ -1731,20 +1817,35 @@ def _draw_legend_line(layout, x, center_y, width, color, line_width_mm):
     layout.addLayoutItem(line_shape)
 
 
-def _draw_legend_dash_line(layout, x, center_y, width, color, line_width_mm):
-    """绘制图例虚线"""
+def _draw_legend_dash_line(layout, x, center_y, width, color, line_width_mm, dash_gap_mm=0.8):
+    """
+    在图例中绘制虚线图标
+
+    参数:
+        layout (QgsPrintLayout): 打印布局
+        x (float): 起始X坐标
+        center_y (float): 中心Y坐标
+        width (float): 图标总宽度
+        color (QColor): 线条颜色
+        line_width_mm (float): 线宽（毫米）
+        dash_gap_mm (float): 虚线间隔（毫米），默认0.8
+    """
     color_str = f"{color.red()},{color.green()},{color.blue()},255"
-    dash_length = 1.5
-    gap_length = 0.8
+    line_height = max(line_width_mm, 0.5)
+    # 短划长度 = 间隔 × 3.5（约使实线部分占75%），最小0.8mm
+    dash_length_mm = max(dash_gap_mm * 3.5, 0.8)
+    pattern_length = dash_length_mm + dash_gap_mm
     current_x = x
     while current_x < x + width:
-        actual_dash = min(dash_length, x + width - current_x)
+        actual_dash = min(dash_length_mm, x + width - current_x)
         if actual_dash <= 0:
             break
         dash_shape = QgsLayoutItemShape(layout)
         dash_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-        dash_shape.attemptMove(QgsLayoutPoint(current_x, center_y - line_width_mm / 2, QgsUnitTypes.LayoutMillimeters))
-        dash_shape.attemptResize(QgsLayoutSize(actual_dash, max(line_width_mm, 0.5), QgsUnitTypes.LayoutMillimeters))
+        dash_shape.attemptMove(QgsLayoutPoint(current_x, center_y - line_height / 2,
+                                              QgsUnitTypes.LayoutMillimeters))
+        dash_shape.attemptResize(QgsLayoutSize(actual_dash, line_height,
+                                               QgsUnitTypes.LayoutMillimeters))
         dash_symbol = QgsFillSymbol.createSimple({
             'color': color_str,
             'outline_style': 'no',
@@ -1752,7 +1853,7 @@ def _draw_legend_dash_line(layout, x, center_y, width, color, line_width_mm):
         dash_shape.setSymbol(dash_symbol)
         dash_shape.setFrameEnabled(False)
         layout.addLayoutItem(dash_shape)
-        current_x += dash_length + gap_length
+        current_x += pattern_length
 
 
 def _draw_legend_circle(layout, x, center_y, size, color):
