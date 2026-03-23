@@ -2072,7 +2072,7 @@ def _draw_legend_star(layout, x, center_y, width, height):
 
 def _draw_legend_city_dot(layout, x, center_y, width):
     """
-    在图例中绘制地级市黑色实心圆点图标（约2mm）
+    在图例中绘制地级市黑色实心圆点图标（双层圆圈结构）
 
     参数:
         layout (QgsPrintLayout): 打印布局
@@ -2080,22 +2080,44 @@ def _draw_legend_city_dot(layout, x, center_y, width):
         center_y (float): 中心Y坐标
         width (float): 图标区域宽度
     """
-    dot_size = 2.0  # 图例中约2mm
+    # 使用图标区域的60%作为外圆大小
+    icon_size = width * 0.6
     center_x = x + width / 2.0
 
-    circle_shape = QgsLayoutItemShape(layout)
-    circle_shape.setShapeType(QgsLayoutItemShape.Ellipse)
-    circle_shape.attemptMove(QgsLayoutPoint(center_x - dot_size / 2.0,
-                                            center_y - dot_size / 2.0,
+    # 外层圆圈：白色填充+黑色边框
+    outer_circle = QgsLayoutItemShape(layout)
+    outer_circle.setShapeType(QgsLayoutItemShape.Ellipse)
+    outer_circle.attemptMove(QgsLayoutPoint(center_x - icon_size / 2.0,
+                                            center_y - icon_size / 2.0,
                                             QgsUnitTypes.LayoutMillimeters))
-    circle_shape.attemptResize(QgsLayoutSize(dot_size, dot_size, QgsUnitTypes.LayoutMillimeters))
-    circle_symbol = QgsFillSymbol.createSimple({
+    outer_circle.attemptResize(QgsLayoutSize(icon_size, icon_size,
+                                             QgsUnitTypes.LayoutMillimeters))
+    outer_symbol = QgsFillSymbol.createSimple({
+        'color': '255,255,255,255',
+        'outline_color': '0,0,0,255',
+        'outline_width': '0.15',
+        'outline_width_unit': 'MM',
+    })
+    outer_circle.setSymbol(outer_symbol)
+    outer_circle.setFrameEnabled(False)
+    layout.addLayoutItem(outer_circle)
+
+    # 内层圆点：黑色实心，大小为外圆的40%
+    inner_size = icon_size * 0.4
+    inner_circle = QgsLayoutItemShape(layout)
+    inner_circle.setShapeType(QgsLayoutItemShape.Ellipse)
+    inner_circle.attemptMove(QgsLayoutPoint(center_x - inner_size / 2.0,
+                                            center_y - inner_size / 2.0,
+                                            QgsUnitTypes.LayoutMillimeters))
+    inner_circle.attemptResize(QgsLayoutSize(inner_size, inner_size,
+                                             QgsUnitTypes.LayoutMillimeters))
+    inner_symbol = QgsFillSymbol.createSimple({
         'color': '0,0,0,255',
         'outline_style': 'no',
     })
-    circle_shape.setSymbol(circle_symbol)
-    circle_shape.setFrameEnabled(False)
-    layout.addLayoutItem(circle_shape)
+    inner_circle.setSymbol(inner_symbol)
+    inner_circle.setFrameEnabled(False)
+    layout.addLayoutItem(inner_circle)
 
 
 def _draw_legend_line(layout, x, center_y, width, color, line_width_mm):
