@@ -35,6 +35,8 @@ except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
 
+from tianditu_basemap_downloader import download_tianditu_annotation_tiles
+
 # ============================================================
 # 日志配置
 # ============================================================
@@ -87,6 +89,12 @@ from qgis.PyQt.QtGui import QColor, QFont
 # ============================================================
 # 常量定义
 # ============================================================
+
+# 天地图配置
+TIANDITU_TK = (
+    getattr(_django_settings, 'TIANDITU_TK', '1ef76ef90c6eb961cb49618f9b1a399d')
+    if _DJANGO_AVAILABLE else '1ef76ef90c6eb961cb49618f9b1a399d'
+)
 
 # 数据文件路径（优先从 Django settings 读取）
 _DEFAULT_BASE = "../../data/geology/"
@@ -168,6 +176,9 @@ PROVINCE_COLOR = QColor(160, 160, 160)
 PROVINCE_LINE_WIDTH_MM = 0.4
 PROVINCE_LABEL_FONT_SIZE_PT = 8
 PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
+
+# === 省份标注与震中重合判断容差 ===
+PROVINCE_EPICENTER_COINCIDENCE_TOL = 1e-6
 
 # === 市界样式 ===
 CITY_COLOR = QColor(160, 160, 160)
@@ -824,12 +835,126 @@ def load_vector_layer(shp_path, layer_name):
 # 图层样式设置函数
 # ============================================================
 
-def style_province_layer(layer):
+def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, extent):
+    """
+    创建省份标注点图层，支持震中附近省份标注自动偏移。
+
+    当省份质心与震中坐标重合时，标注点向右下角偏移3mm，避免遮挡震中五角星标识。
+
+    参数:
+        province_layer (QgsVectorLayer): 省界多边形图层
+        epicenter_lon (float): 震中经度（度）
+        epicenter_lat (float): 震中纬度（度）
+        extent (QgsRectangle 或 None): 地图范围，用于计算偏移量（mm转度）
+
+    返回:
+        QgsVectorLayer 或 None: 配置好标注的内存点图层，失败返回None
+    """
+    field_name = _find_name_field(province_layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
+    if not field_name:
+        print("[警告] 未找到省份名称字段，跳过省份标注图层创建")
+        return None
+
+    # 计算3mm对应的经纬度偏移量
+    if extent is not None:
+        map_width_deg = extent.width()
+        map_height_deg = extent.height()
+    else:
+        map_width_deg = 10.0
+        map_height_deg = 10.0
+
+    offset_mm = 3.0
+    lon_offset_deg = offset_mm / MAP_WIDTH_MM * map_width_deg   # 向右偏移（经度增大）
+    lat_offset_deg = offset_mm / MAP_WIDTH_MM * map_height_deg  # 向下偏移（纬度减小）
+
+    # 创建内存点图层
+    label_layer = QgsVectorLayer("Point?crs=EPSG:4326", "省份标注", "memory")
+    if not label_layer.isValid():
+        print("[错误] 无法创建省份标注内存图层")
+        return None
+
+    provider = label_layer.dataProvider()
+    provider.addAttributes([QgsField("province_name", QVariant.String)])
+    label_layer.updateFields()
+
+    layer_fields = label_layer.fields()
+    feats_to_add = []
+    offset_count = 0
+
+    for feat in province_layer.getFeatures():
+        geom = feat.geometry()
+        if geom is None or geom.isEmpty():
+            continue
+        centroid = geom.centroid()
+        if centroid is None or centroid.isEmpty():
+            continue
+        cx = centroid.asPoint().x()
+        cy = centroid.asPoint().y()
+
+        px, py = cx, cy
+        if abs(cx - epicenter_lon) < PROVINCE_EPICENTER_COINCIDENCE_TOL and abs(cy - epicenter_lat) < PROVINCE_EPICENTER_COINCIDENCE_TOL:
+            # 质心与震中重合，向右下角偏移3mm
+            px = cx + lon_offset_deg
+            py = cy - lat_offset_deg
+            offset_count += 1
+            print(f"[信息] 省份标注偏移：质心({cx:.6f}, {cy:.6f}) -> 偏移后({px:.6f}, {py:.6f})")
+
+        prov_name = feat[field_name]
+        new_feat = QgsFeature(layer_fields)
+        new_feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(px, py)))
+        new_feat.setAttribute("province_name", prov_name)
+        feats_to_add.append(new_feat)
+
+    if feats_to_add:
+        provider.addFeatures(feats_to_add)
+    label_layer.updateExtents()
+
+    print(f"[信息] 省份标注：共 {len(feats_to_add)} 个省份，其中 {offset_count} 个进行了偏移（向右下角3mm）")
+
+    # 设置透明点符号（只显示标注文字）
+    marker_symbol = QgsMarkerSymbol.createSimple({
+        "name": "circle", "size": "0",
+        "color": "0,0,0,0", "outline_color": "0,0,0,0",
+    })
+    label_layer.setRenderer(QgsSingleSymbolRenderer(marker_symbol))
+
+    # 配置标注样式
+    settings = QgsPalLayerSettings()
+    settings.fieldName = "province_name"
+    settings.placement = Qgis.LabelPlacement.OverPoint
+    settings.displayAll = True
+
+    text_format = QgsTextFormat()
+    font = QFont("SimHei", PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setFont(font)
+    text_format.setSize(PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    text_format.setColor(PROVINCE_LABEL_COLOR)
+
+    buffer_settings = QgsTextBufferSettings()
+    buffer_settings.setEnabled(True)
+    buffer_settings.setSize(0.8)
+    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+    buffer_settings.setColor(QColor(255, 255, 255))
+    text_format.setBuffer(buffer_settings)
+
+    settings.setFormat(text_format)
+    labeling = QgsVectorLayerSimpleLabeling(settings)
+    label_layer.setLabelsEnabled(True)
+    label_layer.setLabeling(labeling)
+
+    return label_layer
+
+
+def style_province_layer(layer, center_lon=None, center_lat=None, extent=None):
     """
     设置省界图层样式。
 
     参数:
         layer: QgsVectorLayer省界图层
+        center_lon (float 或 None): 震中经度，用于标注偏移判断
+        center_lat (float 或 None): 震中纬度，用于标注偏移判断
+        extent (QgsRectangle 或 None): 地图范围，用于计算偏移量
     """
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
@@ -841,7 +966,9 @@ def style_province_layer(layer):
     symbol = QgsFillSymbol()
     symbol.changeSymbolLayer(0, fill_sl)
     layer.renderer().setSymbol(symbol)
-    _setup_province_labels(layer)
+    if center_lon is None:
+        # 无震中信息时，直接在省界图层上配置标注
+        _setup_province_labels(layer)
     layer.triggerRepaint()
     print("[信息] 省界图层样式设置完成")
 
@@ -1027,7 +1154,7 @@ def create_epicenter_layer(longitude, latitude):
 
 def create_city_point_layer(extent):
     """
-    加载地级市点位数据。
+    加载地级市点位数据（不显示标注，只显示点位）。
 
     参数:
         extent: QgsRectangle地图范围
@@ -1079,12 +1206,11 @@ def create_city_point_layer(extent):
     symbol.appendSymbolLayer(inner_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
 
-    name_field = _find_name_field(layer, ["市", "NAME", "城市", "地名", "CITY", "市名", "地级市"])
-    if name_field:
-        _setup_point_labels(layer, name_field, CITY_LABEL_FONT_SIZE_PT, CITY_LABEL_COLOR)
+    # 不再设置标注，只显示点位
+    layer.setLabelsEnabled(False)
 
     layer.triggerRepaint()
-    print(f"[信息] 加载地级市点位图层完成")
+    print(f"[信息] 加载地级市点位图层完成（不显示标注）")
     return layer
 
 
@@ -1327,33 +1453,13 @@ def _add_north_arrow(layout, map_height_mm):
     arrow_x = map_right - NORTH_ARROW_WIDTH_MM
     arrow_y = map_top
 
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
-                                         QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    bg_shape.setFrameEnabled(True)
-    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(bg_shape)
-
     svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_temp.svg")
     create_north_arrow_svg(svg_path)
 
     north_arrow = QgsLayoutItemPicture(layout)
     north_arrow.setPicturePath(svg_path)
-    padding_x = 1.0
-    padding_y = 0.5
-    north_arrow.attemptMove(QgsLayoutPoint(arrow_x + padding_x, arrow_y + padding_y,
-                                           QgsUnitTypes.LayoutMillimeters))
-    north_arrow.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM - padding_x * 2,
-                                            NORTH_ARROW_HEIGHT_MM - padding_y * 2,
+    north_arrow.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
+    north_arrow.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
                                             QgsUnitTypes.LayoutMillimeters))
     north_arrow.setFrameEnabled(False)
     north_arrow.setBackgroundEnabled(False)
@@ -1661,30 +1767,68 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     # ========================================
     pop_legend_start_y = basic_legend_start_y + basic_legend_height + 2.0
 
-    # 人口密度标题
-    pop_title_left = QgsLayoutItemLabel(layout)
-    pop_title_left.setText("人口密度")
-    pop_title_left.setTextFormat(item_format)
-    pop_title_left.attemptMove(QgsLayoutPoint(legend_x + left_pad, pop_legend_start_y, QgsUnitTypes.LayoutMillimeters))
-    pop_title_left.attemptResize(QgsLayoutSize(14.0, 3.5, QgsUnitTypes.LayoutMillimeters))
-    pop_title_left.setHAlign(Qt.AlignLeft)
-    pop_title_left.setVAlign(Qt.AlignVCenter)
-    pop_title_left.setFrameEnabled(False)
-    pop_title_left.setBackgroundEnabled(False)
-    layout.addLayoutItem(pop_title_left)
+    # 人口密度标题：三段式组合"人口密度(" + "人/km²" + ")"
+    # 仅单位部分"人/km²"使用Times New Roman字体，其余使用SimHei字体
+    pop_title_cn_format = QgsTextFormat()
+    pop_title_cn_font = QFont("SimHei")
+    pop_title_cn_font.setPointSizeF(float(LEGEND_ITEM_FONT_SIZE_PT))
+    pop_title_cn_format.setFont(pop_title_cn_font)
+    pop_title_cn_format.setSize(float(LEGEND_ITEM_FONT_SIZE_PT))
+    pop_title_cn_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    pop_title_cn_format.setColor(QColor(0, 0, 0))
+
+    pop_title_tnr_format = QgsTextFormat()
+    pop_title_tnr_font = QFont("Times New Roman")
+    pop_title_tnr_font.setPointSizeF(float(LEGEND_ITEM_FONT_SIZE_PT))
+    pop_title_tnr_format.setFont(pop_title_tnr_font)
+    pop_title_tnr_format.setSize(float(LEGEND_ITEM_FONT_SIZE_PT))
+    pop_title_tnr_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    pop_title_tnr_format.setColor(QColor(0, 0, 0))
+
+    # 以组合方式居中显示"人口密度(人/km²)"，其中仅 人/km² 使用 Times New Roman
+    _pop_title_left_w = 18.5   # "人口密度(" 部分宽度（SimHei）
+    _pop_title_unit_w = 7.5    # "人/km²" 部分宽度（Times New Roman）
+    _pop_title_right_w = 2.0   # ")" 部分宽度（SimHei）
+    title_group_width = _pop_title_left_w + _pop_title_unit_w + _pop_title_right_w
+    title_group_x = legend_x + (legend_width - title_group_width) / 2.0
+
+    pop_title_cn_left = QgsLayoutItemLabel(layout)
+    pop_title_cn_left.setText("人口密度(")
+    pop_title_cn_left.setTextFormat(pop_title_cn_format)
+    pop_title_cn_left.attemptMove(QgsLayoutPoint(title_group_x, pop_legend_start_y,
+                                                  QgsUnitTypes.LayoutMillimeters))
+    pop_title_cn_left.attemptResize(QgsLayoutSize(_pop_title_left_w, 4.5, QgsUnitTypes.LayoutMillimeters))
+    pop_title_cn_left.setHAlign(Qt.AlignRight)
+    pop_title_cn_left.setVAlign(Qt.AlignVCenter)
+    pop_title_cn_left.setFrameEnabled(False)
+    pop_title_cn_left.setBackgroundEnabled(False)
+    layout.addLayoutItem(pop_title_cn_left)
 
     pop_title_unit = QgsLayoutItemLabel(layout)
-    pop_title_unit.setText("(人/km²)")
-    pop_title_unit.setTextFormat(population_format)
-    pop_title_unit.attemptMove(QgsLayoutPoint(legend_x + left_pad + 14.5, pop_legend_start_y,
+    pop_title_unit.setText("人/km²")
+    pop_title_unit.setTextFormat(pop_title_tnr_format)
+    # 轻微上移，修正 Times New Roman 基线偏低问题
+    pop_title_unit.attemptMove(QgsLayoutPoint(title_group_x + _pop_title_left_w, pop_legend_start_y - 0.4,
                                               QgsUnitTypes.LayoutMillimeters))
-    pop_title_unit.attemptResize(QgsLayoutSize(legend_width - left_pad - right_pad - 14.5, 3.5,
-                                               QgsUnitTypes.LayoutMillimeters))
-    pop_title_unit.setHAlign(Qt.AlignLeft)
+    pop_title_unit.attemptResize(QgsLayoutSize(_pop_title_unit_w, 4.5, QgsUnitTypes.LayoutMillimeters))
+    pop_title_unit.setHAlign(Qt.AlignHCenter)
     pop_title_unit.setVAlign(Qt.AlignVCenter)
     pop_title_unit.setFrameEnabled(False)
     pop_title_unit.setBackgroundEnabled(False)
     layout.addLayoutItem(pop_title_unit)
+
+    pop_title_cn_right = QgsLayoutItemLabel(layout)
+    pop_title_cn_right.setText(")")
+    pop_title_cn_right.setTextFormat(pop_title_cn_format)
+    pop_title_cn_right.attemptMove(QgsLayoutPoint(title_group_x + _pop_title_left_w + _pop_title_unit_w,
+                                                   pop_legend_start_y,
+                                                   QgsUnitTypes.LayoutMillimeters))
+    pop_title_cn_right.attemptResize(QgsLayoutSize(_pop_title_right_w, 4.5, QgsUnitTypes.LayoutMillimeters))
+    pop_title_cn_right.setHAlign(Qt.AlignLeft)
+    pop_title_cn_right.setVAlign(Qt.AlignVCenter)
+    pop_title_cn_right.setFrameEnabled(False)
+    pop_title_cn_right.setBackgroundEnabled(False)
+    layout.addLayoutItem(pop_title_cn_right)
 
     # 人口密度分档色块和标签
     # 修改为可调节间距
@@ -1953,93 +2097,138 @@ def _generate_earthquake_population_map_impl(longitude, latitude, magnitude,
     project.clear()
     project.setCrs(CRS_WGS84)
 
-    # 加载人口分布图底图（带渐变色渲染）
-    population_layer = load_population_raster(POPULATE_DIS_TIF_PATH)
-    if population_layer:
-        project.addMapLayer(population_layer)
+    # 临时注记底图文件路径
+    temp_annotation_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "_temp_annotation_population.png"
+    )
 
-    # 加载行政边界图层
-    county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
-    if county_layer:
-        style_county_layer(county_layer)
-        project.addMapLayer(county_layer)
+    try:
+        # ============================================================
+        # 下载天地图矢量注记瓦片（只下载注记，不下载底图）
+        # ============================================================
+        width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
+        height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
 
-    city_layer = load_vector_layer(CITY_SHP_PATH, "市界_地图")
-    if city_layer:
-        style_city_layer(city_layer)
-        project.addMapLayer(city_layer)
+        if annotation_path:
+            annotation_raster = QgsRasterLayer(annotation_path, "天地图注记", "gdal")
+            if not annotation_raster.isValid():
+                annotation_raster = None
+        else:
+            annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
 
-    province_layer = load_vector_layer(PROVINCE_SHP_PATH, "省界_地图")
-    if province_layer:
-        style_province_layer(province_layer)
-        project.addMapLayer(province_layer)
+        # 加载人口分布图底图（带渐变色渲染）
+        population_layer = load_population_raster(POPULATE_DIS_TIF_PATH)
+        if population_layer:
+            project.addMapLayer(population_layer)
 
-    # 加载地级市点位
-    city_point_layer = create_city_point_layer(extent)
-    if city_point_layer:
-        project.addMapLayer(city_point_layer)
+        # 加载行政边界图层
+        county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
+        if county_layer:
+            style_county_layer(county_layer)
+            project.addMapLayer(county_layer)
 
-    # 创建图例用图层
-    province_legend_layer = create_province_legend_layer()
-    if province_legend_layer:
-        project.addMapLayer(province_legend_layer)
+        city_layer = load_vector_layer(CITY_SHP_PATH, "市界_地图")
+        if city_layer:
+            style_city_layer(city_layer)
+            project.addMapLayer(city_layer)
 
-    city_legend_layer = create_city_legend_layer()
-    if city_legend_layer:
-        project.addMapLayer(city_legend_layer)
+        province_layer = load_vector_layer(PROVINCE_SHP_PATH, "省界_地图")
+        if province_layer:
+            style_province_layer(province_layer, center_lon=longitude, center_lat=latitude, extent=extent)
+            project.addMapLayer(province_layer)
 
-    county_legend_layer = create_county_legend_layer()
-    if county_legend_layer:
-        project.addMapLayer(county_legend_layer)
+        # 创建省份标注图层（支持震中附近省份标注自动偏移）
+        province_label_layer = None
+        if province_layer:
+            province_label_layer = create_province_label_layer(province_layer, longitude, latitude, extent)
+            if province_label_layer:
+                project.addMapLayer(province_label_layer)
 
-    intensity_legend_layer = create_intensity_legend_layer()
-    if intensity_legend_layer:
-        project.addMapLayer(intensity_legend_layer)
+        # 加载地级市点位
+        city_point_layer = create_city_point_layer(extent)
+        if city_point_layer:
+            project.addMapLayer(city_point_layer)
 
-    # 解析并添加烈度圈
-    intensity_data = []
-    intensity_layer = None
-    if kml_path:
-        abs_kml = kml_path
-        if not os.path.isabs(kml_path):
-            abs_kml = resolve_path(kml_path)
-        intensity_data = parse_intensity_kml(abs_kml)
-        if intensity_data:
-            intensity_layer = create_intensity_layer(intensity_data)
-            if intensity_layer:
-                project.addMapLayer(intensity_layer)
+        # 创建图例用图层
+        province_legend_layer = create_province_legend_layer()
+        if province_legend_layer:
+            project.addMapLayer(province_legend_layer)
 
-    # 创建震中图层
-    epicenter_layer = create_epicenter_layer(longitude, latitude)
-    if epicenter_layer:
-        project.addMapLayer(epicenter_layer)
+        city_legend_layer = create_city_legend_layer()
+        if city_legend_layer:
+            project.addMapLayer(city_legend_layer)
 
-    # 创建打印布局
-    # 按渲染顺序排列图层（列表第一项在最上层）
-    ordered_layers = [lyr for lyr in [
-        epicenter_layer,
-        locals().get('intensity_layer'),
-        locals().get('city_point_layer'),
-        locals().get('province_layer'),
-        locals().get('city_layer'),
-        locals().get('county_layer'),
-        locals().get('population_layer'),
-    ] if lyr is not None]
+        county_legend_layer = create_county_legend_layer()
+        if county_legend_layer:
+            project.addMapLayer(county_legend_layer)
 
-    layout = create_print_layout(project, longitude, latitude, magnitude,
-                                 extent, scale, map_height_mm,
-                                 ordered_layers=ordered_layers)
+        intensity_legend_layer = create_intensity_legend_layer()
+        if intensity_legend_layer:
+            project.addMapLayer(intensity_legend_layer)
 
-    # 导出PNG
-    result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
+        # 解析并添加烈度圈
+        intensity_data = []
+        intensity_layer = None
+        if kml_path:
+            abs_kml = kml_path
+            if not os.path.isabs(kml_path):
+                abs_kml = resolve_path(kml_path)
+            intensity_data = parse_intensity_kml(abs_kml)
+            if intensity_data:
+                intensity_layer = create_intensity_layer(intensity_data)
+                if intensity_layer:
+                    project.addMapLayer(intensity_layer)
 
-    # 清理临时文件
-    svg_temp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_temp.svg")
-    if os.path.exists(svg_temp):
-        try:
-            os.remove(svg_temp)
-        except OSError:
-            pass
+        # 创建震中图层
+        epicenter_layer = create_epicenter_layer(longitude, latitude)
+        if epicenter_layer:
+            project.addMapLayer(epicenter_layer)
+
+        # 添加注记图层到项目（如果下载成功）
+        if annotation_raster:
+            project.addMapLayer(annotation_raster)
+
+        # 创建打印布局
+        # 按渲染顺序排列图层（列表第一项在最上层）
+        # 震中图层放在最上层，确保震中五角星不被注记图层遮挡
+        ordered_layers = [lyr for lyr in [
+            epicenter_layer,        # 震中放在最上层，显示在注记之上
+            annotation_raster,      # 天地图注记
+            intensity_layer,
+            city_point_layer,
+            province_label_layer,   # 省份标注图层（在省界图层之上）
+            province_layer,
+            city_layer,
+            county_layer,
+            population_layer,
+        ] if lyr is not None]
+
+        layout = create_print_layout(project, longitude, latitude, magnitude,
+                                     extent, scale, map_height_mm,
+                                     ordered_layers=ordered_layers)
+
+        # 导出PNG
+        result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
+
+    finally:
+        # 清理临时文件
+        svg_temp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_temp.svg")
+        if os.path.exists(svg_temp):
+            try:
+                os.remove(svg_temp)
+            except OSError:
+                pass
+
+        # 清理临时注记底图文件
+        if not annotation_path and os.path.exists(temp_annotation_path):
+            try:
+                os.remove(temp_annotation_path)
+                pgw_path = temp_annotation_path.replace(".png", ".pgw")
+                if os.path.exists(pgw_path):
+                    os.remove(pgw_path)
+            except OSError:
+                pass
 
     print("=" * 60)
     if result:
