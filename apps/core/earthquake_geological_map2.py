@@ -1202,12 +1202,13 @@ def create_city_point_layer(extent):
     symbol.appendSymbolLayer(inner_sl)
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
 
-    name_field = _find_name_field(layer, ["市", "NAME", "城市", "地名", "CITY", "市名", "地级市"])
-    if name_field:
-        _setup_point_labels(layer, name_field, CITY_LABEL_FONT_SIZE_PT, CITY_LABEL_COLOR)
+    # 注释掉地级市名称标注设置，仅保留点位符号显示
+    # name_field = _find_name_field(layer, ["市", "NAME", "城市", "地名", "CITY", "市名", "地级市"])
+    # if name_field:
+    #     _setup_point_labels(layer, name_field, CITY_LABEL_FONT_SIZE_PT, CITY_LABEL_COLOR)
 
     layer.triggerRepaint()
-    print(f"[信息] 加载地级市点位图层完成")
+    print(f"[信息] 加载地级市点位图层完成（不显示名称标注）")
     return layer
 
 
@@ -2290,5 +2291,5 @@ if __name__ == "__main__":
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_geology_map(
             longitude=116.18, latitude=39.63,
-            magnitude=7.8, output_path="earthquake_geology_tangshan_M7.8.png"
+            magnitude=3.8, output_path="earthquake_geology_tangshan_M7.8.png"
         )
