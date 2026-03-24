@@ -39,7 +39,7 @@ except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
 
-from core.tianditu_basemap_downloader import download_tianditu_annotation_tiles
+from tianditu_basemap_downloader import download_tianditu_annotation_tiles
 
 # ============================================================
 # 日志配置
@@ -179,7 +179,7 @@ NORTH_ARROW_WIDTH_MM = 12.0
 NORTH_ARROW_HEIGHT_MM = 18.0
 
 # === 经纬度字体(pt) ===
-LONLAT_FONT_SIZE_PT = 8
+LONLAT_FONT_SIZE_PT = 10
 
 # === 省界样式 ===
 PROVINCE_COLOR = QColor(160, 160, 160)
@@ -206,7 +206,7 @@ CITY_LABEL_COLOR = QColor(0, 0, 0)
 # === 图例字体 ===
 LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
-LEGEND_ELEVATION_FONT_SIZE_PT = 12  # 高程图例字体大小
+LEGEND_ELEVATION_FONT_SIZE_PT = 10  # 高程图例字体大小
 
 # === 基本图例项配置（可单独设置） ===
 BASIC_LEGEND_FONT_SIZE_PT = 10  # 基本图例项字体大小
@@ -239,7 +239,7 @@ INTENSITY_LEGEND_LINE_WIDTH_MM = 0.5
 # === 高程分档配置 ===
 # 五档高程范围和对应颜色（从低到高）
 ELEVATION_CLASSES = [
-    {"min": -32618.999, "max": 500.0, "color": QColor(175, 240, 233), "label": "-32,618~500"},
+    {"min": 0, "max": 500.0, "color": QColor(175, 240, 233), "label": "0~500"},
     {"min": 500.001, "max": 1000.0, "color": QColor(28, 159, 44), "label": "500~1,000"},
     {"min": 1000.001, "max": 2000.0, "color": QColor(187, 81, 13), "label": "1,000~2,000"},
     {"min": 2000.001, "max": 4000.0, "color": QColor(139, 90, 43), "label": "2,000~4,000"},
@@ -2146,7 +2146,7 @@ def _generate_earthquake_elevation_map_impl(longitude, latitude, magnitude,
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()
@@ -2613,6 +2613,6 @@ if __name__ == "__main__":
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_elevation_map(
             longitude=118.18, latitude=39.63,
-            magnitude=7.8, output_path="earthquake_elevation_tangshan_M7.8.png"
+            magnitude=2.8, output_path="earthquake_elevation_tangshan_M7.8.png"
         )
 
