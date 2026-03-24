@@ -186,6 +186,7 @@ PROVINCE_COLOR = QColor(160, 160, 160)
 PROVINCE_LINE_WIDTH_MM = 0.4
 PROVINCE_LABEL_FONT_SIZE_PT = 8
 PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
+PROVINCE_EPICENTER_COINCIDENCE_TOL = 1e-6
 
 # === 市界样式 ===
 CITY_COLOR = QColor(160, 160, 160)
@@ -1030,12 +1031,152 @@ def load_vector_layer(shp_path, layer_name):
 # 图层样式设置函数
 # ============================================================
 
-def style_province_layer(layer):
+def _find_name_field(layer, candidates):
+    """
+    在矢量图层字段列表中查找名称字段
+
+    参数:
+        layer (QgsVectorLayer): 矢量图层
+        candidates (list): 候选字段名列表
+
+    返回:
+        str: 找到的字段名，未找到返回None
+    """
+    fields = layer.fields()
+    field_names = [f.name() for f in fields]
+    for candidate in candidates:
+        if candidate in field_names:
+            return candidate
+    for candidate in candidates:
+        for fn in field_names:
+            if candidate.lower() in fn.lower():
+                return fn
+    for f in fields:
+        if f.type() == QVariant.String:
+            return f.name()
+    return None
+
+
+def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, extent):
+    """
+    创建省份标注点图层，支持震中附近省份标注自动偏移。
+
+    当省份质心与震中坐标重合时，标注点向右下角偏移3mm，避免遮挡震中五角星标识。
+
+    参数:
+        province_layer (QgsVectorLayer): 省界多边形图层
+        epicenter_lon (float): 震中经度（度）
+        epicenter_lat (float): 震中纬度（度）
+        extent (QgsRectangle 或 None): 地图范围，用于计算偏移量（mm转度）
+
+    返回:
+        QgsVectorLayer 或 None: 配置好标注的内存点图层，失败返回None
+    """
+    field_name = _find_name_field(province_layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
+    if not field_name:
+        print("[警告] 未找到省份名称字段，跳过省份标注图层创建")
+        return None
+
+    # 计算3mm对应的经纬度偏移量
+    if extent is not None:
+        map_width_deg = extent.width()
+        map_height_deg = extent.height()
+    else:
+        map_width_deg = 10.0
+        map_height_deg = 10.0
+
+    offset_mm = 3.0
+    lon_offset_deg = offset_mm / MAP_WIDTH_MM * map_width_deg   # 向右偏移（经度增大）
+    lat_offset_deg = offset_mm / MAP_WIDTH_MM * map_height_deg  # 向下偏移（纬度减小）
+
+    # 创建内存点图层
+    label_layer = QgsVectorLayer("Point?crs=EPSG:4326", "省份标注", "memory")
+    if not label_layer.isValid():
+        print("[错误] 无法创建省份标注内存图层")
+        return None
+
+    provider = label_layer.dataProvider()
+    provider.addAttributes([QgsField("province_name", QVariant.String)])
+    label_layer.updateFields()
+
+    layer_fields = label_layer.fields()
+    feats_to_add = []
+    offset_count = 0
+
+    for feat in province_layer.getFeatures():
+        geom = feat.geometry()
+        if geom is None or geom.isEmpty():
+            continue
+        centroid = geom.centroid()
+        if centroid is None or centroid.isEmpty():
+            continue
+        cx = centroid.asPoint().x()
+        cy = centroid.asPoint().y()
+
+        px, py = cx, cy
+        if abs(cx - epicenter_lon) < PROVINCE_EPICENTER_COINCIDENCE_TOL and abs(cy - epicenter_lat) < PROVINCE_EPICENTER_COINCIDENCE_TOL:
+            # 质心与震中重合，向右下角偏移3mm
+            px = cx + lon_offset_deg
+            py = cy - lat_offset_deg
+            offset_count += 1
+            print(f"[信息] 省份标注偏移：质心({cx:.6f}, {cy:.6f}) -> 偏移后({px:.6f}, {py:.6f})")
+
+        prov_name = feat[field_name]
+        new_feat = QgsFeature(layer_fields)
+        new_feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(px, py)))
+        new_feat.setAttribute("province_name", prov_name)
+        feats_to_add.append(new_feat)
+
+    if feats_to_add:
+        provider.addFeatures(feats_to_add)
+    label_layer.updateExtents()
+
+    print(f"[信息] 省份标注：共 {len(feats_to_add)} 个省份，其中 {offset_count} 个进行了偏移（向右下角3mm）")
+
+    # 设置透明点符号（只显示标注文字）
+    marker_symbol = QgsMarkerSymbol.createSimple({
+        "name": "circle", "size": "0",
+        "color": "0,0,0,0", "outline_color": "0,0,0,0",
+    })
+    label_layer.setRenderer(QgsSingleSymbolRenderer(marker_symbol))
+
+    # 配置标注样式
+    settings = QgsPalLayerSettings()
+    settings.fieldName = "province_name"
+    settings.placement = Qgis.LabelPlacement.OverPoint
+    settings.displayAll = True
+
+    text_format = QgsTextFormat()
+    font = QFont("SimHei", PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setFont(font)
+    text_format.setSize(PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    text_format.setColor(PROVINCE_LABEL_COLOR)
+
+    buffer_settings = QgsTextBufferSettings()
+    buffer_settings.setEnabled(True)
+    buffer_settings.setSize(0.8)
+    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+    buffer_settings.setColor(QColor(255, 255, 255))
+    text_format.setBuffer(buffer_settings)
+
+    settings.setFormat(text_format)
+    labeling = QgsVectorLayerSimpleLabeling(settings)
+    label_layer.setLabelsEnabled(True)
+    label_layer.setLabeling(labeling)
+
+    return label_layer
+
+
+def style_province_layer(layer, center_lon=None, center_lat=None, extent=None):
     """
     设置省界图层样式
 
     参数:
         layer (QgsVectorLayer): 省界图层
+        center_lon (float 或 None): 震中经度，用于标注偏移判断
+        center_lat (float 或 None): 震中纬度，用于标注偏移判断
+        extent (QgsRectangle 或 None): 地图范围，用于计算偏移量
     """
     fill_sl = QgsSimpleFillSymbolLayer()
     fill_sl.setColor(QColor(0, 0, 0, 0))
@@ -1047,7 +1188,9 @@ def style_province_layer(layer):
     symbol = QgsFillSymbol()
     symbol.changeSymbolLayer(0, fill_sl)
     layer.renderer().setSymbol(symbol)
-    _setup_province_labels(layer)
+    if center_lon is None:
+        # 无震中信息时，直接在省界图层上配置标注
+        _setup_province_labels(layer)
     layer.triggerRepaint()
     print("[信息] 省界图层样式设置完成")
 
@@ -1503,33 +1646,13 @@ def _add_north_arrow(layout, map_height_mm):
     arrow_x = map_right - NORTH_ARROW_WIDTH_MM
     arrow_y = map_top
 
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
-                                         QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    bg_shape.setFrameEnabled(True)
-    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(bg_shape)
-
     svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_elevation_temp.svg")
     create_north_arrow_svg(svg_path)
 
     north_arrow = QgsLayoutItemPicture(layout)
     north_arrow.setPicturePath(svg_path)
-    padding_x = 1.0
-    padding_y = 0.5
-    north_arrow.attemptMove(QgsLayoutPoint(arrow_x + padding_x, arrow_y + padding_y,
-                                           QgsUnitTypes.LayoutMillimeters))
-    north_arrow.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM - padding_x * 2,
-                                            NORTH_ARROW_HEIGHT_MM - padding_y * 2,
+    north_arrow.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
+    north_arrow.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
                                             QgsUnitTypes.LayoutMillimeters))
     north_arrow.setFrameEnabled(False)
     north_arrow.setBackgroundEnabled(False)
@@ -2200,8 +2323,15 @@ def _generate_earthquake_elevation_map_impl(longitude, latitude, magnitude,
         # 加载省界图层
         province_layer = load_vector_layer(PROVINCE_SHP_PATH, "省界_地图")
         if province_layer:
-            style_province_layer(province_layer)
+            style_province_layer(province_layer, center_lon=longitude, center_lat=latitude, extent=extent)
             project.addMapLayer(province_layer)
+
+        # 创建省份标注图层（支持震中附近省份标注自动偏移）
+        province_label_layer = None
+        if province_layer:
+            province_label_layer = create_province_label_layer(province_layer, longitude, latitude, extent)
+            if province_label_layer:
+                project.addMapLayer(province_label_layer)
 
         # 加载地级市点位图层（不显示标注）
         city_point_layer = create_city_point_layer(extent)
@@ -2254,6 +2384,7 @@ def _generate_earthquake_elevation_map_impl(longitude, latitude, magnitude,
             annotation_raster,  # 天地图注记
             intensity_layer,
             city_point_layer,
+            province_label_layer,   # 省份标注图层（在省界图层之上）
             province_layer,
             city_layer,
             county_layer,
