@@ -169,7 +169,7 @@ NORTH_ARROW_WIDTH_MM = 12.0
 NORTH_ARROW_HEIGHT_MM = 18.0
 
 # === 经纬度字体(pt) ===
-LONLAT_FONT_SIZE_PT = 8
+LONLAT_FONT_SIZE_PT = 10
 
 # === 省界样式 ===
 PROVINCE_COLOR = QColor(160, 160, 160)
@@ -198,8 +198,8 @@ CITY_LABEL_COLOR = QColor(0, 0, 0)
 
 # === 图例字体 ===
 LEGEND_TITLE_FONT_SIZE_PT = 12
-LEGEND_ITEM_FONT_SIZE_PT = 9
-LEGEND_POPULATION_FONT_SIZE_PT = 9  # 人口图例字体大小
+LEGEND_ITEM_FONT_SIZE_PT = 10
+LEGEND_POPULATION_FONT_SIZE_PT = 10  # 人口图例字体大小
 
 # === 图例尺寸 ===
 LEGEND_WIDTH_MM = 35.0  # 图例宽度
@@ -1786,14 +1786,14 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     pop_title_tnr_format.setColor(QColor(0, 0, 0))
 
     # 以组合方式居中显示"人口密度(人/km²)"，其中仅 人/km² 使用 Times New Roman
-    _pop_title_left_w = 18.5   # "人口密度(" 部分宽度（SimHei）
+    _pop_title_left_w = 20.5   # "人口密度(" 部分宽度（SimHei）
     _pop_title_unit_w = 7.5    # "人/km²" 部分宽度（Times New Roman）
-    _pop_title_right_w = 2.0   # ")" 部分宽度（SimHei）
+    _pop_title_right_w = 6.0   # ")" 部分宽度（SimHei）
     title_group_width = _pop_title_left_w + _pop_title_unit_w + _pop_title_right_w
     title_group_x = legend_x + (legend_width - title_group_width) / 2.0
 
     pop_title_cn_left = QgsLayoutItemLabel(layout)
-    pop_title_cn_left.setText("人口密度(")
+    pop_title_cn_left.setText("人口密度( ")
     pop_title_cn_left.setTextFormat(pop_title_cn_format)
     pop_title_cn_left.attemptMove(QgsLayoutPoint(title_group_x, pop_legend_start_y,
                                                   QgsUnitTypes.LayoutMillimeters))
@@ -1818,7 +1818,7 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     layout.addLayoutItem(pop_title_unit)
 
     pop_title_cn_right = QgsLayoutItemLabel(layout)
-    pop_title_cn_right.setText(")")
+    pop_title_cn_right.setText(" )")
     pop_title_cn_right.setTextFormat(pop_title_cn_format)
     pop_title_cn_right.attemptMove(QgsLayoutPoint(title_group_x + _pop_title_left_w + _pop_title_unit_w,
                                                    pop_legend_start_y,
@@ -2089,7 +2089,7 @@ def _generate_earthquake_population_map_impl(longitude, latitude, magnitude,
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     # 创建项目
