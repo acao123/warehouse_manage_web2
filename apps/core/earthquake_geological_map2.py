@@ -25,10 +25,19 @@ from xml.etree import ElementTree as ET
 # ============================================================
 try:
     from django.conf import settings as _django_settings
+
     _DJANGO_AVAILABLE = True
 except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
+
+# ============================================================
+# 天地图下载模块导入
+# ============================================================
+from tianditu_basemap_downloader import (
+    download_tianditu_basemap_tiles,
+    download_tianditu_annotation_tiles,
+)
 
 # ============================================================
 # 日志配置
@@ -86,7 +95,6 @@ from qgis.core import (
 )
 from qgis.PyQt.QtCore import Qt, QVariant, QRectF
 from qgis.PyQt.QtGui import QColor, QFont
-
 
 # ============================================================
 # 常量定义
@@ -160,29 +168,25 @@ NORTH_ARROW_WIDTH_MM = 12.0
 NORTH_ARROW_HEIGHT_MM = 18.0
 
 # === 经纬度字体(pt) ===
-LONLAT_FONT_SIZE_PT = 8
+LONLAT_FONT_SIZE_PT = 10
 
 # === 省界样式 ===
 PROVINCE_COLOR = QColor(160, 160, 160)
 PROVINCE_LINE_WIDTH_MM = 0.4
 PROVINCE_LABEL_FONT_SIZE_PT = 8
 PROVINCE_LABEL_COLOR = QColor(77, 77, 77)
+# 省份质心与震中坐标重合判断容差（约0.1米精度，用于浮点数相等比较）
+PROVINCE_EPICENTER_COINCIDENCE_TOL = 1e-6
 
 # === 市界样式 ===
 CITY_COLOR = QColor(160, 160, 160)
 CITY_LINE_WIDTH_MM = 0.24
-# 虚线间隔: 0.3mm
-# 虚线模式：[线段长度, 间隔长度]，单位为线宽的倍数
-# 0.3mm间隔 / 0.24mm线宽 = 1.25倍
 CITY_DASH_GAP_MM = 0.3
 CITY_DASH_PATTERN = [8.0, CITY_DASH_GAP_MM / CITY_LINE_WIDTH_MM]
 
 # === 县界样式 ===
 COUNTY_COLOR = QColor(160, 160, 160)
 COUNTY_LINE_WIDTH_MM = 0.14
-# 虚线间隔: 0.2mm
-# 虚线模式：[线段长度, 间隔长度]，单位为线宽的倍数
-# 0.2mm间隔 / 0.14mm线宽 ≈ 1.43倍
 COUNTY_DASH_GAP_MM = 0.2
 COUNTY_DASH_PATTERN = [10.0, COUNTY_DASH_GAP_MM / COUNTY_LINE_WIDTH_MM]
 
@@ -191,9 +195,11 @@ CITY_LABEL_FONT_SIZE_PT = 9
 CITY_LABEL_COLOR = QColor(0, 0, 0)
 
 # === 图例字体 ===
-LEGEND_TITLE_FONT_SIZE_PT = 10
-LEGEND_ITEM_FONT_SIZE_PT = 8
-LEGEND_YANXING_FONT_SIZE_PT = 7  # 岩性图例字体大小，可调整
+LEGEND_TITLE_FONT_SIZE_PT = 12
+LEGEND_ITEM_FONT_SIZE_PT = 10
+LEGEND_YANXING_FONT_SIZE_PT = 7
+# 工程岩土体分组标题字体大小
+LEGEND_YANXING_TITLE_FONT_SIZE_PT = 10
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -217,6 +223,7 @@ INTENSITY_LEGEND_LINE_WIDTH_MM = 0.5
 
 # WGS84
 CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
+
 
 # ============================================================
 # 工具函数
@@ -536,7 +543,7 @@ def _get_raster_layer_colors(raster_layer):
                 color_map[val] = (color.red(), color.green(), color.blue(), 255)
             except (ValueError, TypeError):
                 continue
-        print(f"  ��栅格图层渲染器获取颜色，共 {len(color_map)} 个条目")
+        print(f"  从栅格图层渲染器获取颜色，共 {len(color_map)} 个条目")
 
     return color_map
 
@@ -828,7 +835,7 @@ def load_geology_raster(tif_path):
     if not layer.isValid():
         print(f"[错误] 无法加载地质构造底图: {abs_path}")
         return None
-    print(f"[信息] 成功加载地质构造底图: {abs_path}")
+    print(f"[信息] ���功加载地质构造底图: {abs_path}")
     return layer
 
 
@@ -862,9 +869,153 @@ def style_province_layer(layer):
     symbol = QgsFillSymbol()
     symbol.changeSymbolLayer(0, fill_sl)
     layer.renderer().setSymbol(symbol)
-    _setup_province_labels(layer)
     layer.triggerRepaint()
     print("[信息] 省界图层样式设置完成")
+
+
+def _setup_province_labels(layer):
+    """配置省界图层标注"""
+    field_name = _find_name_field(layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
+    if not field_name:
+        print("[警告] 未找到省份名称字段，跳过标注设置")
+        return
+
+    settings = QgsPalLayerSettings()
+    settings.fieldName = field_name
+    settings.placement = Qgis.LabelPlacement.OverPoint
+    settings.displayAll = True
+
+    text_format = QgsTextFormat()
+    font = QFont("SimHei", PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setFont(font)
+    text_format.setSize(PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    text_format.setColor(PROVINCE_LABEL_COLOR)
+
+    buffer_settings = QgsTextBufferSettings()
+    buffer_settings.setEnabled(True)
+    buffer_settings.setSize(0.8)
+    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+    buffer_settings.setColor(QColor(255, 255, 255))
+    text_format.setBuffer(buffer_settings)
+
+    settings.setFormat(text_format)
+    labeling = QgsVectorLayerSimpleLabeling(settings)
+    layer.setLabelsEnabled(True)
+    layer.setLabeling(labeling)
+    print(f"[信息] 省界标注已配置，字段: {field_name}")
+
+
+def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, extent):
+    """
+    创建省份标注点图层，支持震中附近省份标注自动偏移。
+
+    当省份质心与震中坐标重合时，标注点向右下角偏移3mm，避免遮挡震中五角星标识。
+
+    参数:
+        province_layer (QgsVectorLayer): 省界多边形图层
+        epicenter_lon (float): 震中经度（度）
+        epicenter_lat (float): 震中纬度（度）
+        extent (QgsRectangle 或 None): 地图范围，用于计算偏移量（mm转度）
+
+    返回:
+        QgsVectorLayer 或 None: 配置好标注的内存点图层，失败返回None
+    """
+    field_name = _find_name_field(province_layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
+    if not field_name:
+        print("[警告] 未找到省份名称字段，跳过省份标注图层创建")
+        return None
+
+    # 计算3mm对应的经纬度偏移量
+    if extent is not None:
+        map_width_deg = extent.width()
+        map_height_deg = extent.height()
+    else:
+        map_width_deg = 10.0
+        map_height_deg = 10.0
+
+    offset_mm = 3.0
+    lon_offset_deg = offset_mm / MAP_WIDTH_MM * map_width_deg  # 向右偏移（经度增大）
+    lat_offset_deg = offset_mm / MAP_WIDTH_MM * map_height_deg  # 向下偏移（纬度减小）
+
+    # 创建内存点图层
+    label_layer = QgsVectorLayer("Point?crs=EPSG:4326", "省份标注", "memory")
+    if not label_layer.isValid():
+        print("[错误] 无法创建省份标注内存图层")
+        return None
+
+    provider = label_layer.dataProvider()
+    provider.addAttributes([QgsField("province_name", QVariant.String)])
+    label_layer.updateFields()
+
+    layer_fields = label_layer.fields()
+    feats_to_add = []
+    offset_count = 0
+
+    for feat in province_layer.getFeatures():
+        geom = feat.geometry()
+        if geom is None or geom.isEmpty():
+            continue
+        centroid = geom.centroid()
+        if centroid is None or centroid.isEmpty():
+            continue
+        cx = centroid.asPoint().x()
+        cy = centroid.asPoint().y()
+
+        px, py = cx, cy
+        if abs(cx - epicenter_lon) < PROVINCE_EPICENTER_COINCIDENCE_TOL and abs(
+                cy - epicenter_lat) < PROVINCE_EPICENTER_COINCIDENCE_TOL:
+            # 质心与震中重合，向右下角偏移3mm
+            px = cx + lon_offset_deg
+            py = cy - lat_offset_deg
+            offset_count += 1
+            print(f"[信息] 省份标注偏移：质心({cx:.6f}, {cy:.6f}) -> 偏移后({px:.6f}, {py:.6f})")
+
+        prov_name = feat[field_name]
+        new_feat = QgsFeature(layer_fields)
+        new_feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(px, py)))
+        new_feat.setAttribute("province_name", prov_name)
+        feats_to_add.append(new_feat)
+
+    if feats_to_add:
+        provider.addFeatures(feats_to_add)
+    label_layer.updateExtents()
+
+    print(f"[信息] 省份标注：共 {len(feats_to_add)} 个省份，其中 {offset_count} 个进行了偏移（向右下角3mm）")
+
+    # 设置透明点符号（只显示标注文字）
+    marker_symbol = QgsMarkerSymbol.createSimple({
+        "name": "circle", "size": "0",
+        "color": "0,0,0,0", "outline_color": "0,0,0,0",
+    })
+    label_layer.setRenderer(QgsSingleSymbolRenderer(marker_symbol))
+
+    # 配置标注样式
+    settings = QgsPalLayerSettings()
+    settings.fieldName = "province_name"
+    settings.placement = Qgis.LabelPlacement.OverPoint
+    settings.displayAll = True
+
+    text_format = QgsTextFormat()
+    font = QFont("SimHei", PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setFont(font)
+    text_format.setSize(PROVINCE_LABEL_FONT_SIZE_PT)
+    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    text_format.setColor(PROVINCE_LABEL_COLOR)
+
+    buffer_settings = QgsTextBufferSettings()
+    buffer_settings.setEnabled(True)
+    buffer_settings.setSize(0.8)
+    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+    buffer_settings.setColor(QColor(255, 255, 255))
+    text_format.setBuffer(buffer_settings)
+
+    settings.setFormat(text_format)
+    labeling = QgsVectorLayerSimpleLabeling(settings)
+    label_layer.setLabelsEnabled(True)
+    label_layer.setLabeling(labeling)
+
+    return label_layer
 
 
 def style_city_layer(layer):
@@ -887,9 +1038,6 @@ def style_city_layer(layer):
     fill_sl.setPenJoinStyle(Qt.MiterJoin)
 
     # 设置自定义虚线向量
-    # QGIS 3.40.15 中 QgsSimpleFillSymbolLayer 支持通过属性设置自定义虚线
-    # 虚线模式: [线段长度, 间隔长度]，单位为线宽的倍数
-    # 线段长度设为合适值，间隔 = 0.3mm / 0.24mm = 1.25 倍线宽
     dash_pattern = [4.0, CITY_DASH_GAP_MM / CITY_LINE_WIDTH_MM]
 
     # 使用 setCustomDashVector 方法（如果可用）
@@ -928,8 +1076,6 @@ def style_county_layer(layer):
     fill_sl.setPenJoinStyle(Qt.MiterJoin)
 
     # 设置自定义虚线向量
-    # 虚线模式: [线段长度, 间隔长度]，单位为线宽的倍数
-    # 线段长度设为合适值，间隔 = 0.2mm / 0.14mm ≈ 1.43 倍线宽
     dash_pattern = [7.0, COUNTY_DASH_GAP_MM / COUNTY_LINE_WIDTH_MM]
 
     # 使用 setCustomDashVector 方法（如果可用）
@@ -946,39 +1092,6 @@ def style_county_layer(layer):
     print(
         f"[信息] 县界图层样式设置完成 - 颜色: RGB({COUNTY_COLOR.red()},{COUNTY_COLOR.green()},{COUNTY_COLOR.blue()}), "
         f"线宽: {COUNTY_LINE_WIDTH_MM}mm, 虚线间隔: {COUNTY_DASH_GAP_MM}mm")
-
-
-def _setup_province_labels(layer):
-    """配置省界图层标注"""
-    field_name = _find_name_field(layer, ["省", "NAME", "name", "省名", "PROVINCE", "省份"])
-    if not field_name:
-        print("[警告] 未找到省份名称字段，跳过标注设置")
-        return
-
-    settings = QgsPalLayerSettings()
-    settings.fieldName = field_name
-    settings.placement = Qgis.LabelPlacement.OverPoint
-    settings.displayAll = True
-
-    text_format = QgsTextFormat()
-    font = QFont("SimHei", PROVINCE_LABEL_FONT_SIZE_PT)
-    text_format.setFont(font)
-    text_format.setSize(PROVINCE_LABEL_FONT_SIZE_PT)
-    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    text_format.setColor(PROVINCE_LABEL_COLOR)
-
-    buffer_settings = QgsTextBufferSettings()
-    buffer_settings.setEnabled(True)
-    buffer_settings.setSize(0.8)
-    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
-    buffer_settings.setColor(QColor(255, 255, 255))
-    text_format.setBuffer(buffer_settings)
-
-    settings.setFormat(text_format)
-    labeling = QgsVectorLayerSimpleLabeling(settings)
-    layer.setLabelsEnabled(True)
-    layer.setLabeling(labeling)
-    print(f"[信息] 省界标注已配置，字段: {field_name}")
 
 
 def _setup_point_labels(layer, field_name, font_size_pt, color):
@@ -1195,11 +1308,13 @@ def create_county_legend_layer():
     print(f"[信息] 创建县界图例线图层 - 线宽: {COUNTY_LINE_WIDTH_MM}mm, 虚线间隔: {COUNTY_DASH_GAP_MM}mm")
     return layer
 
+
 # ============================================================
 # 布局创建
 # ============================================================
 
-def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm, yanxing_list=None, ordered_layers=None):
+def create_print_layout(project, longitude, latitude, magnitude, extent, scale, map_height_mm, yanxing_list=None,
+                        ordered_layers=None):
     """创建QGIS打印布局"""
     layout = QgsPrintLayout(project)
     layout.initializeDefaults()
@@ -1287,28 +1402,13 @@ def _setup_map_grid(map_item, extent):
 
 
 def _add_north_arrow(layout, map_height_mm):
-    """添加指北针"""
+    """添加指北针（删除边框）"""
     map_right = BORDER_LEFT_MM + MAP_WIDTH_MM
     map_top = BORDER_TOP_MM
     arrow_x = map_right - NORTH_ARROW_WIDTH_MM
     arrow_y = map_top
 
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
-                                         QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    bg_shape.setFrameEnabled(True)
-    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(bg_shape)
-
+    # 创建指北针SVG并添加图片项（无背景边框）
     svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_temp.svg")
     create_north_arrow_svg(svg_path)
 
@@ -1324,7 +1424,7 @@ def _add_north_arrow(layout, map_height_mm):
     north_arrow.setFrameEnabled(False)
     north_arrow.setBackgroundEnabled(False)
     layout.addLayoutItem(north_arrow)
-    print(f"[信息] 指北针添加完成")
+    print(f"[信息] 指北针添加完成（无边框）")
 
 
 def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
@@ -1462,6 +1562,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     添加图例。
     - 上部：震中/地级市/省界/市界/县界/烈度（2行3列，平行排列）
     - 下部：岩性图例（色块 + yanxing名称，首行文字与色块对齐，超长文字折行）
+    - 新增："工程岩土体分组"标题，位于岩性图例上方
     """
     legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
     legend_y = BORDER_TOP_MM
@@ -1584,10 +1685,37 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
 
     top_legend_height = row_count * row_height
 
-    # 岩性图例
+    # ==== 新增：工程岩土体分组标题 ====
     if yanxing_list:
-        item_start_y = top_legend_start_y + top_legend_height + 4.0
+        # 标题位置：上部图例下方留4mm间距
+        yanxing_title_y = top_legend_start_y + top_legend_height + 4.0
 
+        # 标题文本格式
+        yanxing_title_format = QgsTextFormat()
+        yanxing_title_format.setFont(QFont("SimHei", LEGEND_YANXING_TITLE_FONT_SIZE_PT))
+        yanxing_title_format.setSize(LEGEND_YANXING_TITLE_FONT_SIZE_PT)
+        yanxing_title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+        yanxing_title_format.setColor(QColor(0, 0, 0))
+
+        # 添加标题标签
+        yanxing_title_label = QgsLayoutItemLabel(layout)
+        yanxing_title_label.setText("工程岩土体分组")
+        yanxing_title_label.setTextFormat(yanxing_title_format)
+        yanxing_title_label.attemptMove(QgsLayoutPoint(legend_x, yanxing_title_y,
+                                                       QgsUnitTypes.LayoutMillimeters))
+        yanxing_title_label.attemptResize(QgsLayoutSize(legend_width, 5.0,
+                                                        QgsUnitTypes.LayoutMillimeters))
+        yanxing_title_label.setHAlign(Qt.AlignHCenter)
+        yanxing_title_label.setVAlign(Qt.AlignVCenter)
+        yanxing_title_label.setFrameEnabled(False)
+        yanxing_title_label.setBackgroundEnabled(False)
+        layout.addLayoutItem(yanxing_title_label)
+
+        # 岩性图例项起始Y坐标（标题下方留1mm间距）
+        item_start_y = yanxing_title_y + 5.0 + 1.0
+        print(f"[信息] 添加'工程岩土体分组'标题")
+
+        # 岩性图例参数
         yanxing_icon_width = 5.0
         yanxing_icon_height = 2.5
         yanxing_gap = 1.0
@@ -1825,8 +1953,8 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
 
 
 def _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
-                                           output_path, kml_path,
-                                           basemap_path=None, annotation_path=None):
+                                          output_path, kml_path,
+                                          basemap_path=None, annotation_path=None):
     """generate_earthquake_geology_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震地质构造图")
@@ -1848,103 +1976,156 @@ def _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()
     project.clear()
     project.setCrs(CRS_WGS84)
 
-    geology_layer = load_geology_raster(GEOLOGY_TIF_PATH)
-    if geology_layer:
-        project.addMapLayer(geology_layer)
+    # 临时文件路径
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    temp_annotation_path = os.path.join(script_dir, "_temp_annotation_geological.png")
 
-    tif_abs_path = resolve_path(GEOLOGY_TIF_PATH)
-    yanxing_list = build_yanxing_legend_list(tif_abs_path, geology_layer)
-    print(f"[信息] 获取到 {len(yanxing_list)} 个岩性图例项")
+    result_path = None
+    try:
+        geology_layer = load_geology_raster(GEOLOGY_TIF_PATH)
+        if geology_layer:
+            project.addMapLayer(geology_layer)
 
-    county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
-    if county_layer:
-        style_county_layer(county_layer)
-        project.addMapLayer(county_layer)
+        tif_abs_path = resolve_path(GEOLOGY_TIF_PATH)
+        yanxing_list = build_yanxing_legend_list(tif_abs_path, geology_layer)
+        print(f"[信息] 获取到 {len(yanxing_list)} 个岩性图例项")
 
-    city_layer = load_vector_layer(CITY_SHP_PATH, "市界_地图")
-    if city_layer:
-        style_city_layer(city_layer)
-        project.addMapLayer(city_layer)
+        # 下载天地图矢量注记
+        print("[信息] 下载天地图矢量注记...")
+        width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
+        height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
 
-    province_layer = load_vector_layer(PROVINCE_SHP_PATH, "省界_地图")
-    if province_layer:
-        style_province_layer(province_layer)
-        project.addMapLayer(province_layer)
+        annotation_raster = None
+        if annotation_path:
+            annotation_raster = QgsRasterLayer(annotation_path, "天地图注记", "gdal")
+            if not annotation_raster.isValid():
+                annotation_raster = None
+        else:
+            annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px,
+                                                                   temp_annotation_path)
+        print()
 
-    city_point_layer = create_city_point_layer(extent)
-    if city_point_layer:
-        project.addMapLayer(city_point_layer)
+        county_layer = load_vector_layer(COUNTY_SHP_PATH, "县界_地图")
+        if county_layer:
+            style_county_layer(county_layer)
+            project.addMapLayer(county_layer)
 
-    province_legend_layer = create_province_legend_layer()
-    if province_legend_layer:
-        project.addMapLayer(province_legend_layer)
+        city_layer = load_vector_layer(CITY_SHP_PATH, "市界_地图")
+        if city_layer:
+            style_city_layer(city_layer)
+            project.addMapLayer(city_layer)
 
-    city_legend_layer = create_city_legend_layer()
-    if city_legend_layer:
-        project.addMapLayer(city_legend_layer)
+        province_layer = load_vector_layer(PROVINCE_SHP_PATH, "省界_地图")
+        if province_layer:
+            style_province_layer(province_layer)
+            project.addMapLayer(province_layer)
 
-    county_legend_layer = create_county_legend_layer()
-    if county_legend_layer:
-        project.addMapLayer(county_legend_layer)
+        # 创建省份标注点图层（支持震中附近偏移）
+        province_label_layer = None
+        if province_layer:
+            try:
+                province_label_layer = create_province_label_layer(
+                    province_layer, longitude, latitude, extent)
+                if province_label_layer:
+                    project.addMapLayer(province_label_layer, False)
+                    print(f"[信息] 省份标注图层已添加，要素数量: {province_label_layer.featureCount()}")
+                else:
+                    print("[警告] 省份标注图层创建失败，回退到直接配置标注")
+                    _setup_province_labels(province_layer)
+            except Exception as exc:
+                logger.warning('创建省份标注图层失败: %s', exc)
+                try:
+                    _setup_province_labels(province_layer)
+                except Exception as fallback_exc:
+                    logger.warning('回退标注配置也失败: %s', fallback_exc)
 
-    intensity_legend_layer = create_intensity_legend_layer()
-    if intensity_legend_layer:
-        project.addMapLayer(intensity_legend_layer)
+        city_point_layer = create_city_point_layer(extent)
+        if city_point_layer:
+            project.addMapLayer(city_point_layer)
 
-    intensity_data = []
-    intensity_layer = None
-    if kml_path:
-        abs_kml = kml_path
-        if not os.path.isabs(kml_path):
-            abs_kml = resolve_path(kml_path)
-        intensity_data = parse_intensity_kml(abs_kml)
-        if intensity_data:
-            intensity_layer = create_intensity_layer(intensity_data)
-            if intensity_layer:
-                project.addMapLayer(intensity_layer)
+        province_legend_layer = create_province_legend_layer()
+        if province_legend_layer:
+            project.addMapLayer(province_legend_layer)
 
-    epicenter_layer = create_epicenter_layer(longitude, latitude)
-    if epicenter_layer:
-        project.addMapLayer(epicenter_layer)
+        city_legend_layer = create_city_legend_layer()
+        if city_legend_layer:
+            project.addMapLayer(city_legend_layer)
 
-    # 按渲染顺序排列图层（列表第一项在最上层）
-    ordered_layers = [lyr for lyr in [
-        epicenter_layer,
-        locals().get('intensity_layer'),
-        locals().get('city_point_layer'),
-        locals().get('province_layer'),
-        locals().get('city_layer'),
-        locals().get('county_layer'),
-        locals().get('geology_layer'),
-    ] if lyr is not None]
+        county_legend_layer = create_county_legend_layer()
+        if county_legend_layer:
+            project.addMapLayer(county_legend_layer)
 
-    layout = create_print_layout(project, longitude, latitude, magnitude,
-                                 extent, scale, map_height_mm, yanxing_list,
-                                 ordered_layers=ordered_layers)
+        intensity_legend_layer = create_intensity_legend_layer()
+        if intensity_legend_layer:
+            project.addMapLayer(intensity_legend_layer)
 
-    result = export_layout_to_png(layout, output_path, OUTPUT_DPI)
+        intensity_data = []
+        intensity_layer = None
+        if kml_path:
+            abs_kml = kml_path
+            if not os.path.isabs(kml_path):
+                abs_kml = resolve_path(kml_path)
+            intensity_data = parse_intensity_kml(abs_kml)
+            if intensity_data:
+                intensity_layer = create_intensity_layer(intensity_data)
+                if intensity_layer:
+                    project.addMapLayer(intensity_layer)
 
-    svg_temp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_temp.svg")
-    if os.path.exists(svg_temp):
-        try:
-            os.remove(svg_temp)
-        except OSError:
-            pass
+        epicenter_layer = create_epicenter_layer(longitude, latitude)
+        if epicenter_layer:
+            project.addMapLayer(epicenter_layer)
+
+        # 按渲染顺序排列图层（列表第一项在最上层）
+        ordered_layers = [lyr for lyr in [
+            epicenter_layer,
+            locals().get('city_point_layer'),
+            locals().get('annotation_raster'),
+            locals().get('intensity_layer'),
+            locals().get('province_label_layer'),
+            locals().get('province_layer'),
+            locals().get('city_layer'),
+            locals().get('county_layer'),
+            locals().get('geology_layer'),
+        ] if lyr is not None]
+
+        layout = create_print_layout(project, longitude, latitude, magnitude,
+                                     extent, scale, map_height_mm, yanxing_list,
+                                     ordered_layers=ordered_layers)
+
+        result_path = export_layout_to_png(layout, output_path, OUTPUT_DPI)
+
+    finally:
+        # 清理临时文件
+        if not annotation_path and os.path.exists(temp_annotation_path):
+            try:
+                os.remove(temp_annotation_path)
+                pgw = temp_annotation_path.replace(".png", ".pgw")
+                if os.path.exists(pgw):
+                    os.remove(pgw)
+            except OSError:
+                pass
+
+        svg_temp = os.path.join(script_dir, "_north_arrow_temp.svg")
+        if os.path.exists(svg_temp):
+            try:
+                os.remove(svg_temp)
+            except OSError:
+                pass
 
     print("=" * 60)
-    if result:
-        print(f"[完成] 地质构造图已输出: {result}")
+    if result_path:
+        print(f"[完成] 地质构造图已输出: {result_path}")
     else:
         print("[失败] 地质构造图输出失败")
     print("=" * 60)
-    return result
+    return result_path
 
 
 def export_layout_to_png(layout, output_path, dpi=150):
@@ -2084,7 +2265,7 @@ def run_all_tests():
     test_boundary_styles()
 
     print("\n" + "=" * 60)
-    print("全部测试执行完��")
+    print("全部测试执行完成")
     print("=" * 60)
 
 
@@ -2108,6 +2289,6 @@ if __name__ == "__main__":
     else:
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_geology_map(
-            longitude=118.18, latitude=39.63,
+            longitude=116.18, latitude=39.63,
             magnitude=7.8, output_path="earthquake_geology_tangshan_M7.8.png"
         )
