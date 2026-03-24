@@ -182,7 +182,7 @@ NORTH_ARROW_WIDTH_MM = 12.0
 NORTH_ARROW_HEIGHT_MM = 18.0
 
 # === 经纬度字体(pt) ===
-LONLAT_FONT_SIZE_PT = 8
+LONLAT_FONT_SIZE_PT = 10
 
 # === 省界样式 ===
 PROVINCE_COLOR = QColor(160, 160, 160)
@@ -208,8 +208,8 @@ CITY_LABEL_FONT_SIZE_PT = 9
 CITY_LABEL_COLOR = QColor(0, 0, 0)
 
 # === 图例字体 ===
-LEGEND_TITLE_FONT_SIZE_PT = 10
-LEGEND_ITEM_FONT_SIZE_PT = 8
+LEGEND_TITLE_FONT_SIZE_PT = 12
+LEGEND_ITEM_FONT_SIZE_PT = 10
 LEGEND_LAND_USE_FONT_SIZE_PT = 7  # 土地利用类型图例字体大小
 
 # === 比例尺字体 ===
@@ -243,8 +243,8 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 LAND_USE_CLASSIFICATION = {
     11: ("水田", (115, 255, 223, 255))
     , 12: ("旱地", (190, 255, 232, 255))
-    , 21: ("有林地", (85, 255, 0, 255))
-    , 22: ("灌木林", (76, 230, 0, 255))
+    , 21: ("有林地", (76, 230, 0, 255))
+    , 22: ("灌木林", (85, 255, 0, 255))
     , 23: ("疏林地", (163, 255, 115, 255))
     , 24: ("其它林地", (211, 255, 190, 255))
     , 31: ("高覆盖度草地", (0, 112, 255, 255))
@@ -1866,7 +1866,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
         land_use_title_format.setColor(QColor(0, 0, 0))
 
         land_use_title_label = QgsLayoutItemLabel(layout)
-        land_use_title_label.setText("土地利用类型")
+        land_use_title_label.setText("土体利用类型")
         land_use_title_label.setTextFormat(land_use_title_format)
         land_use_title_label.attemptMove(QgsLayoutPoint(legend_x, land_use_title_y, QgsUnitTypes.LayoutMillimeters))
         land_use_title_label.attemptResize(QgsLayoutSize(legend_width, 5.0, QgsUnitTypes.LayoutMillimeters))
@@ -2197,7 +2197,7 @@ def _generate_earthquake_land_use_map_impl(longitude, latitude, magnitude,
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     # 创建项目
@@ -2653,5 +2653,5 @@ if __name__ == "__main__":
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_land_use_map(
             longitude=118.18, latitude=39.63,
-            magnitude=7.8, output_path="earthquake_land_use_tangshan_M7.8.png"
+            magnitude=3.8, output_path="earthquake_land_use_tangshan_M7.8.png"
         )
