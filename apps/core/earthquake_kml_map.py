@@ -266,7 +266,7 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 # 【工具函数】
 # ============================================================
 
-def _auto_wrap_text(text, max_width_mm, font_size_pt):
+def _auto_wrap_text(text, max_width_mm, font_size_pt, first_line_indent_chars=0):
     """
     根据指定宽度自动换行文本（基于字符宽度估算）
 
@@ -280,6 +280,7 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
         text (str): 原始文本
         max_width_mm (float): 最大宽度（毫米）
         font_size_pt (int): 字体大小（磅）
+        first_line_indent_chars (int): 首行缩进字符数（全角字符），用于减少第一行可用宽度
     返回:
         str: 包含换行符的文本
     """
@@ -294,6 +295,9 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
     # 空格宽度（稍小于英文字符）
     space_width_mm = en_char_width_mm * 0.6
 
+    # 首行缩进占用的宽度（全角字符）
+    indent_width_mm = first_line_indent_chars * cn_char_width_mm
+
     # 定义不应出现在行首的标点（后置标点）
     trailing_punctuation = '，。！？；：""''）》】、'
     # 定义不应出现在行尾的标点（前置标点）
@@ -304,15 +308,19 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
     # 如果原文本包含换行符，按段落处理
     paragraphs = text.split('\n')
 
+    is_first_paragraph = True
+
     for paragraph in paragraphs:
         if not paragraph.strip():
             result_lines.append('')
+            is_first_paragraph = False
             continue
 
         lines = []
         current_line = ""
         current_width_mm = 0
         i = 0
+        is_first_line = is_first_paragraph
 
         while i < len(paragraph):
             char = paragraph[i]
@@ -333,8 +341,11 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
                 # 英文、数字、西文标点
                 char_width = en_char_width_mm
 
+            # 当前行的最大可用宽度（首行需减去缩进宽度）
+            effective_max_width = max_width_mm - (indent_width_mm if is_first_line else 0)
+
             # 检查是否需要换行
-            will_exceed = (current_width_mm + char_width > max_width_mm)
+            will_exceed = (current_width_mm + char_width > effective_max_width)
 
             if will_exceed and current_line:
                 # 需要换行
@@ -344,6 +355,7 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
                     lines.append(current_line)
                     current_line = ""
                     current_width_mm = 0
+                    is_first_line = False
                     i += 1
                 elif current_line and current_line[-1] in leading_punctuation:
                     # 当前行末尾是前置标点，需要移到下一行
@@ -352,12 +364,14 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
                     lines.append(current_line)
                     current_line = last_char + char
                     current_width_mm = cn_char_width_mm + char_width
+                    is_first_line = False
                     i += 1
                 else:
                     # 正常换行：当前字符移到新行
                     lines.append(current_line)
                     current_line = char
                     current_width_mm = char_width
+                    is_first_line = False
                     i += 1
             else:
                 # 宽度未超出，正常添加字符
@@ -371,6 +385,7 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt):
 
         # 将当前段落的所有行添加到结果中
         result_lines.extend(lines)
+        is_first_paragraph = False
 
     return '\n'.join(result_lines)
 
@@ -1580,7 +1595,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     item_format_en.setSizeUnit(QgsUnitTypes.RenderPoints)
     item_format_en.setColor(QColor(0, 0, 0))
 
-    # 说明文字区高度（固定80mm）
+    # 说明文字区高度（默认25mm，有说明文字时按实际行数动态计算）
     INFO_TEXT_AREA_HEIGHT_MM = 25.0
 
     # 图例背景矩形（白色实心，与地图等高）
@@ -1604,14 +1619,15 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         # 计算可用宽度
         available_width_mm = legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2
 
-        # 自动换行处理
-        wrapped_text = _auto_wrap_text(description_text, available_width_mm, DESCRIPTION_FONT_SIZE_PT)
+        # 首行缩进：在文本开头拼接两个全角空格，再按含缩进的宽度换行
+        indented_source = "　　" + description_text
+        indented_text = _auto_wrap_text(indented_source, available_width_mm, DESCRIPTION_FONT_SIZE_PT,
+                                        first_line_indent_chars=2)
 
-        # 首行缩进：在第一行前添加两个全角空格
-        lines = wrapped_text.split('\n')
-        if lines:
-            lines[0] = "　　" + lines[0]
-        indented_text = '\n'.join(lines)
+        # 动态计算说明文字区高度（依据实际换行行数）
+        line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.353 * LINE_SPACING_FACTOR
+        num_lines = len(indented_text.split('\n'))
+        INFO_TEXT_AREA_HEIGHT_MM = DESCRIPTION_TOP_MARGIN_MM + num_lines * line_height_mm + 2.0  # 2mm 底部内边距
 
         # 创建说明文字格式（SimSun字体，1.5倍行距）
         desc_format = QgsTextFormat()
