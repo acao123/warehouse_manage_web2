@@ -1,5 +1,5 @@
 -- MySQL初始化SQL文件
--- 仓库管理系统数据库
+-- 地震滑坡灾害评估系统数据库
 
 -- 创建数据库
 CREATE DATABASE IF NOT EXISTS `warehouse_manage` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
