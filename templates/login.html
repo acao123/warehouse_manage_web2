@@ -37,12 +37,22 @@
             height: 38px;
             border: 1px solid #e6e6e6;
             border-radius: 2px;
+            vertical-align: middle;
         }
         .error-msg {
             color: #ff5722;
             font-size: 12px;
             margin-bottom: 15px;
             text-align: center;
+        }
+        .captcha-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .captcha-row .layui-input {
+            width: 150px;
+            flex-shrink: 0;
         }
     </style>
 </head>
@@ -70,13 +80,13 @@
             </div>
             <div class="layui-form-item">
                 <label class="layui-form-label">验证码</label>
-                <div class="layui-input-inline" style="width: 150px;">
-                    <input type="text" name="captcha" required lay-verify="required" 
-                           placeholder="请输入验证码" autocomplete="off" class="layui-input">
-                </div>
-                <div class="layui-form-mid">
-                    <img src="{{ captcha_img }}" class="captcha-img" id="captchaImg" 
-                         title="点击刷新验证码" onclick="refreshCaptcha()">
+                <div class="layui-input-block">
+                    <div class="captcha-row">
+                        <input type="text" name="captcha" required lay-verify="required" 
+                               placeholder="请输入验证码" autocomplete="off" class="layui-input">
+                        <img src="{{ captcha_img }}" class="captcha-img" id="captchaImg" 
+                             title="点击刷新验证码" onclick="refreshCaptcha()">
+                    </div>
                 </div>
             </div>
             <div class="layui-form-item" style="text-align: center;">
