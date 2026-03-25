@@ -193,13 +193,13 @@
                         <div class="layui-inline">
                             <label class="layui-form-label" style="width:120px;">等值线采样间隔</label>
                             <div class="layui-input-inline" style="width:200px;">
-                                <input type="text" id="sample_interval" placeholder="选填，正整数，默认1" class="layui-input">
+                                <input type="text" id="sample_interval" placeholder="不规则三角网为1，其他默认5" class="layui-input">
                             </div>
                         </div>
                         <div class="layui-inline">
                             <label class="layui-form-label" style="width:120px;">最大采样点数</label>
                             <div class="layui-input-inline" style="width:200px;">
-                                <input type="text" id="max_sample_points" placeholder="选填，正整数，默认10000" class="layui-input">
+                                <input type="text" id="max_sample_points" placeholder="选填，正整数，默认1000" class="layui-input">
                             </div>
                         </div>
                     </div>
@@ -265,7 +265,7 @@
 </script>
 
 <script src="/static/layui/layui/layui.js"></script>
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="/static/js/jquery-3.6.0.min.js"></script>
 <script>
     // ---- CSRF Token 配置 ----
     function getCookie(name) {

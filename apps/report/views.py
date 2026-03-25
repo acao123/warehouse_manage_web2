@@ -157,6 +157,8 @@ def create_task_view(request):
 
     # 校验等值线采样间隔
     sample_interval = 1
+    if interp_method in ('scipy_idw', 'qgis_idw', 'kriging'):
+        sample_interval = 5
     if sample_interval_str:
         try:
             sample_interval = int(sample_interval_str)
