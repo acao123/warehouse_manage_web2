@@ -110,7 +110,7 @@ BORDER_RIGHT_MM = 1.0
 LEGEND_WIDTH_MM = 50.0
 # 地图内容宽度（右侧为独立图例区域，不与底图重叠）
 MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
-# 行间距倍数
+# 行间距倍数（保留供其他模块参考，说明文字不使用）
 LINE_SPACING_FACTOR = 1.5
 
 # 输出DPI
@@ -287,13 +287,11 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt, first_line_indent_chars=0)
     if not text:
         return ""
 
-    # 1pt ≈ 0.353mm（= 25.4/72）；SimSun 在 QGIS 中实际渲染宽度
-    # 略小于理论 em 方格，经比对输出图像校准为 0.35 倍字号（mm），
-    # 可避免换行过早、每行容纳更多字符。
-    cn_char_width_mm = font_size_pt * 0.35
-    # 英文/数字平均宽度约为中文的 0.55 倍
-    en_char_width_mm = cn_char_width_mm * 0.55
-    # 半角空格宽度（约为英文字符的 0.5 倍）
+    # 1pt = 25.4/72 mm ≈ 0.353mm（四舍五入后的标准换算值）；SimSun 中文字符宽高接近正方形
+    cn_char_width_mm = font_size_pt * 0.353
+    # 英文/数字平均宽度约为中文的 0.6 倍
+    en_char_width_mm = cn_char_width_mm * 0.6
+    # 半角空格宽度约为英文字符的 0.5 倍
     space_width_mm = en_char_width_mm * 0.5
 
     # 不应出现在行首的标点（后置标点，跟随上文）
@@ -1598,24 +1596,17 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         indented_text = _auto_wrap_text(indented_source, available_width_mm, DESCRIPTION_FONT_SIZE_PT)
 
         # 动态计算说明文字区高度（依据实际换行行数）
-        # QGIS QgsLayoutItemLabel 实际行高受字形上延（ascent）、下延（descent）、
-        # 字体内部行距（leading）影响，远大于理论 em 方格（0.353mm/pt）。
-        # 经输出图像验证，SimSun 10pt + 1.5 倍行距约合 7.5mm/行（0.5mm/pt × 1.5），
-        # 使用 0.5 倍字号作为每行高度基准以确保所有换行文字均可完整显示。
-        line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.5 * LINE_SPACING_FACTOR
+        # SimSun 10pt 实际行高约 5mm（0.5mm/pt），不使用行距倍数
+        line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.5
         num_lines = len(indented_text.split('\n'))
-        INFO_TEXT_AREA_HEIGHT_MM = DESCRIPTION_TOP_MARGIN_MM + num_lines * line_height_mm + 2.0  # 2mm 底部内边距
+        INFO_TEXT_AREA_HEIGHT_MM = DESCRIPTION_TOP_MARGIN_MM + num_lines * line_height_mm + 3.0  # 3mm 底部内边距
 
-        # 创建说明文字格式（SimSun字体，1.5倍行距）
+        # 创建说明文字格式（SimSun字体）
         desc_format = QgsTextFormat()
         desc_format.setFont(QFont(FONT_PATH_SONGTI, DESCRIPTION_FONT_SIZE_PT))
         desc_format.setSize(DESCRIPTION_FONT_SIZE_PT)
         desc_format.setSizeUnit(QgsUnitTypes.RenderPoints)
         desc_format.setColor(QColor(0, 0, 0))
-
-        # 设置1.5倍行距（150% = 1.5倍）
-        desc_format.setLineHeight(150.0)
-        desc_format.setLineHeightUnit(QgsUnitTypes.RenderPercentage)
 
         desc_label = QgsLayoutItemLabel(layout)
         desc_label.setMode(QgsLayoutItemLabel.ModeFont)  # 使用纯文本模式（非HTML）
@@ -1624,15 +1615,15 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         desc_label.attemptMove(QgsLayoutPoint(legend_x + DESCRIPTION_HORIZONTAL_MARGIN_MM,
                                               legend_y + DESCRIPTION_TOP_MARGIN_MM,
                                               QgsUnitTypes.LayoutMillimeters))
-        desc_label.attemptResize(QgsLayoutSize(legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2,
-                                               INFO_TEXT_AREA_HEIGHT_MM - DESCRIPTION_TOP_MARGIN_MM,
+        desc_label.attemptResize(QgsLayoutSize(legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2 - 1.0,  # -1.0mm 右侧安全间距
+                                               INFO_TEXT_AREA_HEIGHT_MM - DESCRIPTION_TOP_MARGIN_MM + 2.0,  # +2.0mm 确保最后一行完整显示
                                                QgsUnitTypes.LayoutMillimeters))
         desc_label.setHAlign(Qt.AlignLeft)
         desc_label.setVAlign(Qt.AlignTop)
         desc_label.setFrameEnabled(False)
         desc_label.setBackgroundEnabled(False)
         layout.addLayoutItem(desc_label)
-        print(f"[信息] 说明文字添加到图例区完成（字体: SimSun {DESCRIPTION_FONT_SIZE_PT}pt，行距: 1.5倍，已自动换行）")
+        print(f"[信息] 说明文字添加到图例区完成（字体: SimSun {DESCRIPTION_FONT_SIZE_PT}pt，已自动换行）")
 
     # ── 分隔线（位于说明文字区底部）──
     sep_shape = QgsLayoutItemShape(layout)
