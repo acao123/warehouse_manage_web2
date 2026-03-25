@@ -1589,7 +1589,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     # ── 上部：说明文字区（固定65mm高，位于图例区顶部）──
     if description_text:
         # 计算可用宽度（减去左右边距各2mm，再减去右边框1mm间距）
-        available_width_mm = legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2 - 1.0
+        available_width_mm = legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2
 
         # 首行缩进：在文本开头拼接两个全角空格，函数处理时自然占用首行空间
         indented_source = "　　" + description_text
@@ -1597,7 +1597,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
 
         # 动态计算说明文字区高度（依据实际换行行数）
         # SimSun 10pt 实际行高约 5mm（0.5mm/pt），不使用行距倍数
-        line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.5
+        line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.4
         num_lines = len(indented_text.split('\n'))
         INFO_TEXT_AREA_HEIGHT_MM = DESCRIPTION_TOP_MARGIN_MM + num_lines * line_height_mm + 3.0  # 3mm 底部内边距
 
@@ -1615,7 +1615,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         desc_label.attemptMove(QgsLayoutPoint(legend_x + DESCRIPTION_HORIZONTAL_MARGIN_MM,
                                               legend_y + DESCRIPTION_TOP_MARGIN_MM,
                                               QgsUnitTypes.LayoutMillimeters))
-        desc_label.attemptResize(QgsLayoutSize(legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2 - 1.0,  # -1.0mm 右侧安全间距
+        desc_label.attemptResize(QgsLayoutSize(legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2,  # -1.0mm 右侧安全间距
                                                INFO_TEXT_AREA_HEIGHT_MM - DESCRIPTION_TOP_MARGIN_MM + 2.0,  # +2.0mm 确保最后一行完整显示
                                                QgsUnitTypes.LayoutMillimeters))
         desc_label.setHAlign(Qt.AlignLeft)
@@ -2466,7 +2466,7 @@ if __name__ == "__main__":
     else:
         result = generate_earthquake_kml_map(
             kml_path=INPUT_KML_PATH,
-            description_text='',
+            description_text=INPUT_DESCRIPTION,
             magnitude=INPUT_MAGNITUDE,
             output_path=OUTPUT_PATH
         )
