@@ -998,24 +998,38 @@ def _create_inline_image(
 IMAGE_SIZE_CONFIG = {
     # 默认配置：适用于大多数图片
     'default': {
-        'target_width_mm': 166.0,      # 目标宽度 150mm（约 5.9 英寸）
-        'target_height_mm': None,       # 高度自动计算
-        'max_width_mm': 170.0,          # 最大宽度限制
-        'max_height_mm': 220.0,         # 最大高度限制
-        'use_image_dpi': True,          # 使用图片 DPI 信息
+        'target_width_mm': None,
+        'target_height_mm': 100.0,
+        'max_width_mm': 170.0,
+        'max_height_mm': 220.0,
+        'use_image_dpi': True,
     },
     # 可为特定图片配置不同尺寸
     'img1': {
-        'target_width_mm': 166.0,
-        'target_height_mm': None,
-        'max_width_mm': 180.0,
+        'target_width_mm': None,
+        'target_height_mm': 110.0,
+        'max_width_mm': 170.0,
         'max_height_mm': 220.0,
         'use_image_dpi': True,
     },
     'img2': {
-        'target_width_mm': 166.0,
+        'target_width_mm': None,
+        'target_height_mm': 100.0,
+        'max_width_mm': 170.0,
+        'max_height_mm': 220.0,
+        'use_image_dpi': True,
+    },
+    'img10': {
+        'target_width_mm': 150.0,
         'target_height_mm': None,
-        'max_width_mm': 180.0,
+        'max_width_mm': 170.0,
+        'max_height_mm': 220.0,
+        'use_image_dpi': True,
+    },
+    'img11': {
+        'target_width_mm': 150.0,
+        'target_height_mm': None,
+        'max_width_mm': 170.0,
         'max_height_mm': 220.0,
         'use_image_dpi': True,
     },
@@ -1116,7 +1130,7 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         else:
             ori_time_str = ''
         base_info = (
-            f"{ori_time_str}，在{task.address}(北纬{float(task.latitude):.2f}度，东经{float(task.longitude):.2f}度)"
+            f"{ori_time_str}，在{task.address}（北纬{float(task.latitude):.2f}度，东经{float(task.longitude):.2f}度）"
             f"发生{task.magnitude}级地震，"
             f"震源深度{int(task.foc_depth)}千米"
         )
