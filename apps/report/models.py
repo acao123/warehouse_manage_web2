@@ -43,6 +43,10 @@ class ReportTaskRecord(models.Model):
     # 图片十：Newmark 位移图
     img10_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='图片十文件地址')
 
+    # Ia/Dn 栅格文件
+    ia_tif_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='Ia栅格文件地址')
+    dn_tif_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='dn栅格文件地址')
+
     # 图片十一（预留）
     img11_info = models.CharField(max_length=100, null=True, blank=True, verbose_name='图片十一说明')
     img11_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='图片十一文件地址')

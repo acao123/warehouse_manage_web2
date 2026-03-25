@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>报告信息记录</title>
+    <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+    <style>
+        body { padding: 15px; }
+        .search-bar { margin-bottom: 15px; }
+        .table-toolbar { margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+<div class="layui-card">
+    <div class="layui-card-header">报告信息记录</div>
+    <div class="layui-card-body">
+        <!-- 搜索栏 -->
+        <div class="search-bar layui-form">
+            <div class="layui-inline">
+                <label class="layui-form-label">创建时间</label>
+                <div class="layui-input-inline" style="width:130px;">
+                    <input type="text" id="startDate" class="layui-input" placeholder="开始日期" readonly>
+                </div>
+                <div class="layui-form-mid">至</div>
+                <div class="layui-input-inline" style="width:130px;">
+                    <input type="text" id="endDate" class="layui-input" placeholder="结束日期" readonly>
+                </div>
+            </div>
+            <div class="layui-inline">
+                <button class="layui-btn layui-btn-sm" onclick="searchRecords()">
+                    <i class="layui-icon layui-icon-search"></i> 查询
+                </button>
+                <button class="layui-btn layui-btn-sm layui-btn-primary" onclick="resetSearch()">
+                    <i class="layui-icon layui-icon-refresh"></i> 重置
+                </button>
+            </div>
+        </div>
+
+        <!-- 数据表格 -->
+        <table class="layui-hide" id="recordTable" lay-filter="recordTable"></table>
+    </div>
+</div>
+
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="/static/layui/layui/layui.js"></script>
+<script>
+    layui.use(['table', 'laydate', 'layer'], function () {
+        var table = layui.table;
+        var laydate = layui.laydate;
+        var layer = layui.layer;
+
+        // 初始化日期选择
+        laydate.render({ elem: '#startDate', format: 'yyyy-MM-dd' });
+        laydate.render({ elem: '#endDate', format: 'yyyy-MM-dd' });
+
+        // 渲染表格
+        table.render({
+            elem: '#recordTable',
+            url: '/report/record/list/',
+            method: 'get',
+            where: {},
+            page: true,
+            limit: 10,
+            limits: [10, 20, 50],
+            cols: [[
+                { field: 'id', title: 'ID', width: 60, fixed: 'left' },
+                { field: 'task_id', title: '任务ID', width: 80 },
+                { field: 'user_id', title: '创建人ID', width: 90 },
+                {
+                    field: 'img1_path', title: '图一', width: 80,
+                    templet: function(d) {
+                        if (d.img1_path) {
+                            return '<a href="javascript:;" onclick="previewImg(\'' + d.img1_path + '\', \'图一\')">查看</a>';
+                        }
+                        return '-';
+                    }
+                },
+                { field: 'img1_info', title: '图一说明', width: 200, templet: '<div>{{d.img1_info || "-"}}</div>' },
+                {
+                    field: 'img2_path', title: '图二', width: 80,
+                    templet: function(d) {
+                        if (d.img2_path) {
+                            return '<a href="javascript:;" onclick="previewImg(\'' + d.img2_path + '\', \'图二\')">查看</a>';
+                        }
+                        return '-';
+                    }
+                },
+                { field: 'img2_info', title: '图二说明', width: 120 },
+                {
+                    field: 'img3_path', title: '图三', width: 80,
+                    templet: function(d) {
+                        if (d.img3_path) return '<a href="javascript:;" onclick="previewImg(\'' + d.img3_path + '\', \'图三\')">查看</a>';
+                        return '-';
+                    }
+                },
+                {
+                    field: 'img4_path', title: '图四', width: 80,
+                    templet: function(d) {
+                        if (d.img4_path) return '<a href="javascript:;" onclick="previewImg(\'' + d.img4_path + '\', \'图四\')">查看</a>';
+                        return '-';
+                    }
+                },
+                {
+                    field: 'img5_path', title: '图五', width: 80,
+                    templet: function(d) {
+                        if (d.img5_path) return '<a href="javascript:;" onclick="previewImg(\'' + d.img5_path + '\', \'图五\')">查看</a>';
+                        return '-';
+                    }
+                },
+                {
+                    field: 'img6_path', title: '图六', width: 80,
+                    templet: function(d) {
+                        if (d.img6_path) return '<a href="javascript:;" onclick="previewImg(\'' + d.img6_path + '\', \'图六\')">查看</a>';
+                        return '-';
+                    }
+                },
+                {
+                    field: 'img7_path', title: '图七', width: 80,
+                    templet: function(d) {
+                        if (d.img7_path) return '<a href="javascript:;" onclick="previewImg(\'' + d.img7_path + '\', \'图七\')">查看</a>';
+                        return '-';
+                    }
+                },
+                {
+                    field: 'img8_path', title: '图八', width: 80,
+                    templet: function(d) {
+                        if (d.img8_path) return '<a href="javascript:;" onclick="previewImg(\'' + d.img8_path + '\', \'图八\')">查看</a>';
+                        return '-';
+                    }
+                },
+                {
+                    field: 'img9_path', title: '图九', width: 80,
+                    templet: function(d) {
+                        if (d.img9_path) return '<a href="javascript:;" onclick="previewImg(\'' + d.img9_path + '\', \'图九\')">查看</a>';
+                        return '-';
+                    }
+                },
+                { field: 'img9_info', title: '图九说明', width: 120 },
+                {
+                    field: 'img10_path', title: '图十', width: 80,
+                    templet: function(d) {
+                        if (d.img10_path) return '<a href="javascript:;" onclick="previewImg(\'' + d.img10_path + '\', \'图十\')">查看</a>';
+                        return '-';
+                    }
+                },
+                {
+                    field: 'img11_path', title: '图十一', width: 80,
+                    templet: function(d) {
+                        if (d.img11_path) return '<a href="javascript:;" onclick="previewImg(\'' + d.img11_path + '\', \'图十一\')">查看</a>';
+                        return '-';
+                    }
+                },
+                { field: 'img11_info', title: '图十一说明', width: 200 },
+                {
+                    field: 'ia_tif_path', title: 'Ia栅格', width: 100,
+                    templet: function(d) {
+                        if (d.ia_tif_path) {
+                            return '<a href="/report/record/tif/download/?path=' + encodeURIComponent(d.ia_tif_path) + '">下载</a>';
+                        }
+                        return '-';
+                    }
+                },
+                {
+                    field: 'dn_tif_path', title: 'dn栅格', width: 100,
+                    templet: function(d) {
+                        if (d.dn_tif_path) {
+                            return '<a href="/report/record/tif/download/?path=' + encodeURIComponent(d.dn_tif_path) + '">下载</a>';
+                        }
+                        return '-';
+                    }
+                },
+                {
+                    field: 'report_path', title: '报告', width: 90,
+                    templet: function(d) {
+                        if (d.report_path) {
+                            return '<a href="/report/record/tif/download/?path=' + encodeURIComponent(d.report_path) + '">下载报告</a>';
+                        }
+                        return '-';
+                    }
+                },
+                { field: 'created_at', title: '创建时间', width: 160, fixed: 'right' },
+            ]],
+            done: function(res, curr, count) {
+                console.log('加载完成，共' + count + '条记录');
+            }
+        });
+
+        window.tableInstance = table;
+
+        // 图片预览
+        window.previewImg = function(path, title) {
+            layer.open({
+                type: 1,
+                title: title,
+                area: ['800px', '600px'],
+                content: '<div style="text-align:center;padding:10px;"><img src="/report/record/preview/?path=' + encodeURIComponent(path) + '" style="max-width:100%;max-height:540px;" onerror="this.alt=\'图片加载失败\'" /></div>'
+            });
+        };
+
+        // 查询
+        window.searchRecords = function() {
+            var startDate = $('#startDate').val();
+            var endDate = $('#endDate').val();
+            table.reload('recordTable', {
+                where: { start_date: startDate, end_date: endDate },
+                page: { curr: 1 }
+            });
+        };
+
+        // 重置
+        window.resetSearch = function() {
+            $('#startDate').val('');
+            $('#endDate').val('');
+            table.reload('recordTable', {
+                where: {},
+                page: { curr: 1 }
+            });
+        };
+    });
+</script>
+</body>
+</html>

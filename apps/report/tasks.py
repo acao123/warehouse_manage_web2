@@ -44,6 +44,7 @@ PROGRESS_STEPS = {
     'ia_tif':         12,
     'dn_tif':         13,
     'img10':          14,
+    'img11':          15,
     'report_done':    99,
     'done':           100,
 }
@@ -492,6 +493,30 @@ def _gen_img10(task: ReportTask, output_dir: str, dn_tif_path: str | None):
         return None
 
 
+def _gen_img11(task: ReportTask, output_dir: str):
+    """
+    生成图十一：地震危险性图。
+
+    返回:
+        (img_path, img_info) 或 (None, None)
+    """
+    try:
+        from core.earthquake_hazard_map import generate_earthquake_hazard_map
+        out = _img_path(output_dir, 11)
+        img_path, img_info = generate_earthquake_hazard_map(
+            longitude=float(task.longitude),
+            latitude=float(task.latitude),
+            magnitude=task.magnitude,
+            output_path=out,
+            kml_path=task.intensity_kml_path,
+        )
+        logger.info('[任务 %s] 图十一生成完成: %s, 说明=%s', task.id, img_path, img_info)
+        return img_path, str(img_info) if img_info else None
+    except Exception as exc:
+        logger.error('[任务 %s] 图十一生成失败: %s', task.id, exc, exc_info=True)
+        return None, None
+
+
 # ============================================================
 # 主执行函数
 # ============================================================
@@ -677,6 +702,7 @@ def execute_report_task(task_id: int) -> None:
         # ---- 8. 生成 Ia.tif ----
         try:
             ia_tif_path = _gen_ia_tif(task, output_dir)
+            record_kwargs['ia_tif_path'] = ia_tif_path
             _update_task_progress(task_id, PROGRESS_STEPS['ia_tif'],
                                    append_message='Ia.tif已完成，')
         except Exception as exc:
@@ -690,6 +716,7 @@ def execute_report_task(task_id: int) -> None:
         try:
             if ia_tif_path:
                 dn_tif_path = _gen_dn_tif(task, output_dir, ia_tif_path)
+                record_kwargs['dn_tif_path'] = dn_tif_path
                 _update_task_progress(task_id, PROGRESS_STEPS['dn_tif'],
                                        append_message='Dn.tif已完成，')
             else:
@@ -711,6 +738,19 @@ def execute_report_task(task_id: int) -> None:
             logger.error('[任务 %s] 图十生成失败: %s', task_id, exc, exc_info=True)
             _update_task_progress(task_id, PROGRESS_STEPS['img10'],
                                    error_message=f'图十生成失败: {exc}')
+        gc.collect()
+
+        # ---- 10.5 生成 图十一 ----
+        try:
+            img11_path, img11_info = _gen_img11(task, output_dir)
+            record_kwargs['img11_path'] = img11_path
+            record_kwargs['img11_info'] = img11_info
+            _update_task_progress(task_id, PROGRESS_STEPS['img11'],
+                                   append_message='img11已完成，')
+        except Exception as exc:
+            logger.error('[任务 %s] 图十一生成失败: %s', task_id, exc, exc_info=True)
+            _update_task_progress(task_id, PROGRESS_STEPS['img11'],
+                                   error_message=f'图十一生成失败: {exc}')
         gc.collect()
 
         # ---- 11. 保存记录 ----
@@ -1150,6 +1190,7 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
             'img1_info': record.img1_info or '',
             'img2_info': record.img2_info or '',
             'img9_info': record.img9_info or '',
+            'img11_info': record.img11_info or '',
         }
 
         # ---- 准备图片对象（使用自动尺寸计算） ----
@@ -1253,6 +1294,16 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         else:
             context['img10'] = ''
             logger.warning('[任务 %s] 图十不存在: %s', task_id, img10_path)
+
+        # 图片十一：地震危险性图
+        img11_path = record.img11_path
+        if img11_path and os.path.exists(img11_path):
+            config = _get_image_size_config('img11')
+            context['img11'] = _create_inline_image(doc, img11_path, **config)
+            logger.info('[任务 %s] 已准备图十一: %s', task_id, img11_path)
+        else:
+            context['img11'] = ''
+            logger.warning('[任务 %s] 图十一不存在: %s', task_id, img11_path)
 
         # ---- 渲染模板 ----
         doc.render(context)

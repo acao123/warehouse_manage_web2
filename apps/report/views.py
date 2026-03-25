@@ -50,6 +50,13 @@ def all_report_page_view(request):
     return render(request, 'report/all_report.html')
 
 
+def report_record_page_view(request):
+    """
+    报告信息记录页面视图
+    """
+    return render(request, 'report/report_record.html')
+
+
 # ============================================================
 # 执行报告相关接口
 # ============================================================
@@ -682,3 +689,137 @@ def _task_to_dict(task: ReportTask) -> dict:
         'created_at': task.created_at.strftime('%Y-%m-%d %H:%M:%S') if task.created_at else '',
         'updated_at': task.updated_at.strftime('%Y-%m-%d %H:%M:%S') if task.updated_at else '',
     }
+
+
+def _record_to_dict(record: ReportTaskRecord) -> dict:
+    """
+    将 ReportTaskRecord 对象转换为字典（用于 JSON 序列化）
+    """
+    return {
+        'id': record.id,
+        'user_id': record.user_id,
+        'task_id': record.task_id,
+        'img1_info': record.img1_info or '',
+        'img1_path': record.img1_path or '',
+        'img2_info': record.img2_info or '',
+        'img2_path': record.img2_path or '',
+        'img3_path': record.img3_path or '',
+        'img4_path': record.img4_path or '',
+        'img5_path': record.img5_path or '',
+        'img6_path': record.img6_path or '',
+        'img7_path': record.img7_path or '',
+        'img8_path': record.img8_path or '',
+        'img9_info': record.img9_info or '',
+        'img9_path': record.img9_path or '',
+        'img10_path': record.img10_path or '',
+        'ia_tif_path': getattr(record, 'ia_tif_path', None) or '',
+        'dn_tif_path': getattr(record, 'dn_tif_path', None) or '',
+        'img11_info': record.img11_info or '',
+        'img11_path': record.img11_path or '',
+        'img12_info': record.img12_info or '',
+        'img12_path': record.img12_path or '',
+        'report_path': record.report_path or '',
+        'created_at': record.created_at.strftime('%Y-%m-%d %H:%M:%S') if record.created_at else '',
+        'updated_at': record.updated_at.strftime('%Y-%m-%d %H:%M:%S') if record.updated_at else '',
+    }
+
+# ============================================================
+# 报告信息记录相关接口
+# ============================================================
+
+
+@require_GET
+def report_record_list_view(request):
+    """
+    查询 report_task_record 表数据
+    支持通过创建时间范围检索
+    """
+    page = int(request.GET.get('page', 1))
+    limit = int(request.GET.get('limit', 10))
+    start_date = request.GET.get('start_date', '').strip()
+    end_date = request.GET.get('end_date', '').strip()
+
+    queryset = ReportTaskRecord.objects.all().order_by('-created_at')
+
+    if start_date:
+        try:
+            queryset = queryset.filter(
+                created_at__gte=datetime.strptime(start_date, '%Y-%m-%d')
+            )
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d').replace(
+                hour=23, minute=59, second=59
+            )
+            queryset = queryset.filter(created_at__lte=end_dt)
+        except ValueError:
+            pass
+
+    total = queryset.count()
+    start = (page - 1) * limit
+    end = start + limit
+    records = queryset[start:end]
+
+    data = [_record_to_dict(r) for r in records]
+    return JsonResponse({'code': 0, 'msg': '成功', 'count': total, 'data': data})
+
+
+@require_GET
+def preview_image_view(request):
+    """
+    图片预览接口：返回图片文件内容
+    """
+    img_path = request.GET.get('path', '').strip()
+    if not img_path:
+        return JsonResponse({'code': 1, 'msg': '缺少图片路径'})
+
+    # 防止路径穿越攻击：解析真实路径后校验是否在允许的目录内
+    real_path = os.path.realpath(img_path)
+    allowed_base = os.path.realpath(
+        getattr(settings, 'FILE_BASE_PATH', os.path.join(settings.BASE_DIR, 'data', 'report'))
+    )
+    if not real_path.startswith(allowed_base + os.sep) and real_path != allowed_base:
+        return JsonResponse({'code': 1, 'msg': '无权访问该文件'})
+
+    if not os.path.exists(real_path):
+        return JsonResponse({'code': 1, 'msg': '图片文件不存在'})
+
+    import mimetypes
+    mime_type, _ = mimetypes.guess_type(real_path)
+    if not mime_type or not mime_type.startswith('image/'):
+        mime_type = 'image/png'
+
+    file_handle = open(real_path, 'rb')
+    response = FileResponse(file_handle, content_type=mime_type)
+    return response
+
+
+@require_GET
+def download_tif_view(request):
+    """
+    栅格文件下载接口
+    """
+    tif_path = request.GET.get('path', '').strip()
+    if not tif_path:
+        return JsonResponse({'code': 1, 'msg': '缺少文件路径'})
+
+    # 防止路径穿越攻击：解析真实路径后校验是否在允许的目录内
+    real_path = os.path.realpath(tif_path)
+    allowed_base = os.path.realpath(
+        getattr(settings, 'FILE_BASE_PATH', os.path.join(settings.BASE_DIR, 'data', 'report'))
+    )
+    if not real_path.startswith(allowed_base + os.sep) and real_path != allowed_base:
+        return JsonResponse({'code': 1, 'msg': '无权访问该文件'})
+
+    if not os.path.exists(real_path):
+        return JsonResponse({'code': 1, 'msg': '文件不存在'})
+
+    file_handle = open(real_path, 'rb')
+    response = FileResponse(
+        file_handle,
+        as_attachment=True,
+        filename=os.path.basename(real_path),
+    )
+    return response

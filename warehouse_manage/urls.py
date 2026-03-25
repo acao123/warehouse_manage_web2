@@ -83,4 +83,10 @@ urlpatterns = [
     path('report/my/list/', report_views.my_report_list_view, name='report_my_list'),
     path('report/all/list/', report_views.all_report_list_view, name='report_all_list'),
     path('report/task/delete/', report_views.delete_tasks_view, name='report_task_delete'),
+
+    # 报告信息记录
+    path('report/record/', report_views.report_record_page_view, name='report_record'),
+    path('report/record/list/', report_views.report_record_list_view, name='report_record_list'),
+    path('report/record/preview/', report_views.preview_image_view, name='report_record_preview'),
+    path('report/record/tif/download/', report_views.download_tif_view, name='report_tif_download'),
 ]
