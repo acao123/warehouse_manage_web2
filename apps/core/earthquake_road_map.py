@@ -198,7 +198,7 @@ NORTH_ARROW_WIDTH_MM = 12.0
 NORTH_ARROW_HEIGHT_MM = 18.0
 
 # === 经纬度字体(pt) ===
-LONLAT_FONT_SIZE_PT = 8
+LONLAT_FONT_SIZE_PT = 10
 
 # === 省界样式 ===
 PROVINCE_COLOR = QColor(160, 160, 160)
@@ -224,9 +224,9 @@ CITY_LABEL_FONT_SIZE_PT = 9
 CITY_LABEL_COLOR = QColor(0, 0, 0)
 
 # === 图例字体 ===
-LEGEND_TITLE_FONT_SIZE_PT = 10
-LEGEND_ITEM_FONT_SIZE_PT = 8
-LEGEND_ROAD_FONT_SIZE_PT = 7  # 道路图例字体大小
+LEGEND_TITLE_FONT_SIZE_PT = 12
+LEGEND_ITEM_FONT_SIZE_PT = 10
+LEGEND_ROAD_FONT_SIZE_PT = 10  # 道路图例字体大小
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -1679,6 +1679,12 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm):
     title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     title_format.setColor(QColor(0, 0, 0))
 
+    road_title_format = QgsTextFormat()
+    road_title_format.setFont(QFont("SimHei", LEGEND_ITEM_FONT_SIZE_PT))
+    road_title_format.setSize(LEGEND_ITEM_FONT_SIZE_PT)
+    road_title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
+    road_title_format.setColor(QColor(0, 0, 0))
+
     item_format = QgsTextFormat()
     item_format.setFont(QFont("SimSun", LEGEND_ITEM_FONT_SIZE_PT))
     item_format.setSize(LEGEND_ITEM_FONT_SIZE_PT)
@@ -1790,22 +1796,22 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm):
     # 道路图例
     road_legend_start_y = top_legend_start_y + top_legend_height + 4.0
 
-    # 道路类型标题
+    # 道路类型标题 - 水平居中展示
     road_title_label = QgsLayoutItemLabel(layout)
     road_title_label.setText("道路类型")
-    road_title_label.setTextFormat(title_format)
-    road_title_label.attemptMove(QgsLayoutPoint(legend_x + left_pad, road_legend_start_y,
+    road_title_label.setTextFormat(road_title_format)
+    road_title_label.attemptMove(QgsLayoutPoint(legend_x, road_legend_start_y,
                                                 QgsUnitTypes.LayoutMillimeters))
-    road_title_label.attemptResize(QgsLayoutSize(legend_width - left_pad - right_pad, 4.0,
+    road_title_label.attemptResize(QgsLayoutSize(legend_width, 4.0,
                                                  QgsUnitTypes.LayoutMillimeters))
-    road_title_label.setHAlign(Qt.AlignLeft)
+    road_title_label.setHAlign(Qt.AlignHCenter)
     road_title_label.setVAlign(Qt.AlignVCenter)
     road_title_label.setFrameEnabled(False)
     road_title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(road_title_label)
 
     road_item_start_y = road_legend_start_y + 5.0
-    road_item_height = 4.5
+    road_item_height = 5.0
     road_icon_width = 6.0
     road_icon_text_gap = 1.5
 
@@ -2063,7 +2069,7 @@ def _generate_earthquake_road_map_impl(longitude, latitude, magnitude, output_pa
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     # 创建项目
@@ -2525,5 +2531,5 @@ if __name__ == "__main__":
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_road_map(
             longitude=118.18, latitude=39.63,
-            magnitude=7.8, output_path="earthquake_road_tangshan_M7.8.png"
+            magnitude=3.8, output_path="earthquake_road_tangshan_M7.8.png"
         )
