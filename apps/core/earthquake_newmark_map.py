@@ -1644,7 +1644,7 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
     """创建省份标注点图层，支持震中附近省份标注自动偏移。
 
     通过将省份质心坐标写入独立的内存点图层来控制标注位置：
-    - 当省份质心经纬度与震中经纬度完全相同时：向左和向下偏移3mm（转换为对应的度数）
+    - 当省份质心经纬度与震中经纬度完全相同时：向右下角偏移3mm（转换为对应的度数）
     - 其余省份：标注点保持在质心位置不变
     点图层的标记符号设为完全透明，仅通过标注文字呈现省份名称。
 
@@ -1671,7 +1671,7 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         map_width_deg = 10.0  # 默认值
         map_height_deg = 10.0
     offset_mm = 3.0  # 偏移量：3mm
-    lon_offset_deg = offset_mm / MAP_WIDTH_MM * map_width_deg   # 向左偏移（经度减小）
+    lon_offset_deg = offset_mm / MAP_WIDTH_MM * map_width_deg   # 向右偏移（经度增大）
     lat_offset_deg = offset_mm / MAP_WIDTH_MM * map_height_deg  # 向下偏移（纬度减小）
 
     # 判断经纬度相同的容差（用于浮点数比较）
@@ -1702,8 +1702,8 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         # 判断质心是否与震中经纬度完全相同（在容差范围内）
         px, py = cx, cy
         if abs(cx - epicenter_lon) < coord_epsilon and abs(cy - epicenter_lat) < coord_epsilon:
-            # 向左偏移（经度减小）和向下偏移（纬度减小）3mm
-            px = cx - lon_offset_deg
+            # 向右下角偏移3mm（经度增大、纬度减小）
+            px = cx + lon_offset_deg
             py = cy - lat_offset_deg
             offset_count += 1
             print(f"[信息] 省份标注偏移：质心({cx:.6f}, {cy:.6f}) -> 偏移后({px:.6f}, {py:.6f})")
@@ -1714,7 +1714,7 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         new_feat.setAttribute("province_name", prov_name)
         feats_to_add.append(new_feat)
 
-    print(f"[信息] 省份标注：共 {len(feats_to_add)} 个省份，其中 {offset_count} 个省份因与震中重合进行了偏移（向左向下3mm）")
+    print(f"[信息] 省份标注：共 {len(feats_to_add)} 个省份，其中 {offset_count} 个省份因与震中重合进行了偏移（向右下角3mm）")
     total_input = province_layer.featureCount()
     skipped = total_input - len(feats_to_add)
     if skipped > 0:
@@ -2037,31 +2037,14 @@ def _add_north_arrow(layout, map_height_mm):
     arrow_x = map_right - NORTH_ARROW_WIDTH_MM
     arrow_y = map_top
 
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM, QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    bg_shape.setFrameEnabled(True)
-    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(bg_shape)
-
     svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_north_arrow_newmark_temp.svg")
     create_north_arrow_svg(svg_path)
 
     north_arrow = QgsLayoutItemPicture(layout)
     north_arrow.setPicturePath(svg_path)
-    padding_x = 1.0
-    padding_y = 0.5
-    north_arrow.attemptMove(QgsLayoutPoint(arrow_x + padding_x, arrow_y + padding_y, QgsUnitTypes.LayoutMillimeters))
-    north_arrow.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM - padding_x * 2,
-                                            NORTH_ARROW_HEIGHT_MM - padding_y * 2, QgsUnitTypes.LayoutMillimeters))
+    north_arrow.attemptMove(QgsLayoutPoint(arrow_x, arrow_y, QgsUnitTypes.LayoutMillimeters))
+    north_arrow.attemptResize(QgsLayoutSize(NORTH_ARROW_WIDTH_MM, NORTH_ARROW_HEIGHT_MM,
+                                            QgsUnitTypes.LayoutMillimeters))
     north_arrow.setFrameEnabled(False)
     north_arrow.setBackgroundEnabled(False)
     layout.addLayoutItem(north_arrow)
@@ -2590,13 +2573,15 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def generate_earthquake_newmark_map(longitude, latitude, magnitude,
                                     output_path="output_newmark_map.png",
-                                    kml_path=None, dn_tif_path=None):
+                                    kml_path=None, dn_tif_path=None,
+                                    basemap_path=None, annotation_path=None):
     """生成地震Newmark位移分布图（主入口函数）"""
     logger.info('开始生成Newmark位移分布图: lon=%.4f lat=%.4f M=%.1f output=%s',
                 longitude, latitude, magnitude, output_path)
     try:
         return _generate_earthquake_newmark_map_impl(
-            longitude, latitude, magnitude, output_path, kml_path, dn_tif_path
+            longitude, latitude, magnitude, output_path, kml_path, dn_tif_path,
+            basemap_path=basemap_path, annotation_path=annotation_path
         )
     except Exception as exc:
         logger.error('生成Newmark位移分布图失败: %s', exc, exc_info=True)
@@ -2604,7 +2589,8 @@ def generate_earthquake_newmark_map(longitude, latitude, magnitude,
 
 
 def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
-                                           output_path, kml_path, dn_tif_path):
+                                           output_path, kml_path, dn_tif_path,
+                                           basemap_path=None, annotation_path=None):
     """generate_earthquake_newmark_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震Newmark位移分布图")
@@ -2649,7 +2635,12 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
         # 可降级：天地图注记下载失败不影响整体流程
         annotation_raster = None
         try:
-            annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
+            if annotation_path:
+                annotation_raster = QgsRasterLayer(annotation_path, "天地图注记", "gdal")
+                if not annotation_raster.isValid():
+                    annotation_raster = None
+            else:
+                annotation_raster = download_tianditu_annotation_tiles(extent, width_px, height_px, temp_annotation_path)
         except Exception as exc:
             logger.warning('天地图注记下载失败，跳过注记图层: %s', exc)
             print(f"[警告] 天地图注记下载失败，跳过注记图层: {exc}")
@@ -2827,7 +2818,7 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
             except OSError:
                 pass
 
-        if os.path.exists(temp_annotation_path):
+        if not annotation_path and os.path.exists(temp_annotation_path):
             try:
                 os.remove(temp_annotation_path)
                 pgw_path = temp_annotation_path.replace(".png", ".pgw")
