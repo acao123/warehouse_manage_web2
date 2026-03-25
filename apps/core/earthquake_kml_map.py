@@ -287,8 +287,10 @@ def _auto_wrap_text(text, max_width_mm, font_size_pt, first_line_indent_chars=0)
     if not text:
         return ""
 
-    # 1pt = 0.353mm；SimSun 中文字符为正方形，宽度 = 字号 × 0.353mm
-    cn_char_width_mm = font_size_pt * 0.353
+    # 1pt ≈ 0.353mm（= 25.4/72）；SimSun 在 QGIS 中实际渲染宽度
+    # 略小于理论 em 方格，经比对输出图像校准为 0.35 倍字号（mm），
+    # 可避免换行过早、每行容纳更多字符。
+    cn_char_width_mm = font_size_pt * 0.35
     # 英文/数字平均宽度约为中文的 0.55 倍
     en_char_width_mm = cn_char_width_mm * 0.55
     # 半角空格宽度（约为英文字符的 0.5 倍）
@@ -1596,7 +1598,11 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         indented_text = _auto_wrap_text(indented_source, available_width_mm, DESCRIPTION_FONT_SIZE_PT)
 
         # 动态计算说明文字区高度（依据实际换行行数）
-        line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.353 * LINE_SPACING_FACTOR
+        # QGIS QgsLayoutItemLabel 实际行高受字形上延（ascent）、下延（descent）、
+        # 字体内部行距（leading）影响，远大于理论 em 方格（0.353mm/pt）。
+        # 经输出图像验证，SimSun 10pt + 1.5 倍行距约合 7.5mm/行（0.5mm/pt × 1.5），
+        # 使用 0.5 倍字号作为每行高度基准以确保所有换行文字均可完整显示。
+        line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.5 * LINE_SPACING_FACTOR
         num_lines = len(indented_text.split('\n'))
         INFO_TEXT_AREA_HEIGHT_MM = DESCRIPTION_TOP_MARGIN_MM + num_lines * line_height_mm + 2.0  # 2mm 底部内边距
 
