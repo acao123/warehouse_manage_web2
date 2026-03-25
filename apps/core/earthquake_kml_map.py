@@ -268,124 +268,96 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 
 def _auto_wrap_text(text, max_width_mm, font_size_pt, first_line_indent_chars=0):
     """
-    根据指定宽度自动换行文本（基于字符宽度估算）
+    根据指定宽度自动换行文本（基于字符宽度估算）。
 
-    改进点：
-    1. 更准确的字符宽度估算（基于 SimSun 字体实测）
-    2. 正确处理标点符号换行规则
-    3. 支持已有换行符的保留
-    4. 更健壮的边界条件处理
+    说明：
+    - 若需首行缩进，调用方应在 text 开头拼接全角空格（如"　　"），
+      函数将这些字符计入该行的宽度，自然占用首行空间，无需额外减少可用宽度。
+    - first_line_indent_chars 保留作为兼容参数，函数内部不再用其缩减可用宽度。
+    - max_width_mm 应已包含右侧1mm边距（即调用方传入的值为实际可用宽度）。
 
     参数:
-        text (str): 原始文本
-        max_width_mm (float): 最大宽度（毫米）
-        font_size_pt (int): 字体大小（磅）
-        first_line_indent_chars (int): 首行缩进字符数（全角字符），用于减少第一行可用宽度
+        text (str): 原始文本（首行缩进字符已包含在内）
+        max_width_mm (float): 每行最大可用宽度（毫米）
+        font_size_pt (int/float): 字体大小（磅）
+        first_line_indent_chars (int): 保留参数，当前版本不使用
     返回:
-        str: 包含换行符的文本
+        str: 包含换行符的已换行文本
     """
     if not text:
         return ""
 
-    # 1pt ≈ 0.353mm
-    # SimSun 字体中文字符宽度约为字号的 0.4 倍
-    cn_char_width_mm = font_size_pt * 0.40
-    # 英文/数字字符宽度约为中文的 0.5 倍
-    en_char_width_mm = cn_char_width_mm * 0.5
-    # 空格宽度（稍小于英文字符）
-    space_width_mm = en_char_width_mm * 0.6
+    # 1pt = 0.353mm；SimSun 中文字符为正方形，宽度 = 字号 × 0.353mm
+    cn_char_width_mm = font_size_pt * 0.353
+    # 英文/数字平均宽度约为中文的 0.55 倍
+    en_char_width_mm = cn_char_width_mm * 0.55
+    # 半角空格宽度（约为英文字符的 0.5 倍）
+    space_width_mm = en_char_width_mm * 0.5
 
-    # 首行缩进占用的宽度（全角字符）
-    indent_width_mm = first_line_indent_chars * cn_char_width_mm
+    # 不应出现在行首的标点（后置标点，跟随上文）
+    trailing_punctuation = set('，。！？；：""''）》】、…')
+    # 不应出现在行尾的标点（前置标点，引领下文）
+    leading_punctuation = set('""''（《【')
 
-    # 定义不应出现在行首的标点（后置标点）
-    trailing_punctuation = '，。！？；：""''）》】、'
-    # 定义不应出现在行尾的标点（前置标点）
-    leading_punctuation = '""''（《【'
+    def _char_width(c):
+        """估算单个字符的宽度（毫米）"""
+        if c == ' ':
+            return space_width_mm
+        # CJK 统一汉字、扩展 A 区、兼容汉字、CJK 符号与标点（含全角空格 U+3000）、常用中文标点
+        if ('\u4e00' <= c <= '\u9fff'
+                or '\u3400' <= c <= '\u4dbf'
+                or '\uf900' <= c <= '\ufaff'
+                or '\u3000' <= c <= '\u303f'
+                or c in '，。！？；：""''（）《》【】、…'):
+            return cn_char_width_mm
+        return en_char_width_mm
 
     result_lines = []
 
-    # 如果原文本包含换行符，按段落处理
-    paragraphs = text.split('\n')
-
-    is_first_paragraph = True
-
-    for paragraph in paragraphs:
-        if not paragraph.strip():
+    for paragraph in text.split('\n'):
+        if not paragraph:
             result_lines.append('')
-            is_first_paragraph = False
             continue
 
         lines = []
         current_line = ""
-        current_width_mm = 0
+        current_width = 0.0
         i = 0
-        is_first_line = is_first_paragraph
 
         while i < len(paragraph):
-            char = paragraph[i]
+            c = paragraph[i]
+            cw = _char_width(c)
 
-            # 计算字符宽度
-            if char == ' ':
-                char_width = space_width_mm
-            elif '\u4e00' <= char <= '\u9fff':
-                # CJK统一汉字
-                char_width = cn_char_width_mm
-            elif '\u3000' <= char <= '\u303f':
-                # CJK符号和标点
-                char_width = cn_char_width_mm
-            elif char in '，。！？；：""''（）《》【】、':
-                # 常用中文标点
-                char_width = cn_char_width_mm
-            else:
-                # 英文、数字、西文标点
-                char_width = en_char_width_mm
-
-            # 当前行的最大可用宽度（首行需减去缩进宽度）
-            effective_max_width = max_width_mm - (indent_width_mm if is_first_line else 0)
-
-            # 检查是否需要换行
-            will_exceed = (current_width_mm + char_width > effective_max_width)
-
-            if will_exceed and current_line:
-                # 需要换行
-                if char in trailing_punctuation:
-                    # 后置标点：即使超出也添加到当前行
-                    current_line += char
+            if current_width + cw > max_width_mm and current_line:
+                # 需要换行（此处 current_line 已确保非空，可安全访问 current_line[-1]）
+                if c in trailing_punctuation:
+                    # 后置标点随当前行末尾输出，再换行
+                    current_line += c
                     lines.append(current_line)
                     current_line = ""
-                    current_width_mm = 0
-                    is_first_line = False
-                    i += 1
-                elif current_line and current_line[-1] in leading_punctuation:
-                    # 当前行末尾是前置标点，需要移到下一行
+                    current_width = 0.0
+                elif current_line[-1] in leading_punctuation:
+                    # 当前行末尾是前置标点，将其移至下一行开头
                     last_char = current_line[-1]
                     current_line = current_line[:-1]
                     lines.append(current_line)
-                    current_line = last_char + char
-                    current_width_mm = cn_char_width_mm + char_width
-                    is_first_line = False
-                    i += 1
+                    current_line = last_char + c
+                    current_width = _char_width(last_char) + cw
                 else:
-                    # 正常换行：当前字符移到新行
+                    # 正常换行
                     lines.append(current_line)
-                    current_line = char
-                    current_width_mm = char_width
-                    is_first_line = False
-                    i += 1
+                    current_line = c
+                    current_width = cw
             else:
-                # 宽度未超出，正常添加字符
-                current_line += char
-                current_width_mm += char_width
-                i += 1
+                current_line += c
+                current_width += cw
 
-        # 添加最后一行
+            i += 1
+
         if current_line:
             lines.append(current_line)
 
-        # 将当前段落的所有行添加到结果中
         result_lines.extend(lines)
-        is_first_paragraph = False
 
     return '\n'.join(result_lines)
 
@@ -1616,13 +1588,12 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
 
     # ── 上部：说明文字区（固定65mm高，位于图例区顶部）──
     if description_text:
-        # 计算可用宽度
-        available_width_mm = legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2
+        # 计算可用宽度（减去左右边距各2mm，再减去右边框1mm间距）
+        available_width_mm = legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2 - 1.0
 
-        # 首行缩进：在文本开头拼接两个全角空格，再按含缩进的宽度换行
+        # 首行缩进：在文本开头拼接两个全角空格，函数处理时自然占用首行空间
         indented_source = "　　" + description_text
-        indented_text = _auto_wrap_text(indented_source, available_width_mm, DESCRIPTION_FONT_SIZE_PT,
-                                        first_line_indent_chars=2)
+        indented_text = _auto_wrap_text(indented_source, available_width_mm, DESCRIPTION_FONT_SIZE_PT)
 
         # 动态计算说明文字区高度（依据实际换行行数）
         line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.353 * LINE_SPACING_FACTOR
