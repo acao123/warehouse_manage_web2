@@ -167,7 +167,7 @@ NORTH_ARROW_WIDTH_MM = 12.0
 NORTH_ARROW_HEIGHT_MM = 18.0
 
 # === 经纬度字体(pt) ===
-LONLAT_FONT_SIZE_PT = 8
+LONLAT_FONT_SIZE_PT = 10
 
 # === 省界样式 ===
 PROVINCE_COLOR = QColor(160, 160, 160)
@@ -194,9 +194,9 @@ CITY_LABEL_FONT_SIZE_PT = 9
 CITY_LABEL_COLOR = QColor(0, 0, 0)
 
 # === 图例字体 ===
-LEGEND_TITLE_FONT_SIZE_PT = 10
-LEGEND_ITEM_FONT_SIZE_PT = 8
-LEGEND_GDP_FONT_SIZE_PT = 7  # GDP图例字体大小
+LEGEND_TITLE_FONT_SIZE_PT = 12
+LEGEND_ITEM_FONT_SIZE_PT = 10
+LEGEND_GDP_FONT_SIZE_PT = 10  # GDP图例字体大小
 # 顶部图例（2x3）字体与布局
 LEGEND_TOP_ITEM_FONT_SIZE_PT = 10
 TOP_LEGEND_ROW_HEIGHT_MM = 5.0
@@ -2078,7 +2078,7 @@ def _generate_gdp_grid_map_impl(longitude, latitude, magnitude, output_path, kml
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     # 临时注记底图文件路径
