@@ -2618,7 +2618,7 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from qgis_manager import get_qgis_manager as _get_qgis_manager
+    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()

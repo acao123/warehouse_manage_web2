@@ -91,7 +91,7 @@ from qgis.core import (
 from qgis.PyQt.QtCore import Qt, QVariant, QRectF
 from qgis.PyQt.QtGui import QColor, QFont, QGradient, QLinearGradient
 
-from tianditu_basemap_downloader import download_tianditu_annotation_tiles
+from core.tianditu_basemap_downloader import download_tianditu_annotation_tiles
 
 # ============================================================
 # 常量定义
@@ -2093,7 +2093,7 @@ def _generate_gdp_grid_map_impl(longitude, latitude, magnitude, output_path, kml
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from qgis_manager import get_qgis_manager as _get_qgis_manager
+    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     # 临时注记底图文件路径

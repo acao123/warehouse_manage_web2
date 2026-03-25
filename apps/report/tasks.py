@@ -37,16 +37,16 @@ _TASK_EXECUTOR = _cf.ThreadPoolExecutor(
 # 进度常量（对应每个执行步骤的 progress 值）
 # ============================================================
 PROGRESS_STEPS = {
-    'start':          0,
+    'start': 0,
     'tianditu_start': 1,
-    'tianditu_done':  2,
+    'tianditu_done': 2,
     # 图1-图9 完成后 progress 分别为 3-11（每完成一张 +1，从 3 开始）
-    'ia_tif':         12,
-    'dn_tif':         13,
-    'img10':          14,
-    'img11':          15,
-    'report_done':    99,
-    'done':           100,
+    'ia_tif': 12,
+    'dn_tif': 13,
+    'img10': 14,
+    'img11': 15,
+    'report_done': 99,
+    'done': 100,
 }
 
 # 天地图缓存文件有效性最小尺寸（字节）：小于此值视为下载不完整的无效文件
@@ -97,11 +97,11 @@ def safe_qgis_task(func: Callable) -> Callable:
 # ============================================================
 
 def _update_task_progress(
-    task_id: int,
-    progress: int,
-    append_message: str = '',
-    error_message: str = None,
-    task_status: int = None,
+        task_id: int,
+        progress: int,
+        append_message: str = '',
+        error_message: str = None,
+        task_status: int = None,
 ) -> None:
     """
     更新任务进度、状态描述及错误日志到数据库。
@@ -237,9 +237,13 @@ def _gen_img2(task: ReportTask, output_dir: str, basemap_path=None, annotation_p
     try:
         from core.earthquake_kml_map import generate_earthquake_kml_map, int_to_roman
         out = _img_path(output_dir, 2)
+        desc = (
+            " 综合考虑震中附近地质构造背景、地震波衰减特性，"
+            "估计了本次地震的地震动预测图。"
+        )
         result = generate_earthquake_kml_map(
             kml_path=task.intensity_kml_path,
-            description_text='',
+            description_text=desc,
             magnitude=task.magnitude,
             output_path=out
         )
@@ -251,6 +255,7 @@ def _gen_img2(task: ReportTask, output_dir: str, basemap_path=None, annotation_p
                     info = int_to_roman(int(max_intensity))
                 except Exception:
                     info = str(max_intensity)
+        info = f'预计极震区烈度可达 {info} 度，极震区面积估算为 {result['max_intensity_area']:.0f} 平方千米'
         logger.info('[任务 %s] 图二生成完成: %s, 说明=%s', task.id, out, info)
         return out, info
     except Exception as exc:
@@ -509,6 +514,9 @@ def _gen_img11(task: ReportTask, output_dir: str):
             magnitude=task.magnitude,
             output_path=out,
             kml_path=task.intensity_kml_path,
+            a=0.1169,
+            b=-0.1803,
+            c=0.5165
         )
         logger.info('[任务 %s] 图十一生成完成: %s, 说明=%s', task.id, img_path, img_info)
         return img_path, str(img_info) if img_info else None
@@ -580,7 +588,7 @@ def execute_report_task(task_id: int) -> None:
             return
 
         _update_task_progress(task_id, PROGRESS_STEPS['tianditu_start'],
-                               append_message='开始下载天地图，')
+                              append_message='开始下载天地图，')
         try:
             from core.tianditu_basemap_downloader import download_basemap_with_cache
             from core.earthquake_map import (
@@ -624,7 +632,7 @@ def execute_report_task(task_id: int) -> None:
             return
 
         _update_task_progress(task_id, PROGRESS_STEPS['tianditu_done'],
-                               append_message='天地图下载完成，')
+                              append_message='天地图下载完成，')
 
     try:
         # ---- 5. 通过 QGISManager 确保 QGIS 已初始化 ----
@@ -704,7 +712,7 @@ def execute_report_task(task_id: int) -> None:
             ia_tif_path = _gen_ia_tif(task, output_dir)
             record_kwargs['ia_tif_path'] = ia_tif_path
             _update_task_progress(task_id, PROGRESS_STEPS['ia_tif'],
-                                   append_message='Ia.tif已完成，')
+                                  append_message='Ia.tif已完成，')
         except Exception as exc:
             logger.error('[任务 %s] Ia.tif 生成失败: %s', task_id, exc, exc_info=True)
             _mark_failed(task, error_message=f'Ia.tif生成失败: {exc}')
@@ -718,14 +726,14 @@ def execute_report_task(task_id: int) -> None:
                 dn_tif_path = _gen_dn_tif(task, output_dir, ia_tif_path)
                 record_kwargs['dn_tif_path'] = dn_tif_path
                 _update_task_progress(task_id, PROGRESS_STEPS['dn_tif'],
-                                       append_message='Dn.tif已完成，')
+                                      append_message='Dn.tif已完成，')
             else:
                 logger.warning('[任务 %s] Ia.tif 未生成，跳过 Dn.tif 及图十', task_id)
                 _update_task_progress(task_id, PROGRESS_STEPS['dn_tif'])
         except Exception as exc:
             logger.error('[任务 %s] Dn.tif 生成失败: %s', task_id, exc, exc_info=True)
             _update_task_progress(task_id, PROGRESS_STEPS['dn_tif'],
-                                   error_message=f'Dn.tif生成失败: {exc}')
+                                  error_message=f'Dn.tif生成失败: {exc}')
         gc.collect()
 
         # ---- 10. 生成 图十 ----
@@ -733,11 +741,11 @@ def execute_report_task(task_id: int) -> None:
             img10_path = _gen_img10(task, output_dir, dn_tif_path)
             record_kwargs['img10_path'] = img10_path
             _update_task_progress(task_id, PROGRESS_STEPS['img10'],
-                                   append_message='img10已完成，')
+                                  append_message='img10已完成，')
         except Exception as exc:
             logger.error('[任务 %s] 图十生成失败: %s', task_id, exc, exc_info=True)
             _update_task_progress(task_id, PROGRESS_STEPS['img10'],
-                                   error_message=f'图十生成失败: {exc}')
+                                  error_message=f'图十生成失败: {exc}')
         gc.collect()
 
         # ---- 10.5 生成 图十一 ----
@@ -746,11 +754,11 @@ def execute_report_task(task_id: int) -> None:
             record_kwargs['img11_path'] = img11_path
             record_kwargs['img11_info'] = img11_info
             _update_task_progress(task_id, PROGRESS_STEPS['img11'],
-                                   append_message='img11已完成，')
+                                  append_message='img11已完成，')
         except Exception as exc:
             logger.error('[任务 %s] 图十一生成失败: %s', task_id, exc, exc_info=True)
             _update_task_progress(task_id, PROGRESS_STEPS['img11'],
-                                   error_message=f'图十一生成失败: {exc}')
+                                  error_message=f'图十一生成失败: {exc}')
         gc.collect()
 
         # ---- 11. 保存记录 ----
@@ -771,11 +779,11 @@ def execute_report_task(task_id: int) -> None:
                     report_path=report_path
                 )
             _update_task_progress(task_id, PROGRESS_STEPS['report_done'],
-                                   append_message='报告生成完成，')
+                                  append_message='报告生成完成，')
         except Exception as exc:
             logger.error('[任务 %s] Word报告生成失败: %s', task_id, exc, exc_info=True)
             _update_task_progress(task_id, PROGRESS_STEPS['report_done'],
-                                   error_message=f'Word报告生成失败: {exc}')
+                                  error_message=f'Word报告生成失败: {exc}')
 
         # ---- 13. 检查是否取消；标记成功 ----
         if _is_cancelled(task_id):
@@ -896,12 +904,12 @@ def _get_image_dpi(image_path: str) -> Tuple[float, float]:
 
 
 def _calculate_image_size_for_word(
-    image_path: str,
-    target_width_mm: Optional[float] = None,
-    target_height_mm: Optional[float] = None,
-    max_width_mm: float = 230.0,
-    max_height_mm: float = 300.0,
-    use_image_dpi: bool = True
+        image_path: str,
+        target_width_mm: Optional[float] = None,
+        target_height_mm: Optional[float] = None,
+        max_width_mm: float = 230.0,
+        max_height_mm: float = 300.0,
+        use_image_dpi: bool = True
 ) -> Tuple[float, float]:
     """
     计算图片在 Word 中的合适尺寸（毫米），保持宽高比。
@@ -984,13 +992,13 @@ def _calculate_image_size_for_word(
 
 
 def _create_inline_image(
-    doc,
-    image_path: str,
-    target_width_mm: Optional[float] = None,
-    target_height_mm: Optional[float] = None,
-    max_width_mm: float = 150.0,
-    max_height_mm: float = 200.0,
-    use_image_dpi: bool = True
+        doc,
+        image_path: str,
+        target_width_mm: Optional[float] = None,
+        target_height_mm: Optional[float] = None,
+        max_width_mm: float = 150.0,
+        max_height_mm: float = 200.0,
+        use_image_dpi: bool = True
 ):
     """
     创建 InlineImage 对象，自动计算合适的尺寸。
@@ -1056,7 +1064,7 @@ IMAGE_SIZE_CONFIG = {
         'target_width_mm': None,
         'target_height_mm': 100.0,
         'max_width_mm': 170.0,
-        'max_height_mm': 220.0,
+        'max_height_mm': 230.0,
         'use_image_dpi': True,
     },
     'img10': {
@@ -1075,6 +1083,7 @@ IMAGE_SIZE_CONFIG = {
     },
     # 其他图片使用默认配置
 }
+
 
 def _get_image_size_config(img_key: str) -> dict:
     """
