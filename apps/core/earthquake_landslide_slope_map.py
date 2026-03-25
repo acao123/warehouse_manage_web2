@@ -77,7 +77,7 @@ except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
 
-from core.tianditu_basemap_downloader import (
+from tianditu_basemap_downloader import (
     download_tianditu_basemap_tiles,
     download_tianditu_annotation_tiles,
 )
@@ -174,7 +174,7 @@ NORTH_ARROW_WIDTH_MM = 12.0
 NORTH_ARROW_HEIGHT_MM = 18.0
 
 # === 经纬度字体(pt) ===
-LONLAT_FONT_SIZE_PT = 8
+LONLAT_FONT_SIZE_PT = 10
 
 # === 省界样式 ===
 PROVINCE_COLOR = QColor(160, 160, 160)
@@ -204,7 +204,7 @@ LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
 
 # === 图例框尺寸常量 ===
-LEGEND_WIDTH_MM = 35.0
+LEGEND_WIDTH_MM = 41.0
 LEGEND_HEIGHT_MM = 38.0
 
 # === 比例尺字体 ===
@@ -1934,7 +1934,7 @@ def _add_legend(layout, map_item, map_height_mm):
     # 滑坡和斜坡在同一行，使用与基本图例相同的列布局
     hazard_items = [
         ("滑坡", LANDSLIDE_COLOR, LANDSLIDE_STROKE_COLOR, LANDSLIDE_STROKE_WIDTH_MM, LANDSLIDE_SIZE_MM),
-        ("斜坡", SLOPE_COLOR, SLOPE_STROKE_COLOR, SLOPE_STROKE_WIDTH_MM, SLOPE_SIZE_MM),
+        ("危险斜坡", SLOPE_COLOR, SLOPE_STROKE_COLOR, SLOPE_STROKE_WIDTH_MM, SLOPE_SIZE_MM),
     ]
 
     for idx, (display_name, fill_color, stroke_color, stroke_width, size) in enumerate(hazard_items):
@@ -2209,7 +2209,7 @@ def _generate_earthquake_landslide_slope_map_impl(longitude, latitude, magnitude
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     # 创建项目
