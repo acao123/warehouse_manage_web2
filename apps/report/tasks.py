@@ -16,6 +16,7 @@ import os
 import random
 from datetime import datetime
 from functools import wraps
+from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 from django.conf import settings
@@ -178,8 +179,8 @@ def _build_output_dir(task_id: int) -> str:
     """
     生成本次任务的输出目录路径。
 
-    格式：{FILE_BASE_PATH}/task/{timestamp}{random4}/{task_id}/
-    示例：E:/data/report/task/20260316143025_1234/1/
+    格式：{FILE_BASE_PATH}/task/{timestamp}{task_id}/
+    示例：E:/data/report/task/20260316/1/
 
     参数:
         task_id: report_task 表的 id
@@ -189,12 +190,12 @@ def _build_output_dir(task_id: int) -> str:
     """
     base = getattr(settings, 'FILE_BASE_PATH', os.path.join(settings.BASE_DIR, 'data', 'report'))
     timestamp = datetime.now().strftime('%Y%m%d')
-    return os.path.join(base, 'task', f'{timestamp}', str(task_id))
+    return str(Path(base) / "task" / timestamp / str(task_id))
 
 
 def _img_path(output_dir: str, img_no: int) -> str:
     """返回第 img_no 张图片的输出路径（如 .../1.png）。"""
-    return os.path.join(output_dir, f'{img_no}.png')
+    return str(Path(output_dir) / f'{img_no}.png').replace("\\", "/")
 
 
 # ============================================================

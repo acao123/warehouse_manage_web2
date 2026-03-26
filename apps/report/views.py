@@ -168,7 +168,7 @@ def create_task_view(request):
             return JsonResponse({'code': 1, 'msg': '等值线采样间隔格式错误，请输入正整数'})
 
     # 校验最大采样点数
-    max_sample_points = 10000
+    max_sample_points = 5000
     if max_sample_points_str:
         try:
             max_sample_points = int(max_sample_points_str)
@@ -624,6 +624,7 @@ def _save_file(uploaded_file, upload_dir: str) -> str:
     :return: 保存后的文件路径字符串
     """
     file_path = os.path.join(upload_dir, uploaded_file.name)
+    file_path = file_path.replace("\\", "/")
     with open(file_path, 'wb+') as dest:
         for chunk in uploaded_file.chunks():
             dest.write(chunk)
