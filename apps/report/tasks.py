@@ -572,7 +572,7 @@ def execute_report_task(task_id: int) -> None:
         return
 
     # ---- 3. 冗余初始化进度（保险） ----
-    _update_task_progress(task_id, 8, task_status=ReportTask.STATUS_RUNNING)
+    _update_task_progress(task_id, 1, task_status=ReportTask.STATUS_RUNNING)
 
     # 记录各图片结果
     record_kwargs = {'user_id': task.user_id, 'task_id': task_id}

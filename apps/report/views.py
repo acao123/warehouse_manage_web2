@@ -741,7 +741,7 @@ def report_record_list_view(request):
     start_date = request.GET.get('start_date', '').strip()
     end_date = request.GET.get('end_date', '').strip()
 
-    queryset = ReportTaskRecord.objects.all().order_by('-created_at')
+    queryset = ReportTaskRecord.objects.all().order_by('-updated_at')
 
     if start_date:
         try:

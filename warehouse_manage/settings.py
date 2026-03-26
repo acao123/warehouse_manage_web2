@@ -34,6 +34,16 @@ DEBUG = True
 ALLOWED_HOSTS = ['*'] if DEBUG else []
 
 
+
+# 允许你的内网穿透域名访问
+CSRF_TRUSTED_ORIGINS = [
+    "http://307mylt67177.vicp.fun",
+]
+
+# 同时把你的域名加入 ALLOWED_HOSTS
+ALLOWED_HOSTS = ["*", "307mylt67177.vicp.fun"]
+
+
 # Application definition
 
 INSTALLED_APPS = [

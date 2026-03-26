@@ -65,17 +65,17 @@
             cols: [[
                 { field: 'id', title: 'ID', width: 60, fixed: 'left' },
                 { field: 'task_id', title: '任务ID', width: 80 },
-                { field: 'user_id', title: '创建人ID', width: 90 },
                 {
                     field: 'img1_path', title: '图一', width: 80,
                     templet: function(d) {
                         if (d.img1_path) {
+                            console.log(d.img1_path)
                             return '<a href="javascript:;" onclick="previewImg(\'' + d.img1_path + '\', \'图一\')">查看</a>';
                         }
                         return '-';
                     }
                 },
-                { field: 'img1_info', title: '图一说明', width: 200, templet: '<div>{{d.img1_info || "-"}}</div>' },
+                { field: 'img1_info', title: '图一说明', width: 200 },
                 {
                     field: 'img2_path', title: '图二', width: 80,
                     templet: function(d) {
@@ -189,10 +189,11 @@
 
         // 图片预览
         window.previewImg = function(path, title) {
+            console.log('预览图片：' + path);
             layer.open({
                 type: 1,
                 title: title,
-                area: ['800px', '600px'],
+                area: ['600px', '450px'],
                 content: '<div style="text-align:center;padding:10px;"><img src="/report/record/preview/?path=' + encodeURIComponent(path) + '" style="max-width:100%;max-height:540px;" onerror="this.alt=\'图片加载失败\'" /></div>'
             });
         };
