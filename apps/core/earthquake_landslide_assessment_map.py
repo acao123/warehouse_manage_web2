@@ -210,7 +210,8 @@ BASIC_LEGEND_ROW_HEIGHT_MM = 8.0  # 基本图例项行高
 
 # === 滑坡评估图例项配置（可单独设置） ===
 ASSESSMENT_LEGEND_FONT_SIZE_PT = 10  # 滑坡评估图例项字体大小
-ASSESSMENT_LEGEND_ROW_HEIGHT_MM = 6  # 滑坡评估图例项行高
+ASSESSMENT_LEGEND_ROW_HEIGHT_MM = 7.5  # 滑坡评估图例项行高（毫米，色块高度）
+ASSESSMENT_LEGEND_GAP_MM = 1.5  # 滑坡评估图例色块之间的间距（毫米，分开显示）
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -2219,32 +2220,30 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
 
         item_start_y = assessment_title_y + 5.0
 
-        assessment_icon_width = 8.0
-        assessment_icon_height = ASSESSMENT_LEGEND_ROW_HEIGHT_MM - 0.5
-        assessment_gap = 2.0
-        assessment_left_pad = 3.0
+        colorbar_width = 8.0  # 色块宽度（毫米）
+        colorbar_height = ASSESSMENT_LEGEND_ROW_HEIGHT_MM  # 单个色块高度（毫米）
+        colorbar_gap = ASSESSMENT_LEGEND_GAP_MM  # 色块之间间距（毫米，分开显示）
+        colorbar_left_pad = 3.0  # 色块左边距（毫米）
+        label_gap = 2.0  # 色块与标签之间间距（毫米）
         assessment_right_pad = 2.0
-        item_spacing = 0.5
 
-        text_area_width = (legend_width - assessment_left_pad
-                           - assessment_icon_width - assessment_gap - assessment_right_pad)
+        text_area_width = (legend_width - colorbar_left_pad
+                           - colorbar_width - label_gap - assessment_right_pad)
 
         current_y = item_start_y
         displayed_count = 0
 
         for idx, (color_rgba, label) in enumerate(landslide_legend_list):
-            item_height = ASSESSMENT_LEGEND_ROW_HEIGHT_MM
-
             # 防止超出图例背景范围
-            if current_y + item_height > legend_y + legend_height - 2.0:
+            if current_y + colorbar_height > legend_y + legend_height - 2.0:
                 break
 
-            # 绘制色块
+            # 绘制色块矩形（带黑色细边框）
             color_box = QgsLayoutItemShape(layout)
             color_box.setShapeType(QgsLayoutItemShape.Rectangle)
-            color_box.attemptMove(QgsLayoutPoint(legend_x + assessment_left_pad, current_y,
+            color_box.attemptMove(QgsLayoutPoint(legend_x + colorbar_left_pad, current_y,
                                                  QgsUnitTypes.LayoutMillimeters))
-            color_box.attemptResize(QgsLayoutSize(assessment_icon_width, assessment_icon_height,
+            color_box.attemptResize(QgsLayoutSize(colorbar_width, colorbar_height,
                                                   QgsUnitTypes.LayoutMillimeters))
             color_str = f"{color_rgba[0]},{color_rgba[1]},{color_rgba[2]},{color_rgba[3]}"
             box_symbol = QgsFillSymbol.createSimple({
@@ -2257,14 +2256,15 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
             color_box.setFrameEnabled(False)
             layout.addLayoutItem(color_box)
 
-            # 绘制标签文本
-            text_x = legend_x + assessment_left_pad + assessment_icon_width + assessment_gap
+            # 绘制标签文本（垂直居中于色块）
+            text_x = legend_x + colorbar_left_pad + colorbar_width + label_gap
 
             text_label = QgsLayoutItemLabel(layout)
             text_label.setText(label)
             text_label.setTextFormat(assessment_format)
             text_label.attemptMove(QgsLayoutPoint(text_x, current_y, QgsUnitTypes.LayoutMillimeters))
-            text_label.attemptResize(QgsLayoutSize(text_area_width, assessment_icon_height,
+            # 标签高度与色块高度一致，确保垂直居中
+            text_label.attemptResize(QgsLayoutSize(text_area_width, colorbar_height,
                                                    QgsUnitTypes.LayoutMillimeters))
             text_label.setHAlign(Qt.AlignLeft)
             text_label.setVAlign(Qt.AlignVCenter)
@@ -2273,7 +2273,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
             text_label.setMode(QgsLayoutItemLabel.ModeFont)
             layout.addLayoutItem(text_label)
 
-            current_y += item_height + item_spacing
+            current_y += colorbar_height + colorbar_gap
             displayed_count += 1
 
         print(f"[信息] 滑坡评估图例添加完成，共 {displayed_count} 项")
@@ -2986,7 +2986,7 @@ def test_legend_font_config():
     assert BASIC_LEGEND_FONT_SIZE_PT == 10
     print(f"  基本图例字体大小: {BASIC_LEGEND_FONT_SIZE_PT}pt ✓")
 
-    assert ASSESSMENT_LEGEND_ROW_HEIGHT_MM == 6
+    assert ASSESSMENT_LEGEND_ROW_HEIGHT_MM == 7.5
     print(f"  滑坡评估图例项行高: {ASSESSMENT_LEGEND_ROW_HEIGHT_MM}mm ✓")
 
     assert BASIC_LEGEND_ROW_HEIGHT_MM == 8.0
@@ -3079,7 +3079,7 @@ def test_legend_layout_config():
 
     # 测试滑坡评估图例项配置
     assert ASSESSMENT_LEGEND_FONT_SIZE_PT == 10
-    assert ASSESSMENT_LEGEND_ROW_HEIGHT_MM == 6
+    assert ASSESSMENT_LEGEND_ROW_HEIGHT_MM == 7.5
     print(f"  滑坡评估图例项字体大小: {ASSESSMENT_LEGEND_FONT_SIZE_PT}pt ✓")
     print(f"  滑坡评估图例项行高: {ASSESSMENT_LEGEND_ROW_HEIGHT_MM}mm ✓")
 
