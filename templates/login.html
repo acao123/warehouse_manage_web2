@@ -9,14 +9,30 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/static/img/logo.png">
     <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html, body {
+            height: 100%;
+        }
         body {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            height: 100vh;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Microsoft YaHei', sans-serif;
+        }
+        .main-content {
+            flex: 1;
             display: flex;
             justify-content: center;
             align-items: center;
-            margin: 0;
-            font-family: 'Microsoft YaHei', sans-serif;
+            width: 100%;
+            padding: 20px;
         }
         .login-container {
             background: white;
@@ -54,48 +70,98 @@
             width: 150px;
             flex-shrink: 0;
         }
+        /* 页脚样式 - 吸底 */
+        .footer {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(10px);
+            padding: 15px 20px;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+        }
+        .footer-content {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .footer-logo {
+            width: 200px;
+            height: auto;
+            flex-shrink: 0;
+        }
+        .footer-text {
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 12px;
+            line-height: 1.8;
+        }
+        .footer-text p {
+            margin: 0;
+            text-align: center;
+        }
+        .footer-text .authors {
+            letter-spacing: 1px;
+        }
+        .footer-text .copyright {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 11px;
+        }
     </style>
 </head>
 <body>
-    <div class="login-container">
-        <div class="login-title">地震滑坡灾害评估系统</div>
-        {% if error %}
-        <div class="error-msg">{{ error }}</div>
-        {% endif %}
-        <form class="layui-form" method="post" action="/login/">
-            {% csrf_token %}
-            <div class="layui-form-item">
-                <label class="layui-form-label">用户名</label>
-                <div class="layui-input-block">
-                    <input type="text" name="username" required lay-verify="required" 
-                           placeholder="请输入用户名" autocomplete="off" class="layui-input">
-                </div>
-            </div>
-            <div class="layui-form-item">
-                <label class="layui-form-label">密码</label>
-                <div class="layui-input-block">
-                    <input type="password" name="password" required lay-verify="required" 
-                           placeholder="请输入密码" autocomplete="off" class="layui-input">
-                </div>
-            </div>
-            <div class="layui-form-item">
-                <label class="layui-form-label">验证码</label>
-                <div class="layui-input-block">
-                    <div class="captcha-row">
-                        <input type="text" name="captcha" required lay-verify="required" 
-                               placeholder="请输入验证码" autocomplete="off" class="layui-input">
-                        <img src="{{ captcha_img }}" class="captcha-img" id="captchaImg" 
-                             title="点击刷新验证码" onclick="refreshCaptcha()">
+    <div class="main-content">
+        <div class="login-container">
+            <div class="login-title">地震滑坡灾害评估系统</div>
+            {% if error %}
+            <div class="error-msg">{{ error }}</div>
+            {% endif %}
+            <form class="layui-form" method="post" action="/login/">
+                {% csrf_token %}
+                <div class="layui-form-item">
+                    <label class="layui-form-label">用户名</label>
+                    <div class="layui-input-block">
+                        <input type="text" name="username" required lay-verify="required" 
+                               placeholder="请输入用户名" autocomplete="off" class="layui-input">
                     </div>
                 </div>
-            </div>
-            <div class="layui-form-item" style="text-align: center;">
-                <button class="layui-btn" lay-submit lay-filter="loginSubmit" style="width: 180px;">登录</button>
-            </div>
-        </form>
-        <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
+                <div class="layui-form-item">
+                    <label class="layui-form-label">密码</label>
+                    <div class="layui-input-block">
+                        <input type="password" name="password" required lay-verify="required" 
+                               placeholder="请输入密码" autocomplete="off" class="layui-input">
+                    </div>
+                </div>
+                <div class="layui-form-item">
+                    <label class="layui-form-label">验证码</label>
+                    <div class="layui-input-block">
+                        <div class="captcha-row">
+                            <input type="text" name="captcha" required lay-verify="required" 
+                                   placeholder="请输入验证码" autocomplete="off" class="layui-input">
+                            <img src="{{ captcha_img }}" class="captcha-img" id="captchaImg" 
+                                 title="点击刷新验证码" onclick="refreshCaptcha()">
+                        </div>
+                    </div>
+                </div>
+                <div class="layui-form-item" style="text-align: center;">
+                    <button class="layui-btn" lay-submit lay-filter="loginSubmit" style="width: 180px;">登录</button>
+                </div>
+            </form>
         </div>
     </div>
+
+    <!-- 吸底页脚 -->
+    <footer class="footer">
+        <div class="footer-content">
+            <img src="/static/img/logo3.png" alt="中国地震灾害防御中心" class="footer-logo">
+            <div class="footer-text">
+                <p class="authors">作者：张三四 &nbsp; 王五六 &nbsp; 赵七八 &nbsp; 田八九 &nbsp; 何十一 &nbsp; 赵二 &nbsp; 田七 &nbsp; 李四</p>
+                <p class="copyright">版权所有：中国地震灾害防御中心 &nbsp; 技术联系：010-69941228 &nbsp; 158***5400 徐XX</p>
+            </div>
+        </div>
+    </footer>
 
     <script src="/static/layui/layui/layui.js"></script>
     <script>
