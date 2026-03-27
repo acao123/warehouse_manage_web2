@@ -46,6 +46,7 @@ PROGRESS_STEPS = {
     'dn_tif': 13,
     'img10': 14,
     'img11': 15,
+    'img12': 16,  # 新增：图十二进度
     'report_done': 99,
     'done': 100,
 }
@@ -526,6 +527,38 @@ def _gen_img11(task: ReportTask, output_dir: str):
         return None, None
 
 
+def _gen_img12(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
+    """
+    生成图十二：地震滑坡评估图。
+
+    返回:
+        (img_path, img_info) 或 (None, None)
+    """
+    try:
+        from core.earthquake_landslide_assessment_map import generate_earthquake_landslide_assessment_map
+        out = _img_path(output_dir, 12)
+        result = generate_earthquake_landslide_assessment_map(
+            longitude=float(task.longitude),
+            latitude=float(task.latitude),
+            magnitude=task.magnitude,
+            output_path=out,
+            kml_path=task.intensity_kml_path,
+            basemap_path=basemap_path,
+            annotation_path=annotation_path,
+        )
+        if result:
+            img_path = result.get('image_path')
+            img_info = result.get('stats_message')
+            logger.info('[任务 %s] 图十二生成完成: %s, 说明=%s', task.id, img_path, img_info)
+            return img_path, str(img_info) if img_info else None
+        else:
+            logger.warning('[任务 %s] 图十二生成返回空结果', task.id)
+            return None, None
+    except Exception as exc:
+        logger.error('[任务 %s] 图十二生成失败: %s', task.id, exc, exc_info=True)
+        return None, None
+
+
 # ============================================================
 # 主执行函数
 # ============================================================
@@ -760,6 +793,19 @@ def execute_report_task(task_id: int) -> None:
             logger.error('[任务 %s] 图十一生成失败: %s', task_id, exc, exc_info=True)
             _update_task_progress(task_id, PROGRESS_STEPS['img11'],
                                   error_message=f'图十一生成失败: {exc}')
+        gc.collect()
+
+        # ---- 10.6 生成 图十二 ----
+        try:
+            img12_path, img12_info = _gen_img12(task, output_dir, cached_basemap_path, cached_annotation_path)
+            record_kwargs['img12_path'] = img12_path
+            record_kwargs['img12_info'] = img12_info
+            _update_task_progress(task_id, PROGRESS_STEPS['img12'],
+                                  append_message='img12已完成，')
+        except Exception as exc:
+            logger.error('[任务 %s] 图十二生成失败: %s', task_id, exc, exc_info=True)
+            _update_task_progress(task_id, PROGRESS_STEPS['img12'],
+                                  error_message=f'图十二生成失败: {exc}')
         gc.collect()
 
         # ---- 11. 保存记录 ----
@@ -1082,6 +1128,13 @@ IMAGE_SIZE_CONFIG = {
         'max_height_mm': 220.0,
         'use_image_dpi': True,
     },
+    'img12': {
+        'target_width_mm': 150.0,
+        'target_height_mm': None,
+        'max_width_mm': 170.0,
+        'max_height_mm': 220.0,
+        'use_image_dpi': True,
+    },
     # 其他图片使用默认配置
 }
 
@@ -1201,6 +1254,7 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
             'img2_info': record.img2_info or '',
             'img9_info': record.img9_info or '',
             'img11_info': record.img11_info or '',
+            'img12_info': record.img12_info or '',
         }
 
         # ---- 准备图片对象（使用自动尺寸计算） ----
@@ -1314,6 +1368,16 @@ def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -
         else:
             context['img11'] = ''
             logger.warning('[任务 %s] 图十一不存在: %s', task_id, img11_path)
+
+        # 图片十二：地震滑坡评估图
+        img12_path = record.img12_path
+        if img12_path and os.path.exists(img12_path):
+            config = _get_image_size_config('img12')
+            context['img12'] = _create_inline_image(doc, img12_path, **config)
+            logger.info('[任务 %s] 已准备图十二: %s', task_id, img12_path)
+        else:
+            context['img12'] = ''
+            logger.warning('[任务 %s] 图十二不存在: %s', task_id, img12_path)
 
         # ---- 渲染模板 ----
         doc.render(context)
