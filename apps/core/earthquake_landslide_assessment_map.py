@@ -34,7 +34,7 @@ except ImportError:
     _django_settings = None
     _DJANGO_AVAILABLE = False
 
-from tianditu_basemap_downloader import download_tianditu_annotation_tiles
+from core.tianditu_basemap_downloader import download_tianditu_annotation_tiles
 
 # ============================================================
 # 日志配置
@@ -99,20 +99,45 @@ except ImportError:
 # ============================================================
 
 # 天地图配置
-TIANDITU_TK = '1ef76ef90c6eb961cb49618f9b1a399d'
+TIANDITU_TK = (
+    getattr(_django_settings, 'TIANDITU_TK', '1ef76ef90c6eb961cb49618f9b1a399d')
+    if _DJANGO_AVAILABLE else '1ef76ef90c6eb961cb49618f9b1a399d'
+)
 
 # 数据文件路径（优先从 Django settings 读取）
 _DEFAULT_BASE = "../../data/geology/"
 
 # 地震滑坡评估TIF文件路径
-LANDSLIDE_ASSESSMENT_TIF_PATH = _DEFAULT_BASE + '图12/ChinaRecla1.tif'
+LANDSLIDE_ASSESSMENT_TIF_PATH = (
+    getattr(_django_settings, 'LANDSLIDE_ASSESSMENT_TIF_PATH',
+            _DEFAULT_BASE + '图12/ChinaRecla1.tif')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '图12/ChinaRecla1.tif'
+)
 
-PROVINCE_SHP_PATH =  _DEFAULT_BASE +'省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
-CITY_SHP_PATH =  _DEFAULT_BASE+'省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
-COUNTY_SHP_PATH = _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
+PROVINCE_SHP_PATH = (
+    getattr(_django_settings, 'PROVINCE_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
+)
+CITY_SHP_PATH = (
+    getattr(_django_settings, 'CITY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
+)
+COUNTY_SHP_PATH = (
+    getattr(_django_settings, 'COUNTY_SHP_PATH',
+            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
+)
 # 地级市点位数据
-CITY_POINTS_SHP_PATH = _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
-
+CITY_POINTS_SHP_PATH = (
+    getattr(_django_settings, 'CITY_POINTS_SHP_PATH',
+            _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
+)
 
 # === 布局尺寸常量 ===
 MAP_TOTAL_WIDTH_MM = 220.0
@@ -2180,7 +2205,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
         assessment_title_format.setColor(QColor(0, 0, 0))
 
         assessment_title_label = QgsLayoutItemLabel(layout)
-        assessment_title_label.setText("滑坡评估")
+        assessment_title_label.setText("滑坡危险性等级")
         assessment_title_label.setTextFormat(assessment_title_format)
         assessment_title_label.attemptMove(
             QgsLayoutPoint(legend_x, assessment_title_y, QgsUnitTypes.LayoutMillimeters))
@@ -2517,7 +2542,7 @@ def _generate_earthquake_landslide_assessment_map_impl(longitude, latitude, magn
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化
-    from qgis_manager import get_qgis_manager as _get_qgis_manager
+    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()
@@ -3423,8 +3448,8 @@ if __name__ == "__main__":
     else:
         print("使用默认参数运行（唐山 M2.8）...")
         result = generate_earthquake_landslide_assessment_map(
-            longitude=118.18, latitude=39.63,
-            magnitude=8.8, output_path="earthquake_landslide_tangshan_M2.8.png"
+            longitude=103.36, latitude=34.09,
+            magnitude=2.0, output_path="earthquake_landslide_tangshan_M2.8.png"
         )
         if result:
             print(f"\n[输出图片] {result['image_path']}")

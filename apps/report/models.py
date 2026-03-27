@@ -48,11 +48,11 @@ class ReportTaskRecord(models.Model):
     dn_tif_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='dn栅格文件地址')
 
     # 图片十一（预留）
-    img11_info = models.CharField(max_length=100, null=True, blank=True, verbose_name='图片十一说明')
+    img11_info = models.CharField(max_length=800, null=True, blank=True, verbose_name='图片十一说明')
     img11_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='图片十一文件地址')
 
     # 图片十二（预留）
-    img12_info = models.CharField(max_length=100, null=True, blank=True, verbose_name='图片十二说明')
+    img12_info = models.CharField(max_length=1000, null=True, blank=True, verbose_name='图片十二说明')
     img12_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='图片十二文件地址')
 
     # 报告文件

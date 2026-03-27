@@ -239,6 +239,8 @@ SLOPE_SHP_PATH = MAP_DATA_BASE_PATH + '滑坡和危险斜坡/斜坡.shp'
 # AC 临界加速度栅格
 AC_TIF_PATH = 'C:/地质/ac/ac分割版/ac2.TIF'
 
+LANDSLIDE_ASSESSMENT_TIF_PATH = MAP_DATA_BASE_PATH + '图12/ChinaRecla1.tif'
+
 # 天地图 Key
 TIANDITU_TK = '1ef76ef90c6eb961cb49618f9b1a399d'
 
