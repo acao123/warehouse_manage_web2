@@ -221,8 +221,32 @@ LANDSLIDE_CLASSES = [
 # WGS84
 CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 
+# 地震滑坡评估TIF文件的自定义投影坐标系WKT（横轴墨卡托，中央经线105°，假东偏移18500000米）
+CRS_TIF_PROJECTED = (
+    'PROJCRS["User_Defined_Transverse_Mercator",'
+    'BASEGEOGCRS["GCS_User_Defined",'
+    'DATUM["User_Defined",'
+    'ELLIPSOID["User_Defined_Spheroid",6378137,298.257222101,'
+    'LENGTHUNIT["metre",1,ID["EPSG",9001]]]],'
+    'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433,ID["EPSG",9122]]]],'
+    'CONVERSION["Transverse Mercator",'
+    'METHOD["Transverse Mercator",ID["EPSG",9807]],'
+    'PARAMETER["Latitude of natural origin",0,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8801]],'
+    'PARAMETER["Longitude of natural origin",105,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8802]],'
+    'PARAMETER["Scale factor at natural origin",1,SCALEUNIT["unity",1],ID["EPSG",8805]],'
+    'PARAMETER["False easting",18500000,LENGTHUNIT["metre",1],ID["EPSG",8806]],'
+    'PARAMETER["False northing",0,LENGTHUNIT["metre",1],ID["EPSG",8807]]],'
+    'CS[Cartesian,2],'
+    'AXIS["easting",east,ORDER[1],LENGTHUNIT["metre",1,ID["EPSG",9001]]],'
+    'AXIS["northing",north,ORDER[2],LENGTHUNIT["metre",1,ID["EPSG",9001]]]]'
+)
+
 # === 裁剪缓冲区（度） ===
 CLIP_BUFFER_DEGREES = 0.1
+
+# === 面积计算常量 ===
+M2_TO_KM2 = 1_000_000.0       # 平方米转平方千米
+KM_PER_DEGREE = 111.0          # 每度纬度对应的千米数（近似值）
 
 # === 图例布局和字体设置 ===
 LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"
@@ -402,6 +426,85 @@ def _find_name_field(layer, candidates):
 
 
 # ============================================================
+# 坐标转换辅助函数
+# ============================================================
+
+def transform_extent_to_tif_crs(extent, tif_path):
+    """
+    将WGS84经纬度范围（QgsRectangle）转换为TIF文件所使用的投影坐标范围。
+
+    参数:
+        extent (QgsRectangle): 以WGS84（EPSG:4326）经纬度表示的目标范围
+        tif_path (str): TIF文件路径，用于读取其坐标系统
+
+    返回:
+        tuple: (xmin, ymin, xmax, ymax) 以TIF坐标系表示的范围；
+               如果TIF已是WGS84或读取失败则返回原始范围的四元组
+    """
+    if not GDAL_AVAILABLE:
+        return (extent.xMinimum(), extent.yMinimum(),
+                extent.xMaximum(), extent.yMaximum())
+
+    try:
+        ds = gdal.Open(tif_path, gdal.GA_ReadOnly)
+        if ds is None:
+            print(f"[警告] transform_extent_to_tif_crs: 无法打开TIF文件 {tif_path}")
+            return (extent.xMinimum(), extent.yMinimum(),
+                    extent.xMaximum(), extent.yMaximum())
+
+        wkt = ds.GetProjection()
+        ds = None
+
+        if not wkt:
+            print("[警告] transform_extent_to_tif_crs: TIF文件无坐标系信息，假设WGS84")
+            return (extent.xMinimum(), extent.yMinimum(),
+                    extent.xMaximum(), extent.yMaximum())
+
+        src_srs = osr.SpatialReference()
+        src_srs.ImportFromWkt(wkt)
+
+        wgs84_srs = osr.SpatialReference()
+        wgs84_srs.ImportFromEPSG(4326)
+        # osr 默认轴序：对于地理CRS先经度后纬度
+        wgs84_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+        if src_srs.IsSame(wgs84_srs):
+            print("[信息] TIF坐标系为WGS84，无需坐标转换")
+            return (extent.xMinimum(), extent.yMinimum(),
+                    extent.xMaximum(), extent.yMaximum())
+
+        transform = osr.CoordinateTransformation(wgs84_srs, src_srs)
+
+        # 转换四个角点，取外包矩形以应对非线性投影
+        corners_wgs84 = [
+            (extent.xMinimum(), extent.yMinimum()),
+            (extent.xMinimum(), extent.yMaximum()),
+            (extent.xMaximum(), extent.yMinimum()),
+            (extent.xMaximum(), extent.yMaximum()),
+        ]
+        xs, ys = [], []
+        for lon, lat in corners_wgs84:
+            x, y, _ = transform.TransformPoint(lon, lat)
+            xs.append(x)
+            ys.append(y)
+
+        proj_xmin, proj_xmax = min(xs), max(xs)
+        proj_ymin, proj_ymax = min(ys), max(ys)
+
+        print(f"[信息] WGS84范围 ({extent.xMinimum():.4f},{extent.yMinimum():.4f})-"
+              f"({extent.xMaximum():.4f},{extent.yMaximum():.4f}) 已转换为投影坐标 "
+              f"({proj_xmin:.1f},{proj_ymin:.1f})-({proj_xmax:.1f},{proj_ymax:.1f})")
+
+        return (proj_xmin, proj_ymin, proj_xmax, proj_ymax)
+
+    except Exception as e:
+        print(f"[警告] transform_extent_to_tif_crs 异常: {e}，使用原始WGS84坐标")
+        return (extent.xMinimum(), extent.yMinimum(),
+                extent.xMaximum(), extent.yMaximum())
+
+
+# ============================================================
 # 大文件栅格裁剪优化函数
 # ============================================================
 
@@ -438,27 +541,73 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
 
         print(f"[信息] 源栅格信息: {src_width}x{src_height}, {src_bands}波段")
 
-        # 在目标范围外增加缓冲区
-        clip_xmin = extent.xMinimum() - buffer_degrees
-        clip_xmax = extent.xMaximum() + buffer_degrees
-        clip_ymin = extent.yMinimum() - buffer_degrees
-        clip_ymax = extent.yMaximum() + buffer_degrees
+        # 检测源TIF坐标系是否为WGS84
+        src_wkt = src_ds.GetProjection()
+        src_ds = None  # 关闭数据集，后续由gdal.Translate重新打开
 
-        print(f"[信息] 裁剪范围: ({clip_xmin:.4f}, {clip_ymin:.4f}) - ({clip_xmax:.4f}, {clip_ymax:.4f})")
+        is_geographic = False
+        if src_wkt:
+            src_srs = osr.SpatialReference()
+            src_srs.ImportFromWkt(src_wkt)
+            wgs84_srs = osr.SpatialReference()
+            wgs84_srs.ImportFromEPSG(4326)
+            wgs84_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            is_geographic = bool(src_srs.IsSame(wgs84_srs))
+        else:
+            # 无坐标系信息，假设WGS84
+            is_geographic = True
 
-        translate_options = gdal.TranslateOptions(
-            projWin=[clip_xmin, clip_ymax, clip_xmax, clip_ymin],
-            projWinSRS='EPSG:4326',
-            format='GTiff',
-            creationOptions=[
-                'COMPRESS=LZW',
-                'TILED=YES',
-                'BLOCKXSIZE=256',
-                'BLOCKYSIZE=256',
-                'BIGTIFF=IF_SAFER'
-            ]
-        )
+        if is_geographic:
+            print("[信息] 检测到TIF坐标系为WGS84，使用经纬度坐标裁剪")
+            # 在目标范围外增加缓冲区（度）
+            clip_xmin = extent.xMinimum() - buffer_degrees
+            clip_xmax = extent.xMaximum() + buffer_degrees
+            clip_ymin = extent.yMinimum() - buffer_degrees
+            clip_ymax = extent.yMaximum() + buffer_degrees
 
+            print(f"[信息] 裁剪范围(WGS84): ({clip_xmin:.4f}, {clip_ymin:.4f}) - ({clip_xmax:.4f}, {clip_ymax:.4f})")
+
+            translate_options = gdal.TranslateOptions(
+                projWin=[clip_xmin, clip_ymax, clip_xmax, clip_ymin],
+                projWinSRS='EPSG:4326',
+                format='GTiff',
+                creationOptions=[
+                    'COMPRESS=LZW',
+                    'TILED=YES',
+                    'BLOCKXSIZE=256',
+                    'BLOCKYSIZE=256',
+                    'BIGTIFF=IF_SAFER'
+                ]
+            )
+        else:
+            print("[信息] 检测到TIF坐标系为投影坐标系，将WGS84范围转换为投影坐标后裁剪")
+            # 将WGS84 extent（含缓冲区）转换为投影坐标
+            buffered_extent = QgsRectangle(
+                extent.xMinimum() - buffer_degrees,
+                extent.yMinimum() - buffer_degrees,
+                extent.xMaximum() + buffer_degrees,
+                extent.yMaximum() + buffer_degrees,
+            )
+            proj_xmin, proj_ymin, proj_xmax, proj_ymax = transform_extent_to_tif_crs(
+                buffered_extent, input_path
+            )
+
+            print(f"[信息] 裁剪范围(投影坐标): ({proj_xmin:.1f}, {proj_ymin:.1f}) - ({proj_xmax:.1f}, {proj_ymax:.1f})")
+
+            translate_options = gdal.TranslateOptions(
+                projWin=[proj_xmin, proj_ymax, proj_xmax, proj_ymin],
+                format='GTiff',
+                creationOptions=[
+                    'COMPRESS=LZW',
+                    'TILED=YES',
+                    'BLOCKXSIZE=256',
+                    'BLOCKYSIZE=256',
+                    'BIGTIFF=IF_SAFER'
+                ]
+            )
+
+        src_ds = gdal.Open(input_path, gdal.GA_ReadOnly)
         print(f"[信息] 正在裁剪栅格数据...")
         dst_ds = gdal.Translate(output_path, src_ds, options=translate_options)
 
@@ -649,6 +798,10 @@ def compute_landslide_area_statistics(tif_path, extent):
     使用GDAL读取裁剪后（或原始）的TIF数据，统计范围内数值1~5各像素数量，
     根据像素分辨率计算每个等级的面积（平方千米）和占比（%）。
 
+    自动检测TIF坐标系：
+    - 若为投影坐标系（单位：米），直接用像素尺寸（米）计算面积
+    - 若为地理坐标系（单位：度），使用纬度修正公式计算面积
+
     参数:
         tif_path (str): TIF文件路径（可以是裁剪后的临时文件或原始文件）
         extent (QgsRectangle): 统计范围（WGS84坐标）
@@ -674,12 +827,12 @@ def compute_landslide_area_statistics(tif_path, extent):
 
         # 获取地理变换参数
         gt = ds.GetGeoTransform()
-        # gt[0]: 左上角X（经度）
-        # gt[1]: X方向像素分辨率（度/像素）
-        # gt[3]: 左上角Y（纬度）
-        # gt[5]: Y方向像素分辨率（负值，度/像素）
-        pixel_width_deg = abs(gt[1])   # 像素宽度（度）
-        pixel_height_deg = abs(gt[5])  # 像素高度（度）
+        # gt[0]: 左上角X坐标
+        # gt[1]: X方向像素分辨率
+        # gt[3]: 左上角Y坐标
+        # gt[5]: Y方向像素分辨率（负值）
+        pixel_width = abs(gt[1])
+        pixel_height = abs(gt[5])
 
         raster_xmin = gt[0]
         raster_ymax = gt[3]
@@ -688,22 +841,39 @@ def compute_landslide_area_statistics(tif_path, extent):
         raster_xmax = raster_xmin + raster_width * gt[1]
         raster_ymin = raster_ymax + raster_height * gt[5]  # gt[5]是负值
 
-        # 计算与extent的交集范围对应的像素坐标
-        intersect_xmin = max(extent.xMinimum(), raster_xmin)
-        intersect_xmax = min(extent.xMaximum(), raster_xmax)
-        intersect_ymin = max(extent.yMinimum(), raster_ymin)
-        intersect_ymax = min(extent.yMaximum(), raster_ymax)
+        # 检测TIF坐标系类型（投影坐标/地理坐标）
+        tif_wkt = ds.GetProjection()
+        is_projected = False  # 默认假设为地理坐标系（度）
+        if tif_wkt:
+            tif_srs = osr.SpatialReference()
+            tif_srs.ImportFromWkt(tif_wkt)
+            is_projected = bool(tif_srs.IsProjected())
+            if is_projected:
+                print(f"[信息] 检测到TIF坐标系为投影坐标系（单位：米），直接用像素尺寸计算面积")
+            else:
+                print(f"[信息] 检测到TIF坐标系为地理坐标系（单位：度），使用纬度修正公式计算面积")
+        else:
+            print("[警告] TIF文件无坐标系信息，假设为地理坐标系（度）")
+
+        # 将WGS84 extent转换为TIF坐标系后计算像素范围
+        tif_xmin, tif_ymin, tif_xmax, tif_ymax = transform_extent_to_tif_crs(extent, abs_path)
+
+        # 计算与TIF范围的交集
+        intersect_xmin = max(tif_xmin, raster_xmin)
+        intersect_xmax = min(tif_xmax, raster_xmax)
+        intersect_ymin = max(tif_ymin, raster_ymin)
+        intersect_ymax = min(tif_ymax, raster_ymax)
 
         if intersect_xmin >= intersect_xmax or intersect_ymin >= intersect_ymax:
             print("[警告] 统计范围与栅格无交集")
             ds = None
             return []
 
-        # 将地理坐标转为像素坐标
-        col_start = int((intersect_xmin - raster_xmin) / pixel_width_deg)
-        col_end = int(math.ceil((intersect_xmax - raster_xmin) / pixel_width_deg))
-        row_start = int((raster_ymax - intersect_ymax) / pixel_height_deg)
-        row_end = int(math.ceil((raster_ymax - intersect_ymin) / pixel_height_deg))
+        # 将坐标转为像素索引
+        col_start = int((intersect_xmin - raster_xmin) / pixel_width)
+        col_end = int(math.ceil((intersect_xmax - raster_xmin) / pixel_width))
+        row_start = int((raster_ymax - intersect_ymax) / pixel_height)
+        row_end = int(math.ceil((raster_ymax - intersect_ymin) / pixel_height))
 
         # 边界裁剪
         col_start = max(0, col_start)
@@ -731,18 +901,21 @@ def compute_landslide_area_statistics(tif_path, extent):
             print("[错误] 读取栅格数据失败")
             return []
 
-        # 统计每个像素中心的纬度，用于计算实际面积
-        # 每个像素的实际面积 ≈ pixel_width_deg * 111km * cos(lat) * pixel_height_deg * 111km
-        # 为简化，使用统计范围中心纬度
-        center_lat = (intersect_ymin + intersect_ymax) / 2.0
-        cos_lat = math.cos(math.radians(center_lat))
-
-        # 单个像素面积（平方千米）
-        pixel_area_km2 = (pixel_width_deg * 111.0 * cos_lat) * (pixel_height_deg * 111.0)
-
-        print(f"[信息] 像素分辨率: {pixel_width_deg:.6f}° x {pixel_height_deg:.6f}°")
-        print(f"[信息] 中心纬度: {center_lat:.4f}°, cos(lat)={cos_lat:.6f}")
-        print(f"[信息] 单像素面积: {pixel_area_km2:.6f} km²")
+        # 计算单像素面积
+        if is_projected:
+            # 投影坐标系：像素尺寸单位为米，直接换算为平方千米
+            pixel_area_km2 = (pixel_width * pixel_height) / M2_TO_KM2
+            print(f"[信息] 像素分辨率: {pixel_width:.2f}m x {pixel_height:.2f}m")
+            print(f"[信息] 单像素面积: {pixel_area_km2:.8f} km²")
+        else:
+            # 地理坐标系：像素尺寸单位为度，需用纬度修正
+            # 使用统计范围在WGS84中的中心纬度（extent为WGS84坐标）
+            center_lat = (extent.yMinimum() + extent.yMaximum()) / 2.0
+            cos_lat = math.cos(math.radians(center_lat))
+            pixel_area_km2 = (pixel_width * KM_PER_DEGREE * cos_lat) * (pixel_height * KM_PER_DEGREE)
+            print(f"[信息] 像素分辨率: {pixel_width:.6f}° x {pixel_height:.6f}°")
+            print(f"[信息] 中心纬度: {center_lat:.4f}°, cos(lat)={cos_lat:.6f}")
+            print(f"[信息] 单像素面积: {pixel_area_km2:.6f} km²")
 
         # 统计各等级像素数量
         stats_result = []
