@@ -5,12 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>所有报告</title>
     <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+    <link rel="stylesheet" href="/static/css/gov-theme.css">
 </head>
 <body>
 <div style="padding: 15px;">
 
     <!-- 搜索栏 -->
-    <div class="layui-form" style="margin-bottom: 15px;">
+    <div class="gov-search-card layui-form" style="margin-bottom: 15px;">
         <div class="layui-inline">
             <input type="text" id="searchAddress" placeholder="参考位置" class="layui-input">
         </div>
@@ -22,8 +23,12 @@
             <input type="date" id="searchEndDate" placeholder="创建时间止" class="layui-input" style="width:150px;">
         </div>
         <div class="layui-inline">
-            <button class="layui-btn" onclick="searchAllReport()">搜索</button>
-            <button class="layui-btn layui-btn-primary" onclick="resetAllReport()">重置</button>
+            <button class="layui-btn" onclick="searchAllReport()">
+                <i class="layui-icon layui-icon-search"></i> 搜索
+            </button>
+            <button class="layui-btn layui-btn-primary" onclick="resetAllReport()">
+                <i class="layui-icon layui-icon-refresh"></i> 重置
+            </button>
             <button class="layui-btn layui-btn-danger" onclick="batchDelete()">
                 <i class="layui-icon layui-icon-delete"></i> 批量删除
             </button>

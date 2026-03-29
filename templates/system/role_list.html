@@ -5,18 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>角色管理</title>
     <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+    <link rel="stylesheet" href="/static/css/gov-theme.css">
 </head>
 <body>
     <div style="padding: 15px;">
         <!-- 搜索栏 -->
-        <div class="layui-form" style="margin-bottom: 15px;">
+        <div class="gov-search-card layui-form" style="margin-bottom: 15px;">
             <div class="layui-inline">
                 <input type="text" id="searchKeyword" placeholder="搜索角色名称" class="layui-input">
             </div>
             <div class="layui-inline">
-                <button class="layui-btn" onclick="searchRoles()">搜索</button>
-                <button class="layui-btn layui-btn-primary" onclick="resetSearch()">重置</button>
-                <button class="layui-btn layui-btn-normal" onclick="addRole()">新增角色</button>
+                <button class="layui-btn" onclick="searchRoles()">
+                    <i class="layui-icon layui-icon-search"></i> 搜索
+                </button>
+                <button class="layui-btn layui-btn-primary" onclick="resetSearch()">
+                    <i class="layui-icon layui-icon-refresh"></i> 重置
+                </button>
+                <button class="layui-btn layui-btn-normal" onclick="addRole()">
+                    <i class="layui-icon layui-icon-add-1"></i> 新增角色
+                </button>
             </div>
         </div>
         

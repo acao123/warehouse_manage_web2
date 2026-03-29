@@ -7,52 +7,70 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/static/img/logo.png">
     <title>地震滑坡灾害评估系统</title>
     <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
+    <link rel="stylesheet" href="/static/css/gov-theme.css">
     <style>
         body {
             margin: 0;
             padding: 0;
+            background-color: #F0F2F5;
         }
 
+        /* ---- Header ---- */
         .layui-layout-admin .layui-header {
-            background-color: #23262E;
+            background: linear-gradient(90deg, #0E4A8A, #165AA7, #3A7BD5);
+            box-shadow: 0 1px 4px rgba(58, 123, 213, 0.3), 0 2px 8px rgba(14, 74, 138, 0.2);
         }
 
+        /* ---- Sidebar ---- */
         .layui-layout-admin .layui-side {
-            background-color: #2F3542;
+            background-color: #0E3D6F;
         }
-
         .layui-layout-admin .layui-side .layui-nav {
-            background-color: #2F3542;
+            background-color: #0E3D6F;
         }
 
+        /* ---- Logo ---- */
         .layui-logo img {
             height: 30px;
             vertical-align: middle;
             margin-right: 8px;
         }
-
         .layui-logo {
             color: #fff;
             font-size: 18px;
             font-weight: bold;
+            letter-spacing: 2px;
         }
 
+        /* ---- 导航文字 ---- */
         .layui-nav-tree .layui-nav-item a {
-            color: #fff;
+            color: rgba(255, 255, 255, 0.88);
+            transition: background 0.2s;
+        }
+        .layui-nav-tree .layui-nav-item > a:hover {
+            background-color: rgba(22, 90, 167, 0.3) !important;
+            color: #fff !important;
         }
 
+        /* ---- 侧边栏选中项 ---- */
         .layui-nav-tree .layui-nav-child dd.layui-this,
         .layui-nav-tree .layui-nav-child dd.layui-this a,
         .layui-nav-tree .layui-this,
         .layui-nav-tree .layui-this > a {
-            background-color: #009688 !important;
+            background-color: #165AA7 !important;
+            border-left: 3px solid #fff;
+            color: #fff !important;
         }
 
+        /* ---- Tab 标签 ---- */
+        .layui-tab-title .layui-this {
+            border-bottom: 2px solid #165AA7 !important;
+            color: #165AA7 !important;
+        }
         .layui-tab-title li {
             position: relative;
             padding-right: 40px !important;
         }
-
         .layui-tab-title .layui-tab-close {
             position: absolute;
             right: 15px;
@@ -60,11 +78,9 @@
             transform: translateY(-50%);
             color: #999;
         }
-
         .layui-tab-title .layui-tab-close:hover {
-            color: #ff5722;
+            color: #F56C6C !important;
         }
-
         .layui-tab-title li .layui-tab-close {
             position: relative;
             display: inline-block;
@@ -78,76 +94,89 @@
             transition: all .2s;
             -webkit-transition: all .2s;
         }
-        
-        /* 让 layui-body 填满视口（减去 header 高度） */
+
+        /* ---- 内容区body ---- */
         .layui-body {
             top: 60px;
             bottom: 0;
             position: absolute;
             left: 200px;
             right: 0;
+            background-color: #F0F2F5;
         }
 
-        /* 让 tab 组件充满 layui-body */
+        /* ---- Tab 充满 layui-body ---- */
         .layui-tab-card {
             height: 100%;
             display: flex;
             flex-direction: column;
         }
-
         .layui-tab-content {
             flex: 1;
             overflow: hidden;
+            background-color: #F0F2F5;
         }
-
         .layui-tab-item {
             height: 100%;
         }
 
-        /* iframe 自适应父容器高度 */
+        /* ---- iframe 自适应父容器高度 ---- */
         iframe {
             width: 100%;
             height: 100%;
             border: none;
         }
 
-        /* 侧边栏折叠相关样式 */
+        /* ---- 侧边栏折叠相关样式 ---- */
         .layui-side-shrink .layui-side {
             width: 60px;
         }
-
         .layui-side-shrink .layui-side .layui-nav-tree .layui-nav-item > a > span,
         .layui-side-shrink .layui-side .layui-nav-tree .layui-nav-child {
             display: none;
         }
-
         .layui-side-shrink .layui-body {
             left: 60px;
         }
-
         .layui-side-shrink .layui-footer {
             left: 60px;
         }
-
         .layui-side-shrink .layui-side .layui-nav-item a .layui-icon {
             font-size: 18px;
             margin-right: 0;
         }
 
-        /* 折叠按钮样式 */
+        /* ---- 折叠按钮 ---- */
         .sidebar-toggle {
             display: inline-block;
             padding: 0 15px;
             cursor: pointer;
-            color: #fff;
+            color: rgba(255,255,255,0.88);
             line-height: 60px;
             background: none;
             border: none;
             font-size: 16px;
+            transition: background 0.2s;
+        }
+        .sidebar-toggle:hover {
+            background-color: rgba(255, 255, 255, 0.1);
         }
 
-        .sidebar-toggle:hover {
-            background-color: rgba(255, 255, 255, .05);
+        /* ---- 右上角用户导航 ---- */
+        .layui-layout-right .layui-nav-item > a {
+            color: rgba(255,255,255,0.9) !important;
+        }
+        .layui-layout-right .layui-nav-child {
+            background: #fff;
+            border: 1px solid #D9E2EC;
+            box-shadow: 0 4px 12px rgba(22,90,167,0.15);
+        }
+        .layui-layout-right .layui-nav-child dd a {
+            color: #333 !important;
+        }
+        .layui-layout-right .layui-nav-child dd a:hover {
+            color: #165AA7 !important;
+            background-color: #E8F0FE !important;
         }
     </style>
 </head>
@@ -210,19 +239,59 @@
             </ul>
             <div class="layui-tab-content">
                 <div class="layui-tab-item layui-show">
-                    <div style="padding: 20px;">
-                        <blockquote class="layui-elem-quote">
-                            欢迎使用地震滑坡灾害评估系统！
-                        </blockquote>
-                        <fieldset class="layui-elem-field layui-field-title">
-                            <legend>系统信息</legend>
-                        </fieldset>
+                    <div style="padding: 24px;">
+                        <div style="margin-bottom: 20px;">
+                            <blockquote class="layui-elem-quote" style="font-size:15px;">
+                                <i class="layui-icon layui-icon-home" style="color:#165AA7;margin-right:6px;"></i>
+                                欢迎使用地震滑坡灾害评估系统！
+                            </blockquote>
+                        </div>
                         <div class="layui-row layui-col-space15">
-                            <div class="layui-col-md3">
-                                <div style="padding: 20px; background: #fff; border-radius: 4px; box-shadow: 0 1px 2px 0 rgba(0,0,0,.05);">
-                                    <p>当前用户：<strong>{{ user.nickname }}</strong></p>
-                                    <p>用户名：{{ user.username }}</p>
-                                    <p>部门：{{ user.department }}</p>
+                            <div class="layui-col-md4">
+                                <div class="welcome-card">
+                                    <div class="welcome-card-top"></div>
+                                    <div class="welcome-card-body">
+                                        <p style="font-size:15px;font-weight:600;color:#165AA7;margin-bottom:10px;">
+                                            <i class="layui-icon layui-icon-username" style="margin-right:4px;"></i>
+                                            当前用户信息
+                                        </p>
+                                        <p>昵 称：<strong>{{ user.nickname }}</strong></p>
+                                        <p>用户名：{{ user.username }}</p>
+                                        <p>部 门：{{ user.department }}</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="layui-col-md4">
+                                <div class="welcome-card">
+                                    <div class="welcome-card-top"></div>
+                                    <div class="welcome-card-body">
+                                        <p style="font-size:15px;font-weight:600;color:#165AA7;margin-bottom:10px;">
+                                            <i class="layui-icon layui-icon-console" style="margin-right:4px;"></i>
+                                            系统说明
+                                        </p>
+                                        <p>本系统用于地震诱发滑坡灾害的快速评估与分析，为应急响应提供科学决策支持。</p>
+                                        <p style="margin-top:8px;color:#165AA7;font-size:12px;">中国地震灾害防御中心</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="layui-col-md4">
+                                <div class="welcome-card">
+                                    <div class="welcome-card-top"></div>
+                                    <div class="welcome-card-body">
+                                        <p style="font-size:15px;font-weight:600;color:#165AA7;margin-bottom:10px;">
+                                            <i class="layui-icon layui-icon-log" style="margin-right:4px;"></i>
+                                            快速操作
+                                        </p>
+                                        <p><a href="javascript:;" onclick="parent.addTab && parent.addTab('执行报告', '/report/execute/')" style="color:#165AA7;">
+                                            <i class="layui-icon layui-icon-right" style="font-size:12px;"></i> 执行评估任务
+                                        </a></p>
+                                        <p><a href="javascript:;" onclick="parent.addTab && parent.addTab('我的报告', '/report/my/')" style="color:#165AA7;">
+                                            <i class="layui-icon layui-icon-right" style="font-size:12px;"></i> 查看我的报告
+                                        </a></p>
+                                        <p><a href="javascript:;" onclick="parent.addTab && parent.addTab('所有报告', '/report/all/')" style="color:#165AA7;">
+                                            <i class="layui-icon layui-icon-right" style="font-size:12px;"></i> 查看所有报告
+                                        </a></p>
+                                    </div>
                                 </div>
                             </div>
                         </div>

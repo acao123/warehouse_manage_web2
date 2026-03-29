@@ -1,0 +1,306 @@
+/* =====================================================
+   地震滑坡灾害评估系统 — 中国政务风全局主题
+   主色: #165AA7  深色: #0E4A8A  浅色: #3A7BD5
+   辅助浅蓝: #E8F0FE  背景灰: #F0F2F5
+===================================================== */
+
+/* ---- 全局基础 ---- */
+body {
+    background-color: #F0F2F5;
+    font-family: 'Microsoft YaHei', '微软雅黑', Arial, sans-serif;
+    color: #333333;
+}
+
+/* ---- 主按钮 ---- */
+.layui-btn {
+    background-color: #165AA7;
+    border-color: #165AA7;
+    color: #fff;
+}
+.layui-btn:hover,
+.layui-btn:focus {
+    background-color: #0E4A8A;
+    border-color: #0E4A8A;
+    color: #fff;
+}
+.layui-btn-normal {
+    background-color: #3A7BD5;
+    border-color: #3A7BD5;
+    color: #fff;
+}
+.layui-btn-normal:hover,
+.layui-btn-normal:focus {
+    background-color: #165AA7;
+    border-color: #165AA7;
+    color: #fff;
+}
+.layui-btn-danger {
+    background-color: #F56C6C;
+    border-color: #F56C6C;
+    color: #fff;
+}
+.layui-btn-danger:hover,
+.layui-btn-danger:focus {
+    background-color: #e45555;
+    border-color: #e45555;
+    color: #fff;
+}
+.layui-btn-primary {
+    background-color: #fff;
+    border-color: #D9E2EC;
+    color: #666666;
+}
+.layui-btn-primary:hover,
+.layui-btn-primary:focus {
+    background-color: #E8F0FE;
+    border-color: #165AA7;
+    color: #165AA7;
+}
+.layui-btn-disabled,
+.layui-btn[disabled] {
+    background-color: #c8d6e5 !important;
+    border-color: #c8d6e5 !important;
+    color: #fff !important;
+    cursor: not-allowed;
+}
+
+/* ---- 表格表头 ---- */
+.layui-table thead th {
+    background-color: #165AA7 !important;
+    color: #fff !important;
+    border-color: #1a6bc0 !important;
+    font-weight: 600;
+}
+.layui-table thead th .layui-table-cell {
+    color: #fff !important;
+}
+.layui-table tbody tr:nth-child(even) td {
+    background-color: #E8F0FE;
+}
+.layui-table tbody tr:hover td {
+    background-color: #D4E4F7 !important;
+}
+
+/* ---- 表单输入框聚焦 ---- */
+.layui-input:focus,
+.layui-textarea:focus,
+.layui-select:focus {
+    border-color: #165AA7 !important;
+    box-shadow: 0 0 4px rgba(22, 90, 167, 0.25);
+    outline: none;
+}
+
+/* ---- 分页 ---- */
+.layui-laypage .layui-laypage-curr .layui-laypage-em {
+    background-color: #165AA7;
+}
+.layui-laypage a:hover {
+    color: #165AA7;
+}
+.layui-laypage .layui-laypage-curr em:last-child {
+    color: #fff;
+}
+
+/* ---- 搜索/工具栏卡片容器 ---- */
+.gov-search-card {
+    background: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(22, 90, 167, 0.1);
+    padding: 15px 20px;
+    margin-bottom: 15px;
+    border: 1px solid #D9E2EC;
+}
+
+/* ---- 内容区卡片 ---- */
+.gov-card {
+    background: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(22, 90, 167, 0.08);
+    border: 1px solid #D9E2EC;
+    overflow: hidden;
+}
+
+/* ---- 卡片顶部装饰条 ---- */
+.gov-card-header {
+    background: linear-gradient(90deg, #0E4A8A, #165AA7, #3A7BD5);
+    height: 4px;
+    border-radius: 8px 8px 0 0;
+}
+
+/* ---- LayUI 卡片覆盖 ---- */
+.layui-card {
+    box-shadow: 0 2px 8px rgba(22, 90, 167, 0.08);
+    border: 1px solid #D9E2EC;
+    border-radius: 8px;
+}
+.layui-card-header {
+    background: linear-gradient(90deg, #0E4A8A, #165AA7);
+    color: #fff !important;
+    border-bottom: none;
+    font-weight: 600;
+    font-size: 14px;
+    border-radius: 8px 8px 0 0;
+}
+
+/* ---- 报告区块样式覆盖 ---- */
+.report-block {
+    border: 1px solid #D9E2EC;
+    border-radius: 6px;
+    background: #ffffff;
+    box-shadow: 0 1px 4px rgba(22, 90, 167, 0.06);
+}
+.report-block-title {
+    border-left: 3px solid #165AA7 !important;
+    color: #165AA7 !important;
+}
+
+/* ---- 进度条 ---- */
+.progress-section {
+    border: 1px solid #D9E2EC;
+    background: #ffffff;
+}
+.progress-runner {
+    background: linear-gradient(90deg, transparent, #165AA7 50%, transparent) !important;
+}
+.layui-progress-bar {
+    background-color: #165AA7;
+}
+
+/* ---- 角色复选框区域 ---- */
+#roleCheckbox {
+    background-color: #E8F0FE;
+    border: 1px solid #D9E2EC;
+    border-radius: 4px;
+    padding: 10px 12px;
+}
+
+/* ---- 菜单树区域 ---- */
+#menuTree {
+    border: 1px solid #D9E2EC !important;
+    border-radius: 4px;
+    background-color: #fafcff;
+}
+
+/* ---- 表单 label ---- */
+.layui-form-label {
+    color: #333333;
+    font-weight: 500;
+}
+
+/* ---- 选项卡标签 ---- */
+.layui-tab-title .layui-this {
+    border-bottom: 2px solid #165AA7 !important;
+    color: #165AA7 !important;
+}
+.layui-tab-title li:hover {
+    color: #165AA7;
+}
+
+/* ---- 关闭按钮 ---- */
+.layui-tab-close:hover {
+    color: #F56C6C !important;
+}
+
+/* ---- LayUI 弹窗按钮 ---- */
+.layui-layer-btn .layui-layer-btn0 {
+    background-color: #165AA7;
+    border-color: #165AA7;
+}
+.layui-layer-btn .layui-layer-btn0:hover {
+    background-color: #0E4A8A;
+    border-color: #0E4A8A;
+}
+
+/* ---- 引用块 ---- */
+.layui-elem-quote {
+    border-left: 4px solid #165AA7;
+    background-color: #E8F0FE;
+    color: #333;
+    padding: 12px 16px;
+    border-radius: 0 4px 4px 0;
+}
+
+/* ---- 欢迎页系统信息卡片 ---- */
+.welcome-card {
+    background: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(22, 90, 167, 0.1);
+    overflow: hidden;
+    transition: box-shadow 0.3s;
+}
+.welcome-card:hover {
+    box-shadow: 0 4px 16px rgba(22, 90, 167, 0.18);
+}
+.welcome-card-top {
+    background: linear-gradient(135deg, #165AA7, #3A7BD5);
+    height: 5px;
+}
+.welcome-card-body {
+    padding: 18px 20px;
+}
+.welcome-card-body p {
+    margin: 6px 0;
+    color: #555;
+    font-size: 14px;
+    line-height: 1.7;
+}
+.welcome-card-body strong {
+    color: #165AA7;
+}
+
+/* ---- stat卡片组 ---- */
+.stat-card {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 2px 8px rgba(22, 90, 167, 0.08);
+    border: 1px solid #D9E2EC;
+    text-align: center;
+    transition: box-shadow 0.3s, transform 0.2s;
+}
+.stat-card:hover {
+    box-shadow: 0 4px 16px rgba(22, 90, 167, 0.18);
+    transform: translateY(-2px);
+}
+.stat-card-icon {
+    font-size: 36px;
+    color: #165AA7;
+    margin-bottom: 10px;
+}
+.stat-card-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #165AA7;
+}
+.stat-card-label {
+    font-size: 13px;
+    color: #666;
+    margin-top: 4px;
+}
+
+/* ---- 系统标题区 ---- */
+.gov-page-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #165AA7;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #E8F0FE;
+    margin-bottom: 15px;
+    letter-spacing: 1px;
+}
+
+/* ---- 链接颜色 ---- */
+a {
+    color: #165AA7;
+}
+a:hover {
+    color: #0E4A8A;
+    text-decoration: none;
+}
+
+/* ---- select 渲染后的下拉面板 ---- */
+.layui-form-select dl dd.layui-this,
+.layui-form-select dl dd:hover {
+    color: #165AA7;
+    background-color: #E8F0FE;
+}
