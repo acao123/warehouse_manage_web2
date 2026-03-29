@@ -5,65 +5,237 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/img/logo.png">
     <link rel="icon" type="image/png" sizes="16x16" href="/static/img/logo.png">
-    <title>地震滑坡灾害评估系统</title>
+    <title>地震滑坡评估系统</title>
     <link rel="stylesheet" href="/static/layui/layui/css/layui.css">
     <style>
-        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+            font-family: "Microsoft YaHei", sans-serif;
+        }
+
         body {
-            margin: 0;
-            padding: 0;
+            display: flex;
+            flex-direction: column;
+            background-color: #f8f9fa;
         }
 
-        .layui-layout-admin .layui-header {
-            background-color: #23262E;
+        /* ===== 头部 ===== */
+        .gov-header-top {
+            background: #ffffff;
+            height: 90px;
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            border-bottom: 1px solid #e8f0fe;
+            justify-content: space-between;
+            flex-shrink: 0;
+            z-index: 200;
         }
 
-        .layui-layout-admin .layui-side {
-            background-color: #2F3542;
+        .header-logo-box {
+            display: flex;
+            align-items: center;
         }
 
-        .layui-layout-admin .layui-side .layui-nav {
-            background-color: #2F3542;
+        .logo-img1 {
+            height: 56px;
+            width: 56px;
+            margin-right: 10px;
         }
 
-        .layui-logo img {
-            height: 30px;
-            vertical-align: middle;
-            margin-right: 8px;
-        }
-
-        .layui-logo {
-            color: #fff;
-            font-size: 18px;
+        .title-box h1 {
+            font-size: 30px;
+            color: #5a93e8;
             font-weight: bold;
         }
 
-        .layui-nav-tree .layui-nav-item a {
-            color: #fff;
+        /* 用户信息区 */
+        .user-info-box {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            position: relative;
         }
 
-        .layui-nav-tree .layui-nav-child dd.layui-this,
-        .layui-nav-tree .layui-nav-child dd.layui-this a,
-        .layui-nav-tree .layui-this,
-        .layui-nav-tree .layui-this > a {
-            background-color: #009688 !important;
+        .user-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: #5a93e8;
+            color: white;
+            text-align: center;
+            line-height: 40px;
+            font-size: 18px;
+            margin-right: 10px;
         }
 
+        .user-name {
+            font-size: 16px;
+            color: #333;
+        }
+
+        .logout-menu {
+            position: absolute;
+            top: 50px;
+            right: 0;
+            background: #fff;
+            width: 120px;
+            border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: none;
+            z-index: 9999;
+        }
+
+        .logout-menu a {
+            display: block;
+            padding: 10px 15px;
+            color: #333;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .logout-menu a:hover {
+            background-color: #f5f7fa;
+            color: #5a93e8;
+        }
+
+        .user-info-box:hover .logout-menu {
+            display: block;
+        }
+
+        /* ===== 导航条 ===== */
+        .gov-nav-box {
+            background: #5a93e8;
+            height: 50px;
+            line-height: 50px;
+            padding: 0 20px;
+            flex-shrink: 0;
+            z-index: 100;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+
+        .nav-list {
+            list-style: none;
+            display: flex;
+        }
+
+        .nav-list > li {
+            position: relative;
+            padding: 0 20px;
+            cursor: pointer;
+        }
+
+        .nav-list > li > a {
+            color: #ffffff;
+            font-size: 16px;
+            text-decoration: none;
+            display: block;
+            transition: color 0.2s;
+        }
+
+        .nav-list > li > a:hover {
+            color: #e8f0fe !important;
+        }
+
+        .nav-list > li.active {
+            background-color: #4d8eee !important;
+        }
+
+        /* 二级菜单 */
+        .nav-list li .sub-nav {
+            position: absolute;
+            top: 50px;
+            left: 0;
+            background: #ffffff;
+            width: 200px;
+            border-radius: 6px;
+            box-shadow: 0 6px 15px rgba(0,0,0,0.12);
+            display: none;
+            z-index: 9999;
+            overflow: hidden;
+            padding: 6px 0;
+            list-style: none;
+        }
+
+        .nav-list li .sub-nav li {
+            padding: 0;
+            height: 42px;
+            line-height: 42px;
+            padding-left: 18px;
+        }
+
+        .nav-list li .sub-nav li a {
+            color: #333 !important;
+            font-size: 15px;
+            text-decoration: none;
+            display: block;
+            transition: all 0.2s;
+        }
+
+        .nav-list li .sub-nav li a:hover {
+            background-color: #edf4ff !important;
+            color: #367fa9 !important;
+            padding-left: 6px;
+        }
+
+        /* 三角图标 */
+        .triangle-icon {
+            display: inline-block;
+            width: 0;
+            height: 0;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 5px solid #ffffff;
+            margin-left: 5px;
+            vertical-align: middle;
+            transition: transform 0.3s ease;
+        }
+
+        .nav-list > li:hover .triangle-icon {
+            transform: rotate(180deg);
+        }
+
+        /* ===== 内容主体 ===== */
+        .main-body {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .layui-tab-card {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            margin: 0;
+            border-radius: 0;
+        }
+
+        .layui-tab-content {
+            flex: 1;
+            overflow: hidden;
+            padding: 0;
+        }
+
+        .layui-tab-item {
+            height: 100%;
+            padding: 0;
+        }
+
+        iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        /* Tab 关闭按钮 */
         .layui-tab-title li {
             position: relative;
             padding-right: 40px !important;
-        }
-
-        .layui-tab-title .layui-tab-close {
-            position: absolute;
-            right: 15px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #999;
-        }
-
-        .layui-tab-title .layui-tab-close:hover {
-            color: #ff5722;
         }
 
         .layui-tab-title li .layui-tab-close {
@@ -79,152 +251,69 @@
             transition: all .2s;
             -webkit-transition: all .2s;
         }
-        
-        /* 让 layui-body 填满视口（减去 header 高度） */
-        .layui-body {
-            top: 60px;
-            bottom: 0;
-            position: absolute;
-            left: 200px;
-            right: 0;
-        }
 
-        /* 让 tab 组件充满 layui-body */
-        .layui-tab-card {
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .layui-tab-content {
-            flex: 1;
-            overflow: hidden;
-        }
-
-        .layui-tab-item {
-            height: 100%;
-        }
-
-        /* iframe 自适应父容器高度 */
-        iframe {
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-
-        /* 侧边栏折叠相关样式 */
-        .layui-side-shrink .layui-side {
-            width: 60px;
-        }
-
-        .layui-side-shrink .layui-side .layui-nav-tree .layui-nav-item > a > span,
-        .layui-side-shrink .layui-side .layui-nav-tree .layui-nav-child {
-            display: none;
-        }
-
-        .layui-side-shrink .layui-body {
-            left: 60px;
-        }
-
-        .layui-side-shrink .layui-footer {
-            left: 60px;
-        }
-
-        .layui-side-shrink .layui-side .layui-nav-item a .layui-icon {
-            font-size: 18px;
-            margin-right: 0;
-        }
-
-        /* 折叠按钮样式 */
-        .sidebar-toggle {
-            display: inline-block;
-            padding: 0 15px;
-            cursor: pointer;
-            color: #fff;
-            line-height: 60px;
-            background: none;
-            border: none;
-            font-size: 16px;
-        }
-
-        .sidebar-toggle:hover {
-            background-color: rgba(255, 255, 255, .05);
+        .layui-tab-title li .layui-tab-close:hover {
+            color: #ff5722;
         }
     </style>
 </head>
-<body class="layui-layout-body">
-<div class="layui-layout layui-layout-admin">
-    <!-- 头部 -->
-    <div class="layui-header">
-        <div class="layui-logo"><img src="/static/img/logo.png" alt="系统Logo">地震滑坡灾害评估系统</div>
-        <ul class="layui-nav layui-layout-right">
-            <li class="layui-nav-item">
-                <a href="javascript:;">
-                    <i class="layui-icon layui-icon-username"></i>
-                    {{ user.nickname }}
-                </a>
-                <dl class="layui-nav-child">
-                    <dd><a href="javascript:" onclick="logout()">退出登录</a></dd>
-                </dl>
-            </li>
-        </ul>
-    </div>
+<body>
 
-    <!-- 侧边栏 -->
-    <div class="layui-side layui-bg-black">
-        <div class="layui-side-scroll">
-            <ul class="layui-nav layui-nav-tree" lay-filter="sidebar">
-                {% for menu in menus %}
-                    <li class="layui-nav-item">
-                        {% if menu.children %}
-                            <a href="javascript:;">
-                                <i class="layui-icon {{ menu.icon }}"></i>
-                                <span>{{ menu.name }}</span>
-                            </a>
-                            <dl class="layui-nav-child">
-                                {% for child in menu.children %}
-                                    <dd>
-                                        <a href="javascript:;"
-                                           onclick="addTab('{{ child.name }}', '{{ child.route }}')">
-                                            {{ child.name }}
-                                        </a>
-                                    </dd>
-                                {% endfor %}
-                            </dl>
-                        {% else %}
-                            <a href="javascript:;" onclick="addTab('{{ menu.name }}', '{{ menu.route }}')">
-                                <i class="layui-icon {{ menu.icon }}"></i>
-                                <span>{{ menu.name }}</span>
-                            </a>
-                        {% endif %}
-                    </li>
-                {% endfor %}
-            </ul>
+<!-- 头部 -->
+<div class="gov-header-top">
+    <div class="header-logo-box">
+        <img src="/static/img/logo.png" class="logo-img1" alt="系统Logo">
+        <div class="title-box">
+            <h1>地震滑坡评估系统</h1>
         </div>
     </div>
+    <div class="user-info-box">
+        <div class="user-avatar">{{ user.nickname|slice:":1" }}</div>
+        <div class="user-name">{{ user.nickname }}</div>
+        <div class="logout-menu">
+            <a href="javascript:logout();">退出登录</a>
+        </div>
+    </div>
+</div>
 
-    <!-- 内容主体 -->
-    <div class="layui-body">
-        <div class="layui-tab layui-tab-card" lay-filter="bodyTab" lay-allowclose="true">
-            <ul class="layui-tab-title">
-                <li class="layui-this" lay-id="home">首页</li>
+<!-- 导航菜单 -->
+<div class="gov-nav-box">
+    <ul class="nav-list">
+        {% for menu in menus %}
+        <li>
+            {% if menu.children %}
+            <a href="javascript:;">{{ menu.name }} <span class="triangle-icon"></span></a>
+            <ul class="sub-nav">
+                {% for child in menu.children %}
+                <li><a href="javascript:;" onclick="addTab('{{ child.name }}', '{{ child.route }}')">{{ child.name }}</a></li>
+                {% endfor %}
             </ul>
-            <div class="layui-tab-content">
-                <div class="layui-tab-item layui-show">
-                    <div style="padding: 20px;">
-                        <blockquote class="layui-elem-quote">
-                            欢迎使用地震滑坡灾害评估系统！
-                        </blockquote>
-                        <fieldset class="layui-elem-field layui-field-title">
-                            <legend>系统信息</legend>
-                        </fieldset>
-                        <div class="layui-row layui-col-space15">
-                            <div class="layui-col-md3">
-                                <div style="padding: 20px; background: #fff; border-radius: 4px; box-shadow: 0 1px 2px 0 rgba(0,0,0,.05);">
-                                    <p>当前用户：<strong>{{ user.nickname }}</strong></p>
-                                    <p>用户名：{{ user.username }}</p>
-                                    <p>部门：{{ user.department }}</p>
-                                </div>
+            {% else %}
+            <a href="javascript:;" onclick="addTab('{{ menu.name }}', '{{ menu.route }}')">{{ menu.name }}</a>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+
+<!-- 内容主体 -->
+<div class="main-body">
+    <div class="layui-tab layui-tab-card" lay-filter="bodyTab" lay-allowclose="true">
+        <ul class="layui-tab-title">
+            <li class="layui-this" lay-id="home">首页</li>
+        </ul>
+        <div class="layui-tab-content">
+            <div class="layui-tab-item layui-show">
+                <div style="padding: 20px; background: #f8f9fa; height: 100%; overflow-y: auto;">
+                    <blockquote class="layui-elem-quote layui-quote-nm" style="background:#fff; border-left:4px solid #5a93e8; padding:15px 20px; margin-bottom:20px;">
+                        欢迎使用地震滑坡评估系统！
+                    </blockquote>
+                    <div class="layui-row layui-col-space15">
+                        <div class="layui-col-md4">
+                            <div style="padding:20px; background:#fff; border-radius:4px; box-shadow:0 1px 3px rgba(0,0,0,0.05); border:1px solid #e8f0fe;">
+                                <p>当前用户：<strong>{{ user.nickname }}</strong></p>
+                                <p style="margin-top:8px;">用户名：{{ user.username }}</p>
+                                <p style="margin-top:8px;">部门：{{ user.department }}</p>
                             </div>
                         </div>
                     </div>
@@ -239,39 +328,62 @@
 <script>
     layui.use(['element', 'layer'], function () {
         var element = layui.element;
-        var layer = layui.layer;
 
-        // 监听Tab切换
         element.on('tab(bodyTab)', function (data) {
             console.log('切换到Tab', data.index);
         });
+
+        // 一级菜单点击激活
+        $('.nav-list > li').click(function () {
+            $('.nav-list > li').removeClass('active');
+            $(this).addClass('active');
+        });
+
+        // 二级菜单点击：关闭下拉 + 激活父级
+        $('.sub-nav li a').click(function (e) {
+            e.stopPropagation();
+            $('.sub-nav').hide();
+            var parentLi = $(this).closest('.nav-list > li');
+            $('.nav-list > li').removeClass('active');
+            parentLi.addClass('active');
+        });
+
+        // 鼠标离开导航条隐藏下拉
+        $(".gov-nav-box").mouseleave(function () {
+            $(".sub-nav").hide();
+        });
+
+        // 鼠标移入显示下拉
+        $(".nav-list > li").mouseenter(function () {
+            $(this).find(".sub-nav").show();
+        });
     });
 
-    // 添加Tab页
+    // 添加 Tab 页
     function addTab(title, url) {
         var element = layui.element;
         var tabId = 'tab_' + new Date().getTime();
 
-        // 检查是否已经打开
         var isActive = false;
         $('.layui-tab-title li').each(function () {
             if ($(this).attr('lay-id') !== undefined && $(this).text().indexOf(title) !== -1) {
                 element.tabChange('bodyTab', $(this).attr('lay-id'));
                 isActive = true;
+                return false;
             }
         });
 
         if (!isActive) {
             element.tabAdd('bodyTab', {
                 title: title + '<i class="layui-icon layui-icon-close layui-tab-close" onclick="closeTab(\'' + tabId + '\')"></i>',
-                content: '<iframe src="' + url + '" frameborder="0" style="width:100%; height:100%;"></iframe>',
+                content: '<iframe src="' + url + '" frameborder="0" style="width:100%;height:100%;"></iframe>',
                 id: tabId
             });
             element.tabChange('bodyTab', tabId);
         }
     }
 
-    // 关闭Tab页
+    // 关闭 Tab 页
     function closeTab(tabId) {
         layui.element.tabDelete('bodyTab', tabId);
         event.stopPropagation();
@@ -283,23 +395,6 @@
             window.location.href = '/logout/';
             layui.layer.close(index);
         });
-    }
-
-    // 切换侧边栏折叠状态
-    function toggleSidebar() {
-        var $layout = $('.layui-layout');
-        var $icon = $('#toggleIcon');
-        var $toggle = $('.sidebar-toggle');
-
-        if ($layout.hasClass('layui-side-shrink')) {
-            $layout.removeClass('layui-side-shrink');
-            $icon.removeClass('layui-icon-spread-left').addClass('layui-icon-shrink-right');
-            $toggle.attr('aria-expanded', 'true');
-        } else {
-            $layout.addClass('layui-side-shrink');
-            $icon.removeClass('layui-icon-shrink-right').addClass('layui-icon-spread-left');
-            $toggle.attr('aria-expanded', 'false');
-        }
     }
 </script>
 </body>
