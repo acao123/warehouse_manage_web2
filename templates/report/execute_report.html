@@ -18,7 +18,7 @@
             font-weight: bold;
             color: #333;
             margin-bottom: 12px;
-            border-left: 3px solid #1E9FFF;
+            border-left: 3px solid #5a93e8;
             padding-left: 8px;
         }
         /* 折叠块 */
@@ -64,6 +64,21 @@
         }
         .progress-runner.active {
             display: block;
+        }
+        /* 主题色按钮 */
+        .layui-btn:not(.layui-btn-primary):not(.layui-btn-danger):not(.layui-btn-disabled) {
+            background-color: #5a93e8 !important;
+            border-color: #5a93e8 !important;
+            color: #fff !important;
+        }
+        /* 表格优化 */
+        .layui-table thead th {
+            background-color: #edf4ff;
+            font-size: 15px;
+            font-weight: bold;
+        }
+        .layui-table tbody tr:hover td {
+            background-color: #edf4ff !important;
         }
     </style>
 </head>
