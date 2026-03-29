@@ -18,7 +18,9 @@
             height: 100%;
         }
         body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            {#background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);#}
+            background-image:url("/static/img/login_backgroud.png");
+            background-size: 100% 100%; 
             min-height: 100vh;
             display: flex;
             flex-direction: column;
@@ -110,6 +112,49 @@
             color: rgba(255, 255, 255, 0.7);
             font-size: 14px;
         }
+
+        .login-container {
+            /* 半透明底色 */
+            background: rgba(255, 255, 255, 0.7);
+            /* 毛玻璃模糊效果 */
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            width: 460px;
+        }
+
+        .layui-btn {
+            display: inline-block;
+            vertical-align: middle;
+            height: 38px;
+            line-height: 38px;
+            border: 1px solid transparent;
+            padding: 0 18px;
+            background-color: #1e9fff;;
+            color: #fff;
+            white-space: nowrap;
+            text-align: center;
+            font-size: 14px;
+            border-radius: 2px;
+            cursor: pointer;
+            -moz-user-select: none;
+            -webkit-user-select: none;
+            -ms-user-select: none;
+        }
+
+        .layui-form-label {
+            position: relative;
+            float: left;
+            display: block;
+            padding: 9px 0;
+            width: 80px;
+            font-weight: 400;
+            line-height: 20px;
+            text-align: right;
+            font-size: 16px;
+        }
     </style>
 </head>
 <body>
@@ -129,7 +174,7 @@
                     </div>
                 </div>
                 <div class="layui-form-item">
-                    <label class="layui-form-label">密码</label>
+                    <label class="layui-form-label">密　码</label>
                     <div class="layui-input-block">
                         <input type="password" name="password" required lay-verify="required" 
                                placeholder="请输入密码" autocomplete="off" class="layui-input">
