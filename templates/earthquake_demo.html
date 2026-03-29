@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>地震滑坡评估系统 - 政务管理平台</title>
+  <link rel="stylesheet" href="E:\code\python\PycharmProjects\static\layui\layui\css\layui.css">
+  <script src=E:\code\python\PycharmProjects\static\js\jquery-3.6.0.min.js></script>
+  <script src="E:\code\python\PycharmProjects\static\layui\layui\layui.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background-color: #f8f9fa;
+      font-family: "Microsoft YaHei", sans-serif;
+    }
+    .gov-header-top {
+      background: #ffffff;
+      height: 90px;
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      border-bottom: 1px solid #e8f0fe;
+      justify-content: space-between; /* 新增：用户名区域右对齐 */
+    }
+    .header-logo-box {
+      display: flex;
+      align-items: center;
+      flex: 1;
+    }
+    .logo-img1 {
+      height: 56px;
+      width: 56px;
+      margin-right: 10px;
+    }
+    .title-box h1 {
+      font-size: 30px;
+      color: #5a93e8;
+      font-weight: bold;
+      line-height: 1.2;
+    }
+    /* 新增：用户名样式 */
+    .user-info-box {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      position: relative;
+    }
+    .user-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background-color: #5a93e8;
+      color: white;
+      text-align: center;
+      line-height: 40px;
+      font-size: 18px;
+      margin-right: 10px;
+    }
+    .user-name {
+      font-size: 16px;
+      color: #333;
+    }
+    .logout-menu {
+      position: absolute;
+      top: 50px;
+      right: 0;
+      background: #fff;
+      width: 120px;
+      border-radius: 4px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      display: none;
+      z-index: 9999;
+    }
+    .logout-menu a {
+      display: block;
+      padding: 10px 15px;
+      color: #333;
+      text-decoration: none;
+      font-size: 14px;
+    }
+    .logout-menu a:hover {
+      background-color: #f5f7fa;
+      color: #5a93e8;
+    }
+    .user-info-box:hover .logout-menu {
+      display: block;
+    }
+
+    .gov-nav-box {
+      background: #5a93e8;
+      height: 50px;
+      line-height: 50px;
+      padding: 0 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    .nav-list {
+      list-style: none;
+      display: flex;
+    }
+    .nav-list li {
+      position: relative;
+      padding: 0 20px;
+      cursor: pointer;
+    }
+    .nav-list li a {
+      color: #ffffff;
+      font-size: 16px;
+      text-decoration: none;
+      display: block;
+      transition: color 0.3s ease; /* 新增：过渡效果 */
+    }
+
+    /* 一级菜单激活样式（只作用于顶级菜单，不影响子菜单） */
+    .nav-list > li.active {
+      background-color: #4d8eee !important;
+    }
+    .nav-list > li.active > a {
+      color: #ffffff !important;
+    }
+
+    /* 新增：导航鼠标移入字体变主题色 */
+    .nav-list li a:hover {
+      color: #e8f0fe !important; /* 主题色Hover效果 */
+    }
+    .nav-list li .sub-nav li a:hover {
+      color: #367fa9 !important;
+    }
+
+    /* 【修复BUG】二级菜单美观样式 + 文字永久可见 */
+    .nav-list li .sub-nav {
+      position: absolute;
+      top: 50px;
+      left: 0;
+      background: #ffffff;
+      width: 200px;
+      border-radius: 6px;
+      box-shadow: 0 6px 15px rgba(0,0,0,0.12);
+      display: none;
+      z-index: 9999;
+      overflow: hidden;
+      padding: 6px 0;
+    }
+    .nav-list li .sub-nav li {
+      padding: 0;
+      height: 42px;
+      line-height: 42px;
+      padding-left: 18px;
+    }
+    /* 二级菜单默认文字颜色（强制黑色，永不消失） */
+    .nav-list li .sub-nav li a {
+      color: #333 !important;
+      font-size: 15px;
+      border-radius: 4px;
+      transition: all 0.2s ease;
+    }
+    /* 二级菜单hover效果 */
+    .nav-list li .sub-nav li a:hover {
+      background-color: #edf4ff !important;
+      color: #367fa9 !important;
+      padding-left: 6px;
+    }
+    .nav-list li:hover .sub-nav {
+      display: block;
+    }
+
+    /* 三角图标 */
+    .triangle-icon {
+      display: inline-block;
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 5px solid #ffffff;
+      margin-left: 5px;
+      transition: transform 0.3s ease;
+    }
+    .nav-list li:hover .triangle-icon {
+      transform: rotate(180deg);
+    }
+
+    .layui-breadcrumb {
+      padding: 15px 20px;
+      background: #fff;
+      border-radius: 4px;
+      margin: 15px 0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    .data-card {
+      background: #fff;
+      border-radius: 4px;
+      padding: 20px;
+      text-align: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+      margin-bottom: 15px;
+      transition: all 0.3s;
+      border: 1px solid #e8f0fe;
+    }
+    .data-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 3px 8px rgba(0,0,0,0.08);
+    }
+    .data-card h3 {
+      font-size: 26px;
+      color: #5a93e8;
+      font-weight: bold;
+      margin: 10px 0;
+    }
+    .data-card p {
+      color: #5f6368;
+      font-size: 14px;
+    }
+    .module-title {
+      font-size: 18px;
+      font-weight: bold;
+      color: #333;
+      border-left: 4px solid #5a93e8;
+      padding-left: 10px;
+      margin: 20px 0;
+    }
+    .eval-panel {
+      background: #fff;
+      border-radius: 4px;
+      padding: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+      border: 1px solid #e8f0fe;
+    }
+    .map-box {
+      width: 100%;
+      height: 380px;
+      background: #f8f9fa;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #5f6368;
+      font-size: 14px;
+      border: 1px solid #e8f0fe;
+    }
+    .gov-footer {
+      background: #2a2a2a;
+      color: #ccc;
+      text-align: center;
+      padding: 25px 0;
+      margin-top: 30px;
+      font-size: 14px;
+    }
+
+    /* 新增：表格样式优化 */
+    .layui-table thead tr {
+      height: 50px !important; /* 表头高度调高 */
+    }
+    .layui-table thead th {
+      line-height: 50px !important;
+      font-size: 15px;
+      font-weight: bold;
+    }
+    /* 表格行hover效果 */
+    .layui-table tbody tr:hover {
+      background-color: #edf4ff !important;
+    }
+    /* 文字超出省略 */
+    .table-text-ellipsis {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 150px; /* 根据需要调整 */
+      position: relative;
+    }
+    /* 悬浮展示全部文字 */
+    .table-text-ellipsis:hover::after {
+      content: attr(data-text);
+      position: absolute;
+      top: -30px;
+      left: 0;
+      background: #333;
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 4px;
+      white-space: nowrap;
+      z-index: 999;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="gov-header-top">
+  <div class="header-logo-box">
+    <img src="E:\code\python\PycharmProjects\static\img\logo.png" class="logo-img1" alt="LOGO1">
+    <div class="title-box">
+      <h1>地震滑坡评估系统</h1>
+    </div>
+  </div>
+  <!-- 新增：登录用户信息区域 -->
+  <div class="user-info-box">
+    <div class="user-avatar">管</div>
+    <div class="user-name">系统管理员</div>
+    <div class="logout-menu">
+      <a href="javascript:logout();">退出登录</a>
+    </div>
+  </div>
+</div>
+
+<div class="gov-nav-box">
+  <ul class="nav-list">
+    <li class="active"><a href="#">首页</a></li>
+    <li>
+      <a href="#">系统管理 <span class="triangle-icon"></span></a>
+      <ul class="sub-nav">
+        <li><a href="javascript:;">用户管理</a></li>
+        <li><a href="javascript:;">角色管理</a></li>
+        <li><a href="javascript:;">菜单管理</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#">报告管理 <span class="triangle-icon"></span></a>
+      <ul class="sub-nav">
+        <li><a href="javascript:;">执行报告</a></li>
+        <li><a href="javascript:;">报告预览</a></li>
+        <li><a href="javascript:;">我的报告</a></li>
+        <li><a href="javascript:;">所有报告</a></li>
+      </ul>
+    </li>
+    <li><a href="#">数据管理仓</a></li>
+    <li><a href="#">关于本站</a></li>
+  </ul>
+</div>
+
+<div class="layui-container" style="padding:0 15px;">
+  <div class="layui-breadcrumb">
+    <a href="#">首页</a><span></span>
+    <a href="#">报告管理</a><span></span>
+    <a><cite>执行报告</cite></a>
+  </div>
+
+  <div class="module-title">监测数据概览</div>
+  <div class="layui-row layui-col-space15">
+    <div class="layui-col-md3">
+      <div class="data-card">
+        <i class="layui-icon layui-icon-template-1" style="font-size:30px; color:#5a93e8;"></i>
+        <h3>286</h3>
+        <p>累计评估区域(个)</p>
+      </div>
+    </div>
+    <div class="layui-col-md3">
+      <div class="data-card">
+        <i class="layui-icon layui-icon-fire" style="font-size:30px; color:#ff5722;"></i>
+        <h3>42</h3>
+        <p>高风险滑坡点(处)</p>
+      </div>
+    </div>
+    <div class="layui-col-md3">
+      <div class="data-card">
+        <i class="layui-icon layui-icon-location" style="font-size:30px; color:#ffb800;"></i>
+        <h3>156</h3>
+        <p>中风险滑坡点(处)</p>
+      </div>
+    </div>
+    <div class="layui-col-md3">
+      <div class="data-card">
+        <i class="layui-icon layui-icon-ok" style="font-size:30px; color:#009688;"></i>
+        <h3>88</h3>
+        <p>低风险滑坡点(处)</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="layui-row layui-col-space15" style="margin-top:10px;">
+    <div class="layui-col-md6">
+      <div class="module-title">滑坡风险评估</div>
+      <div class="eval-panel">
+        <form class="layui-form">
+          <div class="layui-form-item">
+            <label class="layui-form-label">评估区域</label>
+            <div class="layui-input-block">
+              <select lay-verify="required">
+                <option value="">请选择区域</option>
+                <option value="1">四川省-雅安市</option>
+                <option value="2">四川省-甘孜州</option>
+                <option value="3">云南省-昭通市</option>
+              </select>
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">地震烈度</label>
+            <div class="layui-input-block">
+              <select lay-verify="required">
+                <option value="">请选择烈度</option>
+                <option value="1">Ⅵ度</option>
+                <option value="2">Ⅶ度</option>
+                <option value="3">Ⅷ度及以上</option>
+              </select>
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">地形坡度</label>
+            <div class="layui-input-block">
+              <input type="text" placeholder="输入坡度值(°)" class="layui-input">
+            </div>
+          </div>
+          <div class="layui-form-item">
+            <label class="layui-form-label">岩土类型</label>
+            <div class="layui-input-block">
+              <select>
+                <option value="1">土质</option>
+                <option value="2">岩质</option>
+                <option value="3">土石混合</option>
+              </select>
+            </div>
+          </div>
+          <div class="layui-form-item" style="text-align:center; margin-top:25px;">
+            <button type="button" class="layui-btn layui-btn-normal" id="startEval" style="width:120px; background:#5a93e8; border:none;">开始评估</button>
+            <button type="reset" class="layui-btn layui-btn-primary" style="width:120px;">重置</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="layui-col-md6">
+      <div class="module-title">滑坡分布地图</div>
+      <div class="map-box">
+        <div>
+          <i class="layui-icon layui-icon-map" style="font-size:40px; color:#5a93e8;"></i>
+          <p style="margin-top:15px;">地震滑坡区域地图可视化展示</p>
+          <p style="margin-top:5px; color:#999;">可接入高德/百度地图API加载真实数据</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module-title">高风险滑坡点列表</div>
+  <div class="layui-card">
+    <div class="layui-card-body">
+      <table class="layui-table" lay-size="sm">
+        <thead>
+          <tr>
+            <th>序号</th>
+            <th>区域位置</th>
+            <th>风险等级</th>
+            <th>坡度(°)</th>
+            <th>评估时间</th>
+            <th>操作</th>
+          </tr> 
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td class="table-text-ellipsis" data-text="四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县">四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县四川省雅安市芦山县</td>
+            <td><span class="layui-badge layui-bg-red">高风险</span></td>
+            <td>42</td>
+            <td class="table-text-ellipsis" data-text="2026-03-29 08:30">2026-03-29 08:30</td>
+            <td><a class="layui-btn layui-xs" style="background:#5a93e8; border:none;">查看详情</a></td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td class="table-text-ellipsis" data-text="四川省甘孜州泸定县">四川省甘孜州泸定县</td>
+            <td><span class="layui-badge layui-bg-red">高风险</span></td>
+            <td>48</td>
+            <td class="table-text-ellipsis" data-text="2026-03-29 09:15">2026-03-29 09:15</td>
+            <td><a class="layui-btn layui-xs" style="background:#5a93e8; border:none;">查看详情</a></td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td class="table-text-ellipsis" data-text="云南省昭通市巧家县">云南省昭通市巧家县</td>
+            <td><span class="layui-badge layui-bg-orange">中风险</span></td>
+            <td>32</td>
+            <td class="table-text-ellipsis" data-text="2026-03-29 10:20">2026-03-29 10:20</td>
+            <td><a class="layui-btn layui-xs" style="background:#5a93e8; border:none;">查看详情</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="gov-footer">
+  <p>© 2026 版权所有：中国地震灾害防御中心 &nbsp; 技术联系：010-69941228 &nbsp; 158***5400 徐XX</p>
+</div>
+
+<script>
+layui.use(['element', 'form', 'layer'], function(){
+  var element = layui.element;
+  var form = layui.form;
+  var layer = layui.layer;
+
+  // 一级菜单点击
+  $('.nav-list > li').click(function(e) {
+    $('.nav-list > li').removeClass('active');
+    $(this).addClass('active');
+  });
+
+  // 【修复BUG】二级菜单点击：关闭下拉 + 激活一级菜单
+  $('.sub-nav li a').click(function(e) {
+    e.stopPropagation(); // 阻止事件冒泡
+    $('.sub-nav').hide(); // 关闭下拉
+    // 激活对应一级菜单
+    var parentLi = $(this).closest('.nav-list > li');
+    $('.nav-list > li').removeClass('active');
+    parentLi.addClass('active');
+  });
+
+  // 鼠标离开自动隐藏下拉
+  $(".gov-nav-box").mouseleave(function(){
+    $(".sub-nav").hide();
+  });
+  // 鼠标移入重新显示
+  $(".nav-list > li").mouseenter(function(){
+    $(this).find(".sub-nav").show();
+  });
+
+  // 评估按钮
+  $("#startEval").click(function(){
+    layer.msg("正在进行滑坡风险评估，请稍候...", {icon:16, shade:true, time:1500}, function(){
+      layer.open({
+        type:1,
+        title:"评估结果",
+        area:["500px", "300px"],
+        content:'<div style="padding:20px; text-align:center;">'+
+                  '<h4 style="color:#ff5722; font-weight:bold;">高风险等级</h4>'+
+                  '<p style="margin:15px 0; line-height:1.8;">该区域地震烈度≥Ⅶ度，坡度大于40°，岩土结构松散，<br>滑坡发生概率极高，建议立即启动预警预案。</p>'+
+                  '<span style="color:#666;">评估时间：2026-03-29 11:00</span>'+
+                '</div>'
+      });
+    });
+  });
+});
+
+// 新增：退出登录功能
+function logout() {
+  layer.confirm('确定要退出登录吗？', {
+    title: '提示',
+    btn: ['确定','取消'],
+    shade: 0.3
+  }, function(index){
+    // 这里可以添加退出登录的逻辑，比如跳转到登录页
+    layer.msg('已退出登录', {icon:1, time:1000});
+    layer.close(index);
+    // window.location.href = "login.html"; // 示例：跳转到登录页
+  }, function(index){
+    layer.close(index);
+  });
+}
+</script>
+</body>
+</html>
