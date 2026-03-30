@@ -195,11 +195,11 @@ CITY_LABEL_FONT_SIZE_PT = 9
 CITY_LABEL_COLOR = QColor(0, 0, 0)
 
 # === 图例字体 ===
-LEGEND_TITLE_FONT_SIZE_PT = 12
-LEGEND_ITEM_FONT_SIZE_PT = 10
+LEGEND_TITLE_FONT_SIZE_PT = 10
+LEGEND_ITEM_FONT_SIZE_PT = 8
 LEGEND_YANXING_FONT_SIZE_PT = 7
 # 工程岩土体分组标题字体大小
-LEGEND_YANXING_TITLE_FONT_SIZE_PT = 10
+LEGEND_YANXING_TITLE_FONT_SIZE_PT = 9
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -1689,7 +1689,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     # ==== 新增：工程岩土体分组标题 ====
     if yanxing_list:
         # 标题位置：上部图例下方留4mm间距
-        yanxing_title_y = top_legend_start_y + top_legend_height + 4.0
+        yanxing_title_y = top_legend_start_y + top_legend_height
 
         # 标题文本格式
         yanxing_title_format = QgsTextFormat()
