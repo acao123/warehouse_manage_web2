@@ -492,10 +492,17 @@ def read_earthquake_csv(csv_path, encoding="gbk"):
                 except ValueError:
                     depth = 0.0
                 location = row[4].strip()
-                year, month, day = 0, 0, 0
+                year, month, day, hour, minute, second = 0, 0, 0, 0, 0, 0
                 try:
-                    dp = time_str.split(" ")[0] if " " in time_str else time_str
-                    df = dp.split("/")
+                    # 解析日期部分
+                    if " " in time_str:
+                        date_part, time_part = time_str.split(" ", 1)
+                    else:
+                        date_part = time_str
+                        time_part = ""
+
+                    # 解析年月日
+                    df = date_part.split("/")
                     if len(df) >= 1:
                         s = df[0].strip().replace("—", "").replace("-", "")
                         year = int(s) if s.isdigit() else 0
@@ -505,17 +512,125 @@ def read_earthquake_csv(csv_path, encoding="gbk"):
                     if len(df) >= 3:
                         s = df[2].strip().replace("—", "").replace("-", "")
                         day = int(s) if s.isdigit() else 0
+
+                    # 解析时分秒
+                    if time_part:
+                        tf = time_part.split(":")
+                        if len(tf) >= 1:
+                            s = tf[0].strip()
+                            hour = int(s) if s.isdigit() else 0
+                        if len(tf) >= 2:
+                            s = tf[1].strip()
+                            minute = int(s) if s.isdigit() else 0
+                        if len(tf) >= 3:
+                            # 秒可能包含小数，取整数部分
+                            s = tf[2].strip().split(".")[0]
+                            second = int(s) if s.isdigit() else 0
                 except Exception:
                     pass
                 earthquakes.append({
                     "time_str": time_str, "lon": lon, "lat": lat, "depth": depth,
                     "location": location, "magnitude": mag,
                     "year": year, "month": month, "day": day,
+                    "hour": hour, "minute": minute, "second": second,
                 })
             except (ValueError, IndexError):
                 continue
     print(f"  共 {len(earthquakes)} 条记录")
     return earthquakes
+
+
+def _parse_earthquake_time(earthquake_time):
+    """
+    解析发震时间为 datetime.datetime 对象。
+
+    参数:
+        earthquake_time (datetime.datetime 或 str 或 datetime.date 或 None): 发震时间
+
+    返回:
+        datetime.datetime 或 None: 解析成功返回datetime对象，失败返回None
+    """
+    if earthquake_time is None:
+        return None
+    if isinstance(earthquake_time, datetime.datetime):
+        return earthquake_time
+    if isinstance(earthquake_time, datetime.date):
+        return datetime.datetime.combine(earthquake_time, datetime.time(0, 0, 0))
+    if isinstance(earthquake_time, str):
+        for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S",
+                    "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M",
+                    "%Y/%m/%d", "%Y-%m-%d"]:
+            try:
+                return datetime.datetime.strptime(earthquake_time, fmt)
+            except ValueError:
+                continue
+        print(f"[警告] 无法解析发震时间字符串: {earthquake_time}")
+        return None
+    print(f"[警告] 不支持的发震时间类型: {type(earthquake_time)}")
+    return None
+
+
+def is_earthquake_in_history(earthquakes, center_lon, center_lat, earthquake_time):
+    """
+    判断本次地震是否已存在于历史记录中
+
+    通过经纬度（精确到2位小数）和发震时间（精确到秒）进行匹配判断。
+
+    参数:
+        earthquakes (list): 历史地震记录列表
+        center_lon (float): 震中经度
+        center_lat (float): 震中纬度
+        earthquake_time (datetime.datetime 或 str 或 None): 发震时间
+            - datetime对象：直接使用
+            - 字符串：尝试解析为datetime（支持 "YYYY/MM/DD HH:MM:SS" 或 "YYYY-MM-DD HH:MM:SS" 格式）
+            - None：返回False（无法判断，默认不在历史记录中）
+
+    返回:
+        bool: True表示本次地震已在历史记录中，False表示不在
+    """
+    if earthquake_time is None:
+        return False
+
+    eq_dt = _parse_earthquake_time(earthquake_time)
+    if eq_dt is None:
+        return False
+
+    # 经纬度精确到2位小数进行比较
+    target_lon_2d = round(center_lon, 2)
+    target_lat_2d = round(center_lat, 2)
+    target_year = eq_dt.year
+    target_month = eq_dt.month
+    target_day = eq_dt.day
+    target_hour = eq_dt.hour
+    target_minute = eq_dt.minute
+    target_second = eq_dt.second
+
+    for eq in earthquakes:
+        # 经纬度精确到2位小数比较
+        eq_lon_2d = round(eq["lon"], 2)
+        eq_lat_2d = round(eq["lat"], 2)
+
+        if eq_lon_2d != target_lon_2d or eq_lat_2d != target_lat_2d:
+            continue
+
+        # 时间比较（精确到秒）
+        eq_year = eq.get("year", 0)
+        eq_month = eq.get("month", 0)
+        eq_day = eq.get("day", 0)
+        eq_hour = eq.get("hour", 0)
+        eq_minute = eq.get("minute", 0)
+        eq_second = eq.get("second", 0)
+
+        if (eq_year == target_year and eq_month == target_month and
+                eq_day == target_day and eq_hour == target_hour and
+                eq_minute == target_minute and eq_second == target_second):
+            print(f"[信息] 本次地震已在历史记录中: "
+                  f"经度={target_lon_2d}, 纬度={target_lat_2d}, "
+                  f"时间={target_year}/{target_month}/{target_day} "
+                  f"{target_hour:02d}:{target_minute:02d}:{target_second:02d}")
+            return True
+
+    return False
 
 
 def filter_earthquakes(earthquakes, center_lon, center_lat, radius_km, min_magnitude=4.7):
@@ -2253,7 +2368,8 @@ def export_layout_to_png(layout, output_path, dpi=150):
 
 def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
                             output_path, csv_encoding="gbk",
-                            basemap_path=None, annotation_path=None):
+                            basemap_path=None, annotation_path=None,
+                            earthquake_time=None):
     """
     生成历史地震分布图（基于QGIS 3.40.15）
 
@@ -2273,16 +2389,22 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
         csv_path (str): 历史地震CSV文件路径
         output_path (str): 输出PNG文件路径
         csv_encoding (str): CSV文件编码
+        basemap_path (str 或 None): 底图路径（可选）
+        annotation_path (str 或 None): 注记图层路径（可选）
+        earthquake_time (datetime.datetime 或 str 或 None): 发震时间（可选）
+            用于判断本次地震是否已在历史CSV中。支持datetime对象或字符串格式。
+            如果为None或未提供，则始终将本次地震加入统计。
 
     返回:
         str: 统计信息文本
     """
-    logger.info('开始生成历史地震分布图: lon=%.4f lat=%.4f M=%.1f csv=%s output=%s',
-                center_lon, center_lat, magnitude, csv_path, output_path)
+    logger.info('开始生成历史地震分布图: lon=%.4f lat=%.4f M=%.1f csv=%s output=%s earthquake_time=%s',
+                center_lon, center_lat, magnitude, csv_path, output_path, earthquake_time)
     try:
         return _generate_earthquake_map_impl(
             center_lon, center_lat, magnitude, csv_path, output_path, csv_encoding,
-            basemap_path=basemap_path, annotation_path=annotation_path
+            basemap_path=basemap_path, annotation_path=annotation_path,
+            earthquake_time=earthquake_time
         )
     except Exception as exc:
         logger.error('生成历史地震分布图失败: %s', exc, exc_info=True)
@@ -2291,7 +2413,8 @@ def generate_earthquake_map(center_lon, center_lat, magnitude, csv_path,
 
 def _generate_earthquake_map_impl(center_lon, center_lat, magnitude, csv_path,
                                    output_path, csv_encoding,
-                                   basemap_path=None, annotation_path=None):
+                                   basemap_path=None, annotation_path=None,
+                                   earthquake_time=None):
     """generate_earthquake_map 的实际实现（由 generate_earthquake_map 调用）。"""
     print("=" * 65)
     print("  历 史 地 震 分 布 图 生 成 工 具（QGIS版）")
@@ -2315,16 +2438,30 @@ def _generate_earthquake_map_impl(center_lon, center_lat, magnitude, csv_path,
     # [2/8] 筛选范围内地震
     print("[2/8] 筛选范围内地震...")
     filtered = filter_earthquakes(earthquakes, center_lon, center_lat, radius_km)
-    # 将本次地震加入统计列表
-    today = datetime.date.today()
-    current_quake = {
-        "time_str": today.strftime("%Y/%m/%d"),
-        "lon": center_lon, "lat": center_lat, "depth": 0.0,
-        "location": "", "magnitude": magnitude,
-        "year": today.year, "month": today.month, "day": today.day,
-        "distance": 0.0,
-    }
-    filtered.append(current_quake)
+
+    # 判断本次地震是否已在历史记录中
+    already_in_history = is_earthquake_in_history(
+        earthquakes, center_lon, center_lat, earthquake_time
+    )
+
+    if already_in_history:
+        print(f"[信息] 本次地震已在历史CSV中，不重复加入统计")
+    else:
+        # 将本次地震加入统计列表
+        eq_dt = _parse_earthquake_time(earthquake_time)
+        if eq_dt is None:
+            eq_dt = datetime.datetime.now()
+
+        current_quake = {
+            "time_str": eq_dt.strftime("%Y/%m/%d %H:%M:%S"),
+            "lon": center_lon, "lat": center_lat, "depth": 0.0,
+            "location": "", "magnitude": magnitude,
+            "year": eq_dt.year, "month": eq_dt.month, "day": eq_dt.day,
+            "hour": eq_dt.hour, "minute": eq_dt.minute, "second": eq_dt.second,
+            "distance": 0.0,
+        }
+        filtered.append(current_quake)
+        print(f"[信息] 本次地震不在历史CSV中，已加入统计")
     print()
 
     # [3/8] 计算地图范围
