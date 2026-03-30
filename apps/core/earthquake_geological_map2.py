@@ -33,7 +33,7 @@ except ImportError:
 # ============================================================
 # 天地图下载模块导入
 # ============================================================
-from tianditu_basemap_downloader import (
+from core.tianditu_basemap_downloader import (
     download_tianditu_basemap_tiles,
     download_tianditu_annotation_tiles,
 )
@@ -102,12 +102,34 @@ from qgis.PyQt.QtGui import QColor, QFont
 # 数据文件路径（优先从 Django settings 读取）
 _DEFAULT_BASE = "../../data/geology/"
 
-GEOLOGY_TIF_PATH =_DEFAULT_BASE + '图3/group.tif'
-PROVINCE_SHP_PATH =  _DEFAULT_BASE + '行政区划/省界.shp'
-CITY_SHP_PATH = _DEFAULT_BASE + '行政区划/市界.shp'
-COUNTY_SHP_PATH =   _DEFAULT_BASE + '行政区划/县界.shp'
+GEOLOGY_TIF_PATH = (
+    getattr(_django_settings, 'GEOLOGY_TIF_PATH', _DEFAULT_BASE + '图3/group.tif')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '图3/group.tif'
+)
+PROVINCE_SHP_PATH = (
+    getattr(_django_settings, 'PROVINCE_SHP_PATH',
+            _DEFAULT_BASE + '行政区划/省界.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '行政区划/省界.shp'
+)
+CITY_SHP_PATH = (
+    getattr(_django_settings, 'CITY_SHP_PATH',
+            _DEFAULT_BASE + '行政区划/市界.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '行政区划/市界.shp'
+)
+COUNTY_SHP_PATH = (
+    getattr(_django_settings, 'COUNTY_SHP_PATH',
+            _DEFAULT_BASE + '行政区划/县界.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '行政区划/县界.shp'
+)
 # 地级市点位数据
-CITY_POINTS_SHP_PATH = _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
+CITY_POINTS_SHP_PATH = (
+    getattr(_django_settings, 'CITY_POINTS_SHP_PATH',
+            _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
+)
 
 # === 布局尺寸常量 ===
 MAP_TOTAL_WIDTH_MM = 220.0
@@ -1742,7 +1764,7 @@ def _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from qgis_manager import get_qgis_manager as _get_qgis_manager
+    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()
