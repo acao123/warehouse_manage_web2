@@ -1468,7 +1468,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
                 scale=None, extent=None, center_lat=None):
     """
     添加图例
-    - 上部：震中/地级市/省界/市界/县界（3行2列，共5项）
+    - 上部：震中/地级市/省界/市界/县界（2行3列，共5项）
     - 下部：土地利用类型图例（色块 + 类型名称）
     - 底部：比例尺
 
@@ -1536,17 +1536,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
     title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(title_label)
 
-    # 上部图例：3行2列（震中、地级市、省界、市界、县界，共5项）
+    # 上部图例：2行3列（震中、地级市、省界、市界、县界，共5项）
     top_legend_start_y = legend_y + 7.0
 
-    col_count = 2
-    row_count = 3
+    col_count = 3
+    row_count = 2
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
-    row_height = 5.0
+    row_height = 4.8
     icon_width = 4.0
-    icon_height = 2.5
+    icon_height = 2.4
     icon_text_gap = 1.0
 
     available_width = legend_width - left_pad - right_pad - (col_count - 1) * col_gap
@@ -1603,7 +1603,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
 
     # 土地利用类型图例
     if land_use_list:
-        land_use_title_y = top_legend_start_y + top_legend_height + 2.0
+        land_use_title_y = top_legend_start_y + top_legend_height
 
         # 土地利用类型图例标题
         land_use_title_format = QgsTextFormat()
@@ -1722,7 +1722,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
         num_segments = 4
 
         std_bar_width = bar_length_mm + 16.0
-        std_bar_height = 14.0
+        std_bar_height = 12.0
 
         avail_width = legend_width - 4.0
         if std_bar_width > avail_width:
@@ -1735,7 +1735,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
 
         # 比例尺垂直位置：距底部留 4mm 空间
         sb_height = std_bar_height
-        sb_y = legend_y + legend_height - sb_height - 4.0
+        sb_y = legend_y + legend_height - sb_height
         sb_x = legend_x + (legend_width - std_bar_width) / 2.0
 
         scale_font_size = SCALE_FONT_SIZE_PT
@@ -2477,5 +2477,5 @@ if __name__ == "__main__":
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_land_use_map(
             longitude=118.18, latitude=39.63,
-            magnitude=3.8, output_path="earthquake_land_use_tangshan_M7.8.png"
+            magnitude=7.8, output_path="earthquake_land_use_tangshan_M7.8.png"
         )
