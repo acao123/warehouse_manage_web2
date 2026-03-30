@@ -17,6 +17,7 @@ import sys
 import math
 import struct
 import logging
+from xml.etree import ElementTree as ET
 
 # ============================================================
 # Django settings 导入（可选）
@@ -32,7 +33,7 @@ except ImportError:
 # ============================================================
 # 天地图下载模块导入
 # ============================================================
-from core.tianditu_basemap_downloader import (
+from tianditu_basemap_downloader import (
     download_tianditu_basemap_tiles,
     download_tianditu_annotation_tiles,
 )
@@ -101,34 +102,12 @@ from qgis.PyQt.QtGui import QColor, QFont
 # 数据文件路径（优先从 Django settings 读取）
 _DEFAULT_BASE = "../../data/geology/"
 
-GEOLOGY_TIF_PATH = (
-    getattr(_django_settings, 'GEOLOGY_TIF_PATH', _DEFAULT_BASE + '图3/group.tif')
-    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '图3/group.tif'
-)
-PROVINCE_SHP_PATH = (
-    getattr(_django_settings, 'PROVINCE_SHP_PATH',
-            _DEFAULT_BASE + '行政区划/省界.shp')
-    if _DJANGO_AVAILABLE else
-    _DEFAULT_BASE + '行政区划/省界.shp'
-)
-CITY_SHP_PATH = (
-    getattr(_django_settings, 'CITY_SHP_PATH',
-            _DEFAULT_BASE + '行政区划/市界.shp')
-    if _DJANGO_AVAILABLE else
-    _DEFAULT_BASE + '行政区划/市界.shp'
-)
-COUNTY_SHP_PATH = (
-    getattr(_django_settings, 'COUNTY_SHP_PATH',
-            _DEFAULT_BASE + '行政区划/县界.shp')
-    if _DJANGO_AVAILABLE else
-    _DEFAULT_BASE + '行政区划/县界.shp'
-)
+GEOLOGY_TIF_PATH =_DEFAULT_BASE + '图3/group.tif'
+PROVINCE_SHP_PATH =  _DEFAULT_BASE + '行政区划/省界.shp'
+CITY_SHP_PATH = _DEFAULT_BASE + '行政区划/市界.shp'
+COUNTY_SHP_PATH =   _DEFAULT_BASE + '行政区划/县界.shp'
 # 地级市点位数据
-CITY_POINTS_SHP_PATH = (
-    getattr(_django_settings, 'CITY_POINTS_SHP_PATH',
-            _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp')
-    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
-)
+CITY_POINTS_SHP_PATH = _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
 
 # === 布局尺寸常量 ===
 MAP_TOTAL_WIDTH_MM = 220.0
@@ -193,11 +172,11 @@ CITY_LABEL_FONT_SIZE_PT = 9
 CITY_LABEL_COLOR = QColor(0, 0, 0)
 
 # === 图例字体 ===
-LEGEND_TITLE_FONT_SIZE_PT = 10
-LEGEND_ITEM_FONT_SIZE_PT = 8
+LEGEND_TITLE_FONT_SIZE_PT = 12
+LEGEND_ITEM_FONT_SIZE_PT = 10
 LEGEND_YANXING_FONT_SIZE_PT = 7
 # 工程岩土体分组标题字体大小
-LEGEND_YANXING_TITLE_FONT_SIZE_PT = 9
+LEGEND_YANXING_TITLE_FONT_SIZE_PT = 10
 
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
@@ -1346,7 +1325,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     # 计算比例尺尺寸，用于预留底部空间
     scale_bar_reserved = 0.0
     if scale is not None and extent is not None and center_lat is not None:
-        scale_bar_reserved = 13.0  # 比例尺高度 + 底部留白
+        scale_bar_reserved = 10.0  # 比例尺高度 + 底部留白
 
     # ==== 新增：工程岩土体分组标题 ====
     if yanxing_list:
@@ -1763,7 +1742,7 @@ def _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
     print(f"[信息] 地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # 通过 QGISManager 确保 QGIS 已初始化（统一管理，支持正确的 prefix path）
-    from core.qgis_manager import get_qgis_manager as _get_qgis_manager
+    from qgis_manager import get_qgis_manager as _get_qgis_manager
     _get_qgis_manager().ensure_initialized()
 
     project = QgsProject.instance()
@@ -2045,5 +2024,5 @@ if __name__ == "__main__":
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_geology_map(
             longitude=116.18, latitude=39.63,
-            magnitude=3.8, output_path="earthquake_geology_tangshan_M7.8.png"
+            magnitude=4.5, output_path="earthquake_geology_tangshan_M7.8.png"
         )
