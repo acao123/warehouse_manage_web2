@@ -1318,7 +1318,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     top_legend_start_y = legend_y + 7.0
 
     col_count = 2  # 2列
-    row_count = 3  # 3行（ceil(5/2)=3）
+    row_count = 3  # 5个图例项按2列排列需要3行
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
@@ -1410,8 +1410,9 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         if road_type not in ROAD_STYLE_CONFIG:
             continue
 
-        # 检查是否超出图例区域（预留底部比例尺空间约20mm）
-        if current_y + road_item_height > legend_y + legend_height - 20.0:
+        # 检查是否超出图例区域（预留底部空间：比例尺高14mm + 底部边距4mm + 缓冲2mm）
+        _scale_bar_reserved_mm = 20.0
+        if current_y + road_item_height > legend_y + legend_height - _scale_bar_reserved_mm:
             break
 
         color, line_width, is_dashed, dash_gap = ROAD_STYLE_CONFIG[road_type]
