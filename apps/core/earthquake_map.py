@@ -2315,16 +2315,45 @@ def _generate_earthquake_map_impl(center_lon, center_lat, magnitude, csv_path,
     # [2/8] 筛选范围内地震
     print("[2/8] 筛选范围内地震...")
     filtered = filter_earthquakes(earthquakes, center_lon, center_lat, radius_km)
-    # 将本次地震加入统计列表
-    today = datetime.date.today()
+    # 将本次地震加入统计列表（如历史数据中已存在相同经纬度+时间的记录则不重复添加）
+    now = datetime.datetime.now()
     current_quake = {
-        "time_str": today.strftime("%Y/%m/%d"),
+        "time_str": now.strftime("%Y/%m/%d %H:%M:%S"),
         "lon": center_lon, "lat": center_lat, "depth": 0.0,
         "location": "", "magnitude": magnitude,
-        "year": today.year, "month": today.month, "day": today.day,
+        "year": now.year, "month": now.month, "day": now.day,
         "distance": 0.0,
     }
-    filtered.append(current_quake)
+
+    def _parse_time_components(time_str):
+        """解析时间字符串，返回 (year, month, day, hour, minute, second) 元组"""
+        try:
+            parts = time_str.strip().split(" ")
+            date_part = parts[0]
+            time_part = parts[1] if len(parts) > 1 else "0:0:0"
+            df = date_part.split("/")
+            year = int(df[0]) if len(df) > 0 else 0
+            month = int(df[1]) if len(df) > 1 else 0
+            day = int(df[2]) if len(df) > 2 else 0
+            tf = time_part.split(":")
+            hour = int(tf[0]) if len(tf) > 0 else 0
+            minute = int(tf[1]) if len(tf) > 1 else 0
+            second = int(tf[2]) if len(tf) > 2 else 0
+            return (year, month, day, hour, minute, second)
+        except Exception:
+            return None
+
+    cur_time = (now.year, now.month, now.day, now.hour, now.minute, now.second)
+    cur_lon_r = round(center_lon, 2)
+    cur_lat_r = round(center_lat, 2)
+    already_exists = any(
+        round(eq["lon"], 2) == cur_lon_r
+        and round(eq["lat"], 2) == cur_lat_r
+        and _parse_time_components(eq["time_str"]) == cur_time
+        for eq in filtered
+    )
+    if not already_exists:
+        filtered.append(current_quake)
     print()
 
     # [3/8] 计算地图范围
