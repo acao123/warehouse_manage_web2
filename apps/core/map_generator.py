@@ -144,7 +144,7 @@ def generate_earthquake_elevation_map(longitude: float, latitude: float, magnitu
 
 
 def generate_earthquake_land_use_map(longitude: float, latitude: float, magnitude: float,
-                                      output_path: str, kml_path: str = None) -> str:
+                                      output_path: str) -> str:
     """
     生成土地利用类型图（图五）。
 
@@ -153,7 +153,6 @@ def generate_earthquake_land_use_map(longitude: float, latitude: float, magnitud
         latitude: 震中纬度
         magnitude: 震级
         output_path: 输出 PNG 路径
-        kml_path: 可选，烈度圈 KML 路径
 
     返回:
         输出文件路径
@@ -164,7 +163,7 @@ def generate_earthquake_land_use_map(longitude: float, latitude: float, magnitud
     logger.info('开始生成图五（土地利用类型图）: lon=%.4f lat=%.4f M=%.1f', longitude, latitude, magnitude)
     try:
         from core.earthquake_land_use_map import generate_earthquake_land_use_map as _fn
-        result = _fn(longitude, latitude, magnitude, output_path=output_path, kml_path=kml_path)
+        result = _fn(longitude, latitude, magnitude, output_path=output_path)
         logger.info('图五生成完成: %s', output_path)
         return result
     except Exception as exc:
@@ -202,7 +201,7 @@ def generate_earthquake_population_map(longitude: float, latitude: float, magnit
 
 
 def generate_gdp_grid_map(longitude: float, latitude: float, magnitude: float,
-                           output_path: str, kml_path: str = None) -> str:
+                           output_path: str) -> str:
     """
     生成 GDP 网格图（图七）。
 
@@ -211,7 +210,6 @@ def generate_gdp_grid_map(longitude: float, latitude: float, magnitude: float,
         latitude: 震中纬度
         magnitude: 震级
         output_path: 输出 PNG 路径
-        kml_path: 可选，烈度圈 KML 路径
 
     返回:
         输出文件路径
@@ -222,7 +220,7 @@ def generate_gdp_grid_map(longitude: float, latitude: float, magnitude: float,
     logger.info('开始生成图七（GDP网格图）: lon=%.4f lat=%.4f M=%.1f', longitude, latitude, magnitude)
     try:
         from core.gdp_grid_map import generate_gdp_grid_map as _fn
-        result = _fn(longitude, latitude, magnitude, output_path=output_path, kml_path=kml_path)
+        result = _fn(longitude, latitude, magnitude, output_path=output_path)
         logger.info('图七生成完成: %s', output_path)
         return result
     except Exception as exc:
