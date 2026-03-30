@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 基于QGIS 3.40.15的地震震中人口公里网格分布图生成脚本
-参考 earthquake_geological_map2.py 的布局、指北针、经纬度、比例尺、烈度圈、省市加载方式。
+参考 earthquake_geological_map2.py 的布局、指北针、经纬度、比例尺、省市加载方式。
 
 完全适配QGIS 3.40.15 API。
 
@@ -14,16 +14,14 @@
     第三档：200~500人/平方公里
     第四档：500~1000人/平方公里
     第五档：＞1000人/平方公里
-- 图例位于主图左下角
-- 基本图例项（震中、地级市、省界、市界、县界、烈度）采用3行2列布局
+- 图例位于主图右侧图例区
+- 基本图例项（震中、地级市、省界、市界、县界）采用3行2列布局
 """
 
 import os
 import sys
 import math
-import re
 import logging
-from xml.etree import ElementTree as ET
 
 # ============================================================
 # Django settings 导入（可选）
@@ -133,14 +131,14 @@ CITY_POINTS_SHP_PATH = (
 )
 
 # === 布局尺寸常量 ===
-# 人口分布图不需要右侧大图例区域，调整为主图占满宽度
 MAP_TOTAL_WIDTH_MM = 220.0
+LEGEND_WIDTH_MM = 50.0
 BORDER_LEFT_MM = 4.0
 BORDER_TOP_MM = 4.0
 BORDER_BOTTOM_MM = 2.0
-BORDER_RIGHT_MM = 4.0
-# 主图宽度 = 总宽度 - 左右边框
-MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - BORDER_RIGHT_MM
+BORDER_RIGHT_MM = 1.0
+# 主图宽度 = 总宽度 - 左边框 - 图例区宽度 - 右边框
+MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
 
 # 输出DPI
 OUTPUT_DPI = 150
@@ -201,33 +199,14 @@ LEGEND_TITLE_FONT_SIZE_PT = 12
 LEGEND_ITEM_FONT_SIZE_PT = 10
 LEGEND_POPULATION_FONT_SIZE_PT = 10  # 人口图例字体大小
 
-# === 图例尺寸 ===
-LEGEND_WIDTH_MM = 35.0  # 图例宽度
-LEGEND_HEIGHT_MM = 49.0  # 图例高度
-# 新增：人口密度标题与下方图例间距（毫米）
-LEGEND_POP_TITLE_GAP_MM = 5.5
-# 新增：图例标题与上边框间距（毫米）
-LEGEND_TITLE_TOP_GAP_MM = 1.3
-
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
-
-# === 烈度圈样式 ===
-INTENSITY_LINE_COLOR = QColor(0, 0, 0)
-INTENSITY_LINE_WIDTH_MM = 0.5
-INTENSITY_HALO_COLOR = QColor(255, 255, 255)
-INTENSITY_HALO_WIDTH_MM = 1.0
-INTENSITY_LABEL_FONT_SIZE_PT = 9
 
 # === 震中五角星 ===
 EPICENTER_STAR_SIZE_MM = 5.0
 EPICENTER_COLOR = QColor(255, 0, 0)
 EPICENTER_STROKE_COLOR = QColor(255, 255, 255)
 EPICENTER_STROKE_WIDTH_MM = 0.4
-
-# === 烈度图例颜色 ===
-INTENSITY_LEGEND_COLOR = QColor(0, 0, 0)
-INTENSITY_LEGEND_LINE_WIDTH_MM = 0.5
 
 # === 人口密度渐变色配置 ===
 # 最左侧颜色：rgb(245, 243, 0) - 黄色
@@ -324,28 +303,6 @@ def resolve_path(relative_path):
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(base_dir, relative_path))
-
-
-def int_to_roman(num):
-    """
-    将阿拉伯数字转换为罗马数字。
-
-    参数:
-        num: 阿拉伯数字（整数）
-
-    返回:
-        str: 罗马数字字符串
-    """
-    val = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
-    syms = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
-    result = ""
-    i = 0
-    while num > 0:
-        for _ in range(num // val[i]):
-            result += syms[i]
-            num -= val[i]
-        i += 1
-    return result
 
 
 def _choose_tick_step(range_deg, target_min=4, target_max=6):
@@ -492,215 +449,6 @@ def build_population_legend_list():
 
     return result
 
-
-# ============================================================
-# KML烈度圈解析
-# ============================================================
-
-def parse_intensity_kml(kml_path):
-    """
-    解析KML文件，提取烈度圈坐标数据。
-
-    参数:
-        kml_path: KML文件路径
-
-    返回:
-        list: [{"intensity": int, "coords": [(lon, lat), ...]}, ...]
-    """
-    if not kml_path or not os.path.exists(kml_path):
-        print(f"[警告] KML文件不存在或未提供: {kml_path}")
-        return []
-
-    intensity_data = []
-    try:
-        tree = ET.parse(kml_path)
-        root = tree.getroot()
-        ns = ""
-        if root.tag.startswith("{"):
-            ns = root.tag.split("}")[0] + "}"
-
-        for pm in root.iter(ns + "Placemark"):
-            name_elem = pm.find(ns + "name")
-            if name_elem is None or name_elem.text is None:
-                continue
-            intensity = _extract_intensity_from_name(name_elem.text)
-            if intensity is None:
-                continue
-            coords = _extract_kml_linestring_coords(pm, ns)
-            if coords:
-                intensity_data.append({
-                    "intensity": intensity,
-                    "coords": coords,
-                })
-        print(f"[信息] 从KML解析到 {len(intensity_data)} 个烈度圈")
-    except Exception as e:
-        print(f"[错误] 解析KML文件失败: {e}")
-    return intensity_data
-
-
-def _extract_intensity_from_name(name):
-    """
-    从Placemark名称中提取烈度值。
-
-    参数:
-        name: Placemark名称字符串
-
-    返回:
-        int: 烈度值，解析失败返回None
-    """
-    if not name:
-        return None
-    name = name.strip()
-    m = re.match(r'(\d+)\s*度?', name)
-    if m:
-        return int(m.group(1))
-    roman_map = {
-        'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5,
-        'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10,
-        'XI': 11, 'XII': 12,
-    }
-    clean = re.sub(r'\s*度\s*', '', name).strip()
-    if clean.upper() in roman_map:
-        return roman_map[clean.upper()]
-    return None
-
-
-def _extract_kml_linestring_coords(placemark, ns):
-    """
-    从Placemark中提取LineString坐标。
-
-    参数:
-        placemark: XML Placemark元素
-        ns: XML命名空间
-
-    返回:
-        list: [(lon, lat), ...]坐标列表
-    """
-    coords_list = []
-    for ls in placemark.iter(ns + "LineString"):
-        coords_elem = ls.find(ns + "coordinates")
-        if coords_elem is not None and coords_elem.text:
-            parsed = _parse_kml_coords(coords_elem.text)
-            coords_list.extend(parsed)
-    return coords_list
-
-
-def _parse_kml_coords(text):
-    """
-    解析KML坐标文本为(lon, lat)元组列表。
-
-    参数:
-        text: KML坐标文本
-
-    返回:
-        list: [(lon, lat), ...]
-    """
-    coords = []
-    for part in text.strip().split():
-        vals = part.split(",")
-        if len(vals) >= 2:
-            try:
-                lon = float(vals[0])
-                lat = float(vals[1])
-                coords.append((lon, lat))
-            except ValueError:
-                continue
-    return coords
-
-
-def create_intensity_layer(intensity_data):
-    """
-    根据解析的烈度圈数据创建QGIS矢量图层。
-
-    参数:
-        intensity_data: 烈度圈数据列表
-
-    返回:
-        QgsVectorLayer: 烈度圈图层
-    """
-    if not intensity_data:
-        return None
-
-    layer = QgsVectorLayer("LineString?crs=EPSG:4326", "烈度圈", "memory")
-    provider = layer.dataProvider()
-    provider.addAttributes([
-        QgsField("intensity", QVariant.Int),
-        QgsField("label", QVariant.String),
-    ])
-    layer.updateFields()
-
-    features = []
-    for item in intensity_data:
-        intensity = item["intensity"]
-        coords = item["coords"]
-        if len(coords) < 2:
-            continue
-        points = [QgsPointXY(lon, lat) for lon, lat in coords]
-        geom = QgsGeometry.fromPolylineXY(points)
-        feat = QgsFeature(layer.fields())
-        feat.setGeometry(geom)
-        feat.setAttribute("intensity", intensity)
-        feat.setAttribute("label", int_to_roman(intensity))
-        features.append(feat)
-
-    provider.addFeatures(features)
-    layer.updateExtents()
-
-    # 设置烈度圈样式：白色光晕 + 黑色线条
-    halo_sl = QgsSimpleLineSymbolLayer()
-    halo_sl.setColor(INTENSITY_HALO_COLOR)
-    halo_sl.setWidth(INTENSITY_HALO_WIDTH_MM)
-    halo_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    halo_sl.setPenStyle(Qt.SolidLine)
-
-    line_sl = QgsSimpleLineSymbolLayer()
-    line_sl.setColor(INTENSITY_LINE_COLOR)
-    line_sl.setWidth(INTENSITY_LINE_WIDTH_MM)
-    line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    line_sl.setPenStyle(Qt.SolidLine)
-
-    symbol = QgsLineSymbol()
-    symbol.changeSymbolLayer(0, halo_sl)
-    symbol.appendSymbolLayer(line_sl)
-
-    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
-    _setup_intensity_labels(layer)
-    layer.triggerRepaint()
-
-    print(f"[信息] 创建烈度圈图层，共 {len(features)} 条烈度线")
-    return layer
-
-
-def _setup_intensity_labels(layer):
-    """
-    配置烈度圈图层的标注。
-
-    参数:
-        layer: QgsVectorLayer烈度圈图层
-    """
-    settings = QgsPalLayerSettings()
-    settings.fieldName = "label"
-    settings.placement = Qgis.LabelPlacement.Line
-
-    text_format = QgsTextFormat()
-    font = QFont("Times New Roman", INTENSITY_LABEL_FONT_SIZE_PT)
-    font.setBold(True)
-    text_format.setFont(font)
-    text_format.setSize(INTENSITY_LABEL_FONT_SIZE_PT)
-    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    text_format.setColor(QColor(0, 0, 0))
-
-    buffer_settings = QgsTextBufferSettings()
-    buffer_settings.setEnabled(True)
-    buffer_settings.setSize(0.8)
-    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
-    buffer_settings.setColor(QColor(255, 255, 255))
-    text_format.setBuffer(buffer_settings)
-
-    settings.setFormat(text_format)
-    labeling = QgsVectorLayerSimpleLabeling(settings)
-    layer.setLabelsEnabled(True)
-    layer.setLabeling(labeling)
 
 
 # ============================================================
@@ -1214,32 +962,6 @@ def create_city_point_layer(extent):
     return layer
 
 
-def create_intensity_legend_layer():
-    """
-    创建烈度图例用的线图层。
-
-    返回:
-        QgsVectorLayer: 烈度图例线图层
-    """
-    layer = QgsVectorLayer("LineString?crs=EPSG:4326", "烈度", "memory")
-    provider = layer.dataProvider()
-    provider.addAttributes([QgsField("name", QVariant.String)])
-    layer.updateFields()
-
-    line_sl = QgsSimpleLineSymbolLayer()
-    line_sl.setColor(INTENSITY_LEGEND_COLOR)
-    line_sl.setWidth(INTENSITY_LEGEND_LINE_WIDTH_MM)
-    line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    line_sl.setPenStyle(Qt.SolidLine)
-
-    symbol = QgsLineSymbol()
-    symbol.changeSymbolLayer(0, line_sl)
-    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
-    layer.triggerRepaint()
-    print("[信息] 创建烈度图例图层")
-    return layer
-
-
 def create_province_legend_layer():
     """
     创建省界图例用的线图层。
@@ -1381,10 +1103,10 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     # 添加地图元素
     _setup_map_grid(map_item, extent)
     _add_north_arrow(layout, map_height_mm)
-    _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
 
-    # 添加图例到左下角
-    _add_population_legend(layout, map_item, project, map_height_mm, output_height_mm)
+    # 添加图例到右侧图例区（包含比例尺）
+    _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
+                scale=scale, extent=extent, center_lat=latitude)
 
     return layout
 
@@ -1467,154 +1189,13 @@ def _add_north_arrow(layout, map_height_mm):
     print(f"[信息] 指北针添加完成")
 
 
-def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
+def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
+                scale=None, extent=None, center_lat=None):
     """
-    添加比例尺到地图右下角。
-
-    参数:
-        layout: QgsPrintLayout布局对象
-        map_item: QgsLayoutItemMap地图项
-        scale: 比例尺数值
-        extent: 地图范围
-        center_lat: 中心纬度
-        map_height_mm: 地图高度（毫米）
-    """
-    map_left = BORDER_LEFT_MM
-    map_top = BORDER_TOP_MM
-    map_right = map_left + MAP_WIDTH_MM
-    map_bottom = map_top + map_height_mm
-
-    lon_range_deg = extent.xMaximum() - extent.xMinimum()
-    map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
-    km_per_mm = map_total_km / MAP_WIDTH_MM
-    target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
-
-    nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-    bar_km = nice_values[0]
-    for nv in nice_values:
-        if nv <= target_bar_km * 1.5:
-            bar_km = nv
-        else:
-            break
-
-    bar_length_mm = bar_km / km_per_mm
-    bar_length_mm = max(bar_length_mm, 20.0)
-    num_segments = 4
-
-    sb_width = bar_length_mm + 16.0
-    sb_height = 14.0
-    sb_x = map_right - sb_width
-    sb_y = map_bottom - sb_height
-
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(sb_x, sb_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(sb_width, sb_height, QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    bg_shape.setFrameEnabled(True)
-    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(bg_shape)
-
-    scale_label = QgsLayoutItemLabel(layout)
-    scale_label.setText(f"1:{scale:,}")
-    label_format = QgsTextFormat()
-    label_format.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
-    label_format.setSize(SCALE_FONT_SIZE_PT)
-    label_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    label_format.setColor(QColor(0, 0, 0))
-    scale_label.setTextFormat(label_format)
-    scale_label.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
-    scale_label.attemptResize(QgsLayoutSize(sb_width, 4.5, QgsUnitTypes.LayoutMillimeters))
-    scale_label.setHAlign(Qt.AlignHCenter)
-    scale_label.setVAlign(Qt.AlignVCenter)
-    scale_label.setFrameEnabled(False)
-    scale_label.setBackgroundEnabled(False)
-    layout.addLayoutItem(scale_label)
-
-    bar_start_x = sb_x + (sb_width - bar_length_mm) / 2.0
-    bar_y = sb_y + 5.5
-    bar_h = 1.8
-    seg_width_mm = bar_length_mm / num_segments
-
-    for i in range(num_segments):
-        seg_shape = QgsLayoutItemShape(layout)
-        seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-        seg_x = bar_start_x + i * seg_width_mm
-        seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
-        seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h, QgsUnitTypes.LayoutMillimeters))
-        fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
-        seg_symbol = QgsFillSymbol.createSimple({
-            'color': fill_color,
-            'outline_color': '0,0,0,255',
-            'outline_width': '0.15',
-            'outline_width_unit': 'MM',
-        })
-        seg_shape.setSymbol(seg_symbol)
-        seg_shape.setFrameEnabled(False)
-        layout.addLayoutItem(seg_shape)
-
-    label_y = bar_y + bar_h + 0.3
-    label_h = 3.5
-    tick_format = QgsTextFormat()
-    tick_format.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
-    tick_format.setSize(SCALE_FONT_SIZE_PT)
-    tick_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    tick_format.setColor(QColor(0, 0, 0))
-
-    lbl_0 = QgsLayoutItemLabel(layout)
-    lbl_0.setText("0")
-    lbl_0.setTextFormat(tick_format)
-    lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y, QgsUnitTypes.LayoutMillimeters))
-    lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
-    lbl_0.setHAlign(Qt.AlignHCenter)
-    lbl_0.setVAlign(Qt.AlignTop)
-    lbl_0.setFrameEnabled(False)
-    lbl_0.setBackgroundEnabled(False)
-    layout.addLayoutItem(lbl_0)
-
-    mid_km = bar_km // 2
-    if mid_km > 0:
-        lbl_mid = QgsLayoutItemLabel(layout)
-        lbl_mid.setText(str(mid_km))
-        lbl_mid.setTextFormat(tick_format)
-        mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
-        lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
-        lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
-        lbl_mid.setHAlign(Qt.AlignHCenter)
-        lbl_mid.setVAlign(Qt.AlignTop)
-        lbl_mid.setFrameEnabled(False)
-        lbl_mid.setBackgroundEnabled(False)
-        layout.addLayoutItem(lbl_mid)
-
-    lbl_end = QgsLayoutItemLabel(layout)
-    lbl_end.setText(f"{bar_km} km")
-    lbl_end.setTextFormat(tick_format)
-    end_x = bar_start_x + bar_length_mm - 4.0
-    lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
-    lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
-    lbl_end.setHAlign(Qt.AlignHCenter)
-    lbl_end.setVAlign(Qt.AlignTop)
-    lbl_end.setFrameEnabled(False)
-    lbl_end.setBackgroundEnabled(False)
-    layout.addLayoutItem(lbl_end)
-
-    print(f"[信息] 比例尺添加完成，1:{scale:,}")
-
-
-def _add_population_legend(layout, map_item, project, map_height_mm, output_height_mm):
-    """
-    添加人口密度图例到主图左下角。
-    图例位置：左边框与主图左边框对齐，下边框与主图下边框对齐。
-
-    包含内容：
-    - 基本图例项（震中、地级市、省界、市界、县界、烈度）采用3行2列布局
-    - 人口密度分5档图例（带渐变色块）
+    添加图例（位于主图右侧图例区）
+    - 上部：震中/地级市/省界/市界/县界（3行2列）
+    - 中部：人口密度图例（渐变色块 + 标签）
+    - 底部：比例尺
 
     参数:
         layout: QgsPrintLayout布局对象
@@ -1622,18 +1203,14 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
         project: QgsProject项目对象
         map_height_mm: 地图高度（毫米）
         output_height_mm: 输出总高度（毫米）
+        scale: 比例尺分母（用于绘制比例尺）
+        extent: 地图范围（用于计算比例尺）
+        center_lat: 地图中心纬度（用于计算比例尺）
     """
-    # 图例位置：主图左下角
-    map_left = BORDER_LEFT_MM
-    map_top = BORDER_TOP_MM
-    map_bottom = map_top + map_height_mm
-
+    legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
+    legend_y = BORDER_TOP_MM
     legend_width = LEGEND_WIDTH_MM
-    legend_height = LEGEND_HEIGHT_MM
-
-    # 图例左边框与主图左边框对齐，下边框与主图下边框对齐
-    legend_x = map_left
-    legend_y = map_bottom - legend_height
+    legend_height = map_height_mm
 
     # 公共文本格式
     title_format = QgsTextFormat()
@@ -1650,7 +1227,7 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
 
     # 人口图例文本格式
     population_format = QgsTextFormat()
-    population_format.setFont(QFont("Times New Roman", LEGEND_POPULATION_FONT_SIZE_PT))  # 修改为Times New Roman
+    population_format.setFont(QFont("Times New Roman", LEGEND_POPULATION_FONT_SIZE_PT))
     population_format.setSize(LEGEND_POPULATION_FONT_SIZE_PT)
     population_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     population_format.setColor(QColor(0, 0, 0))
@@ -1661,7 +1238,7 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     legend_bg.attemptMove(QgsLayoutPoint(legend_x, legend_y, QgsUnitTypes.LayoutMillimeters))
     legend_bg.attemptResize(QgsLayoutSize(legend_width, legend_height, QgsUnitTypes.LayoutMillimeters))
     legend_bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,230',  # 半透明白色背景
+        'color': '255,255,255,255',
         'outline_color': '0,0,0,255',
         'outline_width': str(BORDER_WIDTH_MM),
         'outline_width_unit': 'MM',
@@ -1675,58 +1252,46 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     title_label = QgsLayoutItemLabel(layout)
     title_label.setText("图  例")
     title_label.setTextFormat(title_format)
-    # 使用可调节的上边距
-    title_label.attemptMove(QgsLayoutPoint(legend_x, legend_y + LEGEND_TITLE_TOP_GAP_MM, QgsUnitTypes.LayoutMillimeters))
-    title_label.attemptResize(QgsLayoutSize(legend_width, 4.0, QgsUnitTypes.LayoutMillimeters))
+    title_label.attemptMove(QgsLayoutPoint(legend_x, legend_y + 1.0, QgsUnitTypes.LayoutMillimeters))
+    title_label.attemptResize(QgsLayoutSize(legend_width, 5.0, QgsUnitTypes.LayoutMillimeters))
     title_label.setHAlign(Qt.AlignHCenter)
     title_label.setVAlign(Qt.AlignVCenter)
     title_label.setFrameEnabled(False)
     title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(title_label)
 
-    # ========================================
-    # 基本图例项：3行2列平行排列
-    # 第一行：震中、地级市、省界
-    # 第二行：市界、县界、烈度
-    # ========================================
-    basic_legend_start_y = legend_y + 5.5
+    # 基本图例项：3行2列（震中、地级市、省界、市界、县界）
+    basic_legend_start_y = legend_y + 7.0
 
-    # 3行2列布局参数
-    col_count = 2  # 列数
-    row_count = 3  # 行数
-    left_pad = 2.0  # 左边距
-    right_pad = 2.0  # 右边距
-    col_gap = 1.0  # 列间距
-    row_height = 4.5  # 行高
-    icon_width = 4.0  # 图标宽度
-    icon_height = 2.5  # 图标高度
-    icon_text_gap = 0.5  # 图标与文字间距
+    col_count = 2
+    row_count = 3  # ceil(5/2) = 3
+    left_pad = 2.0
+    right_pad = 2.0
+    col_gap = 1.0
+    row_height = 8.0
+    icon_width = 4.0
+    icon_height = 2.5
+    icon_text_gap = 1.0
 
-    # 计算每列宽度
     available_width = legend_width - left_pad - right_pad - (col_count - 1) * col_gap
     col_width = available_width / col_count
 
-    # 基本图例项定义：按3行2列顺序排列
     legend_items = [
         ("震中", "star"),
         ("地级市", "circle"),
         ("省界", "solid_line"),
         ("市界", "dash_line_city"),
         ("县界", "dash_line_county"),
-        ("烈度", "solid_line_black"),
     ]
 
     for idx, (display_name, draw_type) in enumerate(legend_items):
-        # 计算当前项的行列位置
-        row = idx // col_count  # 行号：0或1
-        col = idx % col_count  # 列号：0、1或2
+        row = idx // col_count
+        col = idx % col_count
 
-        # 计算当前项的位置
         item_x = legend_x + left_pad + col * (col_width + col_gap)
         item_y = basic_legend_start_y + row * row_height
         icon_center_y = item_y + row_height / 2.0
 
-        # 绘制图标
         if draw_type == "star":
             _draw_star_icon(layout, item_x, icon_center_y, icon_width, icon_height)
         elif draw_type == "circle":
@@ -1740,35 +1305,26 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
         elif draw_type == "dash_line_county":
             _draw_dash_line_icon(layout, item_x, icon_center_y, icon_width,
                                  COUNTY_COLOR, COUNTY_LINE_WIDTH_MM, COUNTY_DASH_GAP_MM)
-        elif draw_type == "solid_line_black":
-            _draw_line_icon(layout, item_x, icon_center_y, icon_width,
-                            INTENSITY_LEGEND_COLOR, INTENSITY_LEGEND_LINE_WIDTH_MM)
 
-        # 绘制文字标签
         text_x = item_x + icon_width + icon_text_gap
         text_width = col_width - icon_width - icon_text_gap
 
         text_label = QgsLayoutItemLabel(layout)
         text_label.setText(display_name)
         text_label.setTextFormat(item_format)
-        text_label.attemptMove(QgsLayoutPoint(text_x, item_y + 0.3, QgsUnitTypes.LayoutMillimeters))
-        text_label.attemptResize(QgsLayoutSize(text_width, row_height - 0.6, QgsUnitTypes.LayoutMillimeters))
+        text_label.attemptMove(QgsLayoutPoint(text_x, item_y + 0.5, QgsUnitTypes.LayoutMillimeters))
+        text_label.attemptResize(QgsLayoutSize(text_width, row_height - 1.0, QgsUnitTypes.LayoutMillimeters))
         text_label.setHAlign(Qt.AlignLeft)
         text_label.setVAlign(Qt.AlignVCenter)
         text_label.setFrameEnabled(False)
         text_label.setBackgroundEnabled(False)
         layout.addLayoutItem(text_label)
 
-    # 基本图例区域高度
     basic_legend_height = row_count * row_height
 
-    # ========================================
-    # 人口密度图例：分5档显示
-    # ========================================
+    # 人口密度标题
     pop_legend_start_y = basic_legend_start_y + basic_legend_height + 2.0
 
-    # 人口密度标题：三段式组合"人口密度(" + "人/km²" + ")"
-    # 仅单位部分"人/km²"使用Times New Roman字体，其余使用SimHei字体
     pop_title_cn_format = QgsTextFormat()
     pop_title_cn_font = QFont("SimHei")
     pop_title_cn_font.setPointSizeF(float(LEGEND_ITEM_FONT_SIZE_PT))
@@ -1785,10 +1341,9 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     pop_title_tnr_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     pop_title_tnr_format.setColor(QColor(0, 0, 0))
 
-    # 以组合方式居中显示"人口密度(人/km²)"，其中仅 人/km² 使用 Times New Roman
-    _pop_title_left_w = 20.5   # "人口密度(" 部分宽度（SimHei）
-    _pop_title_unit_w = 7.5    # "人/km²" 部分宽度（Times New Roman）
-    _pop_title_right_w = 6.0   # ")" 部分宽度（SimHei）
+    _pop_title_left_w = 20.5
+    _pop_title_unit_w = 7.5
+    _pop_title_right_w = 6.0
     title_group_width = _pop_title_left_w + _pop_title_unit_w + _pop_title_right_w
     title_group_x = legend_x + (legend_width - title_group_width) / 2.0
 
@@ -1807,7 +1362,6 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     pop_title_unit = QgsLayoutItemLabel(layout)
     pop_title_unit.setText("人/km²")
     pop_title_unit.setTextFormat(pop_title_tnr_format)
-    # 轻微上移，修正 Times New Roman 基线偏低问题
     pop_title_unit.attemptMove(QgsLayoutPoint(title_group_x + _pop_title_left_w, pop_legend_start_y - 0.4,
                                               QgsUnitTypes.LayoutMillimeters))
     pop_title_unit.attemptResize(QgsLayoutSize(_pop_title_unit_w, 4.5, QgsUnitTypes.LayoutMillimeters))
@@ -1831,19 +1385,17 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
     layout.addLayoutItem(pop_title_cn_right)
 
     # 人口密度分档色块和标签
-    # 修改为可调节间距
-    pop_item_start_y = pop_legend_start_y + LEGEND_POP_TITLE_GAP_MM
-    pop_icon_width = 5.0  # 色块宽度
-    pop_icon_height = 2.5  # 色块高度
-    pop_item_height = 4  # 每项高度
-    pop_gap = 1.5  # 色块与文字间距
+    pop_item_start_y = pop_legend_start_y + 5.5
+    pop_icon_width = 5.0
+    pop_icon_height = 2.5
+    pop_item_height = 4
+    pop_gap = 1.5
 
     population_legend_list = build_population_legend_list()
 
     for idx, (min_val, max_val, color_rgba, label) in enumerate(population_legend_list):
         item_y = pop_item_start_y + idx * pop_item_height
 
-        # 绘制色块
         color_box = QgsLayoutItemShape(layout)
         color_box.setShapeType(QgsLayoutItemShape.Rectangle)
         color_box.attemptMove(QgsLayoutPoint(legend_x + left_pad, item_y, QgsUnitTypes.LayoutMillimeters))
@@ -1859,7 +1411,6 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
         color_box.setFrameEnabled(False)
         layout.addLayoutItem(color_box)
 
-        # 绘制标签
         text_x = legend_x + left_pad + pop_icon_width + pop_gap
         text_label = QgsLayoutItemLabel(layout)
         text_label.setText(label)
@@ -1874,8 +1425,135 @@ def _add_population_legend(layout, map_item, project, map_height_mm, output_heig
         layout.addLayoutItem(text_label)
 
     print(f"[信息] 人口密度图例添加完成，共 {len(population_legend_list)} 档")
-    print("[信息] 基本图例项采用3行2列布局")
-    print("[信息] 图例添加完成（位于主图左下角）")
+
+    # ── 比例尺（位于图例内容下方）──
+    if scale is not None and extent is not None and center_lat is not None:
+        lon_range_deg = extent.xMaximum() - extent.xMinimum()
+        map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
+        km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
+        target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
+
+        nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+        bar_km = nice_values[0]
+        for nv in nice_values:
+            if nv <= target_bar_km * 1.5:
+                bar_km = nv
+            else:
+                break
+
+        bar_length_mm = bar_km / km_per_mm if km_per_mm > 0 else 20.0
+        bar_length_mm = max(bar_length_mm, 20.0)
+        num_segments = 4
+
+        std_bar_width = bar_length_mm + 16.0
+        std_bar_height = 14.0
+
+        avail_width = legend_width - 4.0
+        if std_bar_width > avail_width:
+            scale_factor = avail_width / std_bar_width
+            std_bar_width = avail_width
+            bar_length_mm *= scale_factor
+            std_bar_height *= scale_factor
+        else:
+            scale_factor = 1.0
+
+        # 比例尺垂直位置：距底部留 4mm 空间
+        sb_height = std_bar_height
+        sb_y = legend_y + legend_height - sb_height - 4.0
+        sb_x = legend_x + (legend_width - std_bar_width) / 2.0
+
+        scale_font_size = SCALE_FONT_SIZE_PT
+        scale_tf = QgsTextFormat()
+        scale_tf.setFont(QFont("Times New Roman", scale_font_size))
+        scale_tf.setSize(scale_font_size)
+        scale_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        scale_tf.setColor(QColor(0, 0, 0))
+
+        lbl_scale = QgsLayoutItemLabel(layout)
+        lbl_scale.setText(f"1:{scale:,}")
+        lbl_scale.setTextFormat(scale_tf)
+        lbl_scale.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.attemptResize(QgsLayoutSize(std_bar_width, 4.5 * scale_factor,
+                                              QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.setHAlign(Qt.AlignHCenter)
+        lbl_scale.setVAlign(Qt.AlignVCenter)
+        lbl_scale.setFrameEnabled(False)
+        lbl_scale.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_scale)
+
+        bar_start_x = sb_x + (std_bar_width - bar_length_mm) / 2.0
+        bar_y = sb_y + 5.5 * scale_factor
+        bar_h = 1.8 * scale_factor
+        seg_width_mm = bar_length_mm / num_segments
+
+        for i in range(num_segments):
+            seg_shape = QgsLayoutItemShape(layout)
+            seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+            seg_x = bar_start_x + i * seg_width_mm
+            seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
+            seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h,
+                                                  QgsUnitTypes.LayoutMillimeters))
+            fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
+            seg_symbol = QgsFillSymbol.createSimple({
+                'color': fill_color,
+                'outline_color': '0,0,0,255',
+                'outline_width': '0.15',
+                'outline_width_unit': 'MM',
+            })
+            seg_shape.setSymbol(seg_symbol)
+            seg_shape.setFrameEnabled(False)
+            layout.addLayoutItem(seg_shape)
+
+        tick_tf = QgsTextFormat()
+        tick_tf.setFont(QFont("Times New Roman", scale_font_size))
+        tick_tf.setSize(scale_font_size)
+        tick_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        tick_tf.setColor(QColor(0, 0, 0))
+
+        label_y = bar_y + bar_h + 0.3
+        label_h = 3.5 * scale_factor
+
+        lbl_0 = QgsLayoutItemLabel(layout)
+        lbl_0.setText("0")
+        lbl_0.setTextFormat(tick_tf)
+        lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y,
+                                         QgsUnitTypes.LayoutMillimeters))
+        lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_0.setHAlign(Qt.AlignHCenter)
+        lbl_0.setVAlign(Qt.AlignTop)
+        lbl_0.setFrameEnabled(False)
+        lbl_0.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_0)
+
+        mid_km = bar_km // 2
+        if mid_km > 0:
+            lbl_mid = QgsLayoutItemLabel(layout)
+            lbl_mid.setText(str(mid_km))
+            lbl_mid.setTextFormat(tick_tf)
+            mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
+            lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.setHAlign(Qt.AlignHCenter)
+            lbl_mid.setVAlign(Qt.AlignTop)
+            lbl_mid.setFrameEnabled(False)
+            lbl_mid.setBackgroundEnabled(False)
+            layout.addLayoutItem(lbl_mid)
+
+        lbl_end = QgsLayoutItemLabel(layout)
+        lbl_end.setText(f"{bar_km} km")
+        lbl_end.setTextFormat(tick_tf)
+        end_x = bar_start_x + bar_length_mm - 4.0
+        lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.setHAlign(Qt.AlignHCenter)
+        lbl_end.setVAlign(Qt.AlignTop)
+        lbl_end.setFrameEnabled(False)
+        lbl_end.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_end)
+
+        print(f"[信息] 比例尺添加到图例区完成，1:{scale:,}")
+
+    print("[信息] 图例添加完成")
 
 
 def _draw_star_icon(layout, x, center_y, width, height):
@@ -2035,7 +1713,6 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def generate_earthquake_population_map(longitude, latitude, magnitude,
                                        output_path="output_population_map.png",
-                                       kml_path=None,
                                        basemap_path=None, annotation_path=None):
     """
     生成地震震中人口公里网格分布图（主入口函数）。
@@ -2045,7 +1722,6 @@ def generate_earthquake_population_map(longitude, latitude, magnitude,
         latitude: 震中纬度
         magnitude: 地震震级
         output_path: 输出PNG文件路径
-        kml_path: 烈度圈KML文件路径（可选）
 
     返回:
         str: 成功返回输出文件路径，失败返回None
@@ -2054,7 +1730,7 @@ def generate_earthquake_population_map(longitude, latitude, magnitude,
                 longitude, latitude, magnitude, output_path)
     try:
         return _generate_earthquake_population_map_impl(
-            longitude, latitude, magnitude, output_path, kml_path,
+            longitude, latitude, magnitude, output_path,
             basemap_path=basemap_path, annotation_path=annotation_path
         )
     except Exception as exc:
@@ -2063,15 +1739,13 @@ def generate_earthquake_population_map(longitude, latitude, magnitude,
 
 
 def _generate_earthquake_population_map_impl(longitude, latitude, magnitude,
-                                              output_path, kml_path,
+                                              output_path,
                                               basemap_path=None, annotation_path=None):
     """generate_earthquake_population_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震人口公里网格分布图")
     print(f"  震中: ({longitude}, {latitude}), 震级: M{magnitude}")
     print(f"  输出: {output_path}")
-    if kml_path:
-        print(f"  烈度圈KML: {kml_path}")
     print("=" * 60)
 
     # 获取震级配置
@@ -2163,23 +1837,6 @@ def _generate_earthquake_population_map_impl(longitude, latitude, magnitude,
         if county_legend_layer:
             project.addMapLayer(county_legend_layer)
 
-        intensity_legend_layer = create_intensity_legend_layer()
-        if intensity_legend_layer:
-            project.addMapLayer(intensity_legend_layer)
-
-        # 解析并添加烈度圈
-        intensity_data = []
-        intensity_layer = None
-        if kml_path:
-            abs_kml = kml_path
-            if not os.path.isabs(kml_path):
-                abs_kml = resolve_path(kml_path)
-            intensity_data = parse_intensity_kml(abs_kml)
-            if intensity_data:
-                intensity_layer = create_intensity_layer(intensity_data)
-                if intensity_layer:
-                    project.addMapLayer(intensity_layer)
-
         # 创建震中图层
         epicenter_layer = create_epicenter_layer(longitude, latitude)
         if epicenter_layer:
@@ -2195,7 +1852,6 @@ def _generate_earthquake_population_map_impl(longitude, latitude, magnitude,
         ordered_layers = [lyr for lyr in [
             epicenter_layer,        # 震中放在最上层，显示在注记之上
             annotation_raster,      # 天地图注记
-            intensity_layer,
             city_point_layer,
             province_label_layer,   # 省份标注图层（在省界图层之上）
             province_layer,
@@ -2319,22 +1975,6 @@ def test_calculate_extent():
     assert abs(delta_y - 0.2703) < 0.02
     print(f"  15km半径范围: 纬度差{delta_y:.4f}° ✓")
     print("  所有范围计算测试通过 ✓")
-
-
-def test_int_to_roman():
-    """
-    测试罗马数字转换功能。
-    验证阿拉伯数字能正确转换为罗马数字。
-    """
-    print("\n--- 测试: int_to_roman ---")
-    assert int_to_roman(4) == "IV"
-    assert int_to_roman(5) == "V"
-    assert int_to_roman(6) == "VI"
-    assert int_to_roman(9) == "IX"
-    assert int_to_roman(10) == "X"
-    assert int_to_roman(12) == "XII"
-    print("  IV=4, V=5, VI=6, IX=9, X=10, XII=12 ✓")
-    print("  罗马数字转换测试通过 ✓")
 
 
 def test_interpolate_color():
@@ -2474,23 +2114,22 @@ def test_tif_path():
 def test_legend_layout():
     """
     测试图例布局配置。
-    验证基本图例项采用3行2列布局。
+    验证基本图例项采用3行2列布局（共5项，最后一行只有1项）。
     """
     print("\n--- 测试: 图例布局配置 ---")
 
-    # 基本图例项定义
+    # 基本图例项定义（不含烈度）
     legend_items = [
         ("震中", "star"),
         ("地级市", "circle"),
         ("省界", "solid_line"),
         ("市界", "dash_line_city"),
         ("县界", "dash_line_county"),
-        ("烈度", "solid_line_black"),
     ]
 
-    # 验证图例项数量为6（3行×2列）
-    assert len(legend_items) == 6
-    print(f"  图例项数量: {len(legend_items)} (3行×2列=6) ✓")
+    # 验证图例项数量为5
+    assert len(legend_items) == 5
+    print(f"  图例项数量: {len(legend_items)} (3行×2列，共5项) ✓")
 
     # 验证3行2列布局
     col_count = 2
@@ -2503,13 +2142,18 @@ def test_legend_layout():
 
     # 验证第一行内容
     row1_items = [legend_items[i][0] for i in range(col_count)]
-    assert row1_items == ["震中", "地级市", "省界"]
+    assert row1_items == ["震中", "地级市"]
     print(f"  第一行: {row1_items} ✓")
 
     # 验证第二行内容
     row2_items = [legend_items[i][0] for i in range(col_count, col_count * 2)]
-    assert row2_items == ["市界", "县界", "烈度"]
+    assert row2_items == ["省界", "市界"]
     print(f"  第二行: {row2_items} ✓")
+
+    # 验证第三行内容
+    row3_items = [legend_items[i][0] for i in range(col_count * 2, len(legend_items))]
+    assert row3_items == ["县界"]
+    print(f"  第三行: {row3_items} ✓")
 
     print("  图例布局配置测试通过 ✓")
 
@@ -2524,7 +2168,6 @@ def run_all_tests():
 
     test_magnitude_config()
     test_calculate_extent()
-    test_int_to_roman()
     test_interpolate_color()
     test_population_legend_list()
     test_population_color_gradient()
@@ -2549,11 +2192,10 @@ if __name__ == "__main__":
             lat = float(sys.argv[2])
             mag = float(sys.argv[3])
             out = sys.argv[4] if len(sys.argv) > 4 else f"earthquake_population_M{mag}_{lon}_{lat}.png"
-            kml = sys.argv[5] if len(sys.argv) > 5 else None
-            generate_earthquake_population_map(lon, lat, mag, out, kml)
+            generate_earthquake_population_map(lon, lat, mag, out)
         except ValueError as e:
             print(f"[错误] 参数格式错误: {e}")
-            print("用法: python earthquake_population_map.py <经度> <纬度> <震级> [输出文件名] [kml路径]")
+            print("用法: python earthquake_population_map.py <经度> <纬度> <震级> [输出文件名]")
     else:
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_population_map(
