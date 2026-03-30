@@ -376,7 +376,6 @@ def _gen_img8(task: ReportTask, output_dir: str, basemap_path=None, annotation_p
             latitude=float(task.latitude),
             magnitude=task.magnitude,
             output_path=out,
-            kml_path=task.intensity_kml_path,
             basemap_path=basemap_path,
             annotation_path=annotation_path,
         )
@@ -485,7 +484,6 @@ def _gen_img10(task: ReportTask, output_dir: str, dn_tif_path: str | None):
             latitude=float(task.latitude),
             magnitude=task.magnitude,
             output_path=out,
-            kml_path=task.intensity_kml_path,
             dn_tif_path=dn_tif_path,
         )
         logger.info('[任务 %s] 图十生成完成: %s', task.id, out)

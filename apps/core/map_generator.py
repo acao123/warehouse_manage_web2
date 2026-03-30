@@ -228,7 +228,7 @@ def generate_gdp_grid_map(longitude: float, latitude: float, magnitude: float,
 
 
 def generate_earthquake_road_map(longitude: float, latitude: float, magnitude: float,
-                                  output_path: str, kml_path: str = None) -> str:
+                                  output_path: str) -> str:
     """
     生成道路交通图（图八）。
 
@@ -237,7 +237,6 @@ def generate_earthquake_road_map(longitude: float, latitude: float, magnitude: f
         latitude: 震中纬度
         magnitude: 震级
         output_path: 输出 PNG 路径
-        kml_path: 可选，烈度圈 KML 路径
 
     返回:
         输出文件路径
@@ -248,7 +247,7 @@ def generate_earthquake_road_map(longitude: float, latitude: float, magnitude: f
     logger.info('开始生成图八（道路交通图）: lon=%.4f lat=%.4f M=%.1f', longitude, latitude, magnitude)
     try:
         from core.earthquake_road_map import generate_earthquake_road_map as _fn
-        result = _fn(longitude, latitude, magnitude, output_path=output_path, kml_path=kml_path)
+        result = _fn(longitude, latitude, magnitude, output_path=output_path)
         logger.info('图八生成完成: %s', output_path)
         return result
     except Exception as exc:
@@ -364,7 +363,7 @@ def convert_ia_to_dn(ia_tif_path: str, dn_output_path: str,
 
 
 def generate_earthquake_newmark_map(longitude: float, latitude: float, magnitude: float,
-                                     output_path: str, kml_path: str = None,
+                                     output_path: str,
                                      dn_tif_path: str = None) -> str:
     """
     生成 Newmark 位移分布图（图十）。
@@ -374,7 +373,6 @@ def generate_earthquake_newmark_map(longitude: float, latitude: float, magnitude
         latitude: 震中纬度
         magnitude: 震级
         output_path: 输出 PNG 路径
-        kml_path: 可选，烈度圈 KML 路径
         dn_tif_path: 可选，Dn.tif 路径（不传则使用模块默认值）
 
     返回:
@@ -388,7 +386,7 @@ def generate_earthquake_newmark_map(longitude: float, latitude: float, magnitude
     try:
         from core.earthquake_newmark_map import generate_earthquake_newmark_map as _fn
         result = _fn(longitude, latitude, magnitude,
-                     output_path=output_path, kml_path=kml_path, dn_tif_path=dn_tif_path)
+                     output_path=output_path, dn_tif_path=dn_tif_path)
         logger.info('图十生成完成: %s', output_path)
         return result
     except Exception as exc:
