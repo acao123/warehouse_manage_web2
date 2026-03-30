@@ -172,7 +172,7 @@ def generate_earthquake_land_use_map(longitude: float, latitude: float, magnitud
 
 
 def generate_earthquake_population_map(longitude: float, latitude: float, magnitude: float,
-                                        output_path: str, kml_path: str = None) -> str:
+                                        output_path: str) -> str:
     """
     生成人口分布图（图六）。
 
@@ -181,7 +181,6 @@ def generate_earthquake_population_map(longitude: float, latitude: float, magnit
         latitude: 震中纬度
         magnitude: 震级
         output_path: 输出 PNG 路径
-        kml_path: 可选，烈度圈 KML 路径
 
     返回:
         输出文件路径
@@ -192,7 +191,7 @@ def generate_earthquake_population_map(longitude: float, latitude: float, magnit
     logger.info('开始生成图六（人口分布图）: lon=%.4f lat=%.4f M=%.1f', longitude, latitude, magnitude)
     try:
         from core.earthquake_population_map import generate_earthquake_population_map as _fn
-        result = _fn(longitude, latitude, magnitude, output_path=output_path, kml_path=kml_path)
+        result = _fn(longitude, latitude, magnitude, output_path=output_path)
         logger.info('图六生成完成: %s', output_path)
         return result
     except Exception as exc:
@@ -258,8 +257,7 @@ def generate_earthquake_road_map(longitude: float, latitude: float, magnitude: f
 
 
 def generate_earthquake_landslide_slope_map(longitude: float, latitude: float, magnitude: float,
-                                             output_path: str,
-                                             kml_path: str = None) -> tuple:
+                                             output_path: str) -> tuple:
     """
     生成历史滑坡、斜坡分布图（图九）。
 
@@ -268,7 +266,6 @@ def generate_earthquake_landslide_slope_map(longitude: float, latitude: float, m
         latitude: 震中纬度
         magnitude: 震级
         output_path: 输出 PNG 路径
-        kml_path: 可选，烈度圈 KML 路径
 
     返回:
         (img_path, stats_message) 元组
@@ -282,8 +279,7 @@ def generate_earthquake_landslide_slope_map(longitude: float, latitude: float, m
         from core.earthquake_landslide_slope_map import (
             generate_earthquake_landslide_slope_map as _fn,
         )
-        result, stats = _fn(longitude, latitude, magnitude,
-                            output_path=output_path, kml_path=kml_path)
+        result, stats = _fn(longitude, latitude, magnitude, output_path=output_path)
         logger.info('图九生成完成: %s, stats=%s', output_path, stats)
         return result, stats
     except Exception as exc:
