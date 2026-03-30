@@ -87,7 +87,7 @@ def generate_earthquake_kml_map(kml_path: str, description_text: str,
 
 
 def generate_earthquake_geology_map(longitude: float, latitude: float, magnitude: float,
-                                     output_path: str, kml_path: str = None) -> str:
+                                     output_path: str) -> str:
     """
     生成地质构造图（图三）。
 
@@ -96,7 +96,6 @@ def generate_earthquake_geology_map(longitude: float, latitude: float, magnitude
         latitude: 震中纬度
         magnitude: 震级
         output_path: 输出 PNG 路径
-        kml_path: 可选，烈度圈 KML 路径
 
     返回:
         输出文件路径
@@ -107,7 +106,7 @@ def generate_earthquake_geology_map(longitude: float, latitude: float, magnitude
     logger.info('开始生成图三（地质构造图）: lon=%.4f lat=%.4f M=%.1f', longitude, latitude, magnitude)
     try:
         from core.earthquake_geological_map2 import generate_earthquake_geology_map as _fn
-        result = _fn(longitude, latitude, magnitude, output_path=output_path, kml_path=kml_path)
+        result = _fn(longitude, latitude, magnitude, output_path=output_path)
         logger.info('图三生成完成: %s', output_path)
         return result
     except Exception as exc:
