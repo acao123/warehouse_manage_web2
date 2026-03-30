@@ -619,11 +619,21 @@ def is_earthquake_in_history(earthquakes, center_lon, center_lat, earthquake_tim
         eq_day = eq.get("day", 0)
         eq_hour = eq.get("hour", 0)
         eq_minute = eq.get("minute", 0)
-        eq_second = eq.get("second", 0)
+        # eq_second = eq.get("second", 0)
 
-        if (eq_year == target_year and eq_month == target_month and
-                eq_day == target_day and eq_hour == target_hour and
-                eq_minute == target_minute and eq_second == target_second):
+        match = True
+        if eq_year is not None and eq_year != target_year:
+            match = False
+        if eq_month is not None and eq_month != target_month:
+            match = False
+        if eq_day is not None and eq_day != target_day:
+            match = False
+        if eq_hour is not None and eq_hour != target_hour:
+            match = False
+        if eq_minute is not None and eq_minute != target_minute:
+            match = False
+
+        if match:
             print(f"[信息] 本次地震已在历史记录中: "
                   f"经度={target_lon_2d}, 纬度={target_lat_2d}, "
                   f"时间={target_year}/{target_month}/{target_day} "
@@ -2676,11 +2686,11 @@ def _generate_earthquake_map_impl(center_lon, center_lat, magnitude, csv_path,
 
 if __name__ == "__main__":
     # 震中经度（度）
-    INPUT_LON = 122.06
+    INPUT_LON = 120.5
     # 震中纬度（度）
-    INPUT_LAT = 24.67
+    INPUT_LAT = 23.6
     # 震级（M）
-    INPUT_MAGNITUDE = 7.6
+    INPUT_MAGNITUDE = 5
     # CSV路径
     INPUT_CSV_PATH = r"../../data/geology/历史地震CSV文件.csv"
     # 输出路径
@@ -2693,6 +2703,7 @@ if __name__ == "__main__":
         csv_path=INPUT_CSV_PATH,
         output_path=OUTPUT_PATH,
         csv_encoding="gbk",
+        earthquake_time = '1906-04-06 02:58:00',  # 可选：提供发震时间以判断是否已在历史CSV中
     )
 
     print('*' * 65)
