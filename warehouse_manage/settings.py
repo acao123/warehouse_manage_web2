@@ -193,15 +193,15 @@ MAP_DATA_BASE_PATH = 'E:/data/geology/'  # 地图数据基础路径
 # 省市县边界数据
 PROVINCE_SHP_PATH = (
     MAP_DATA_BASE_PATH
-    + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
+    + '行政区划/省界.shp'
 )
 CITY_SHP_PATH = (
     MAP_DATA_BASE_PATH
-    + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
+    + '行政区划/市界.shp'
 )
 COUNTY_SHP_PATH = (
     MAP_DATA_BASE_PATH
-    + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
+    + '行政区划/县界.shp'
 )
 
 # 地级市点位数据

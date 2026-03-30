@@ -145,21 +145,21 @@ _DEFAULT_BASE = "../../data/geology/"
 
 SHP_PROVINCE_PATH = (
     getattr(_django_settings, 'PROVINCE_SHP_PATH',
-            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp')
+            _DEFAULT_BASE + '行政区划/省界.shp')
     if _DJANGO_AVAILABLE else
-    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
+    _DEFAULT_BASE + '行政区划/省界.shp'
 )
 SHP_CITY_PATH = (
     getattr(_django_settings, 'CITY_SHP_PATH',
-            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp')
+            _DEFAULT_BASE + '行政区划/市界.shp')
     if _DJANGO_AVAILABLE else
-    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
+    _DEFAULT_BASE + '行政区划/市界.shp'
 )
 SHP_COUNTY_PATH = (
     getattr(_django_settings, 'COUNTY_SHP_PATH',
-            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp')
+            _DEFAULT_BASE + '行政区划/县界.shp')
     if _DJANGO_AVAILABLE else
-    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
+    _DEFAULT_BASE + '行政区划/县界.shp'
 )
 KMZ_FAULT_PATH = (
     getattr(_django_settings, 'FAULT_KMZ_PATH',

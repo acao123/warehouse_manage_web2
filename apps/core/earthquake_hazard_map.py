@@ -116,9 +116,9 @@ _DEFAULT_BASE = "../../data/geology/"
 
 DN_TIF_PATH ="../../data/geology/ia/Dn.tif"
 # DN_TIF_PATH ='../../data/geology/ia/Dn.tif'
-PROVINCE_SHP_PATH =  _DEFAULT_BASE +'省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
-CITY_SHP_PATH =  _DEFAULT_BASE+'省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
-COUNTY_SHP_PATH = _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
+PROVINCE_SHP_PATH =  _DEFAULT_BASE +'行政区划/省界.shp'
+CITY_SHP_PATH =  _DEFAULT_BASE+'行政区划/市界.shp'
+COUNTY_SHP_PATH = _DEFAULT_BASE + '行政区划/县界.shp'
 # 地级市点位数据
 CITY_POINTS_SHP_PATH = _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
 

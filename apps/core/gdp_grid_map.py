@@ -109,21 +109,21 @@ GDP_DIS_TIF_PATH = (
 # 省市县边界数据路径
 PROVINCE_SHP_PATH = (
     getattr(_django_settings, 'PROVINCE_SHP_PATH',
-            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp')
+            _DEFAULT_BASE + '行政区划/省界.shp')
     if _DJANGO_AVAILABLE else
-    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国省份行政区划数据/省级行政区划/省.shp'
+    _DEFAULT_BASE + '行政区划/省界.shp'
 )
 CITY_SHP_PATH = (
     getattr(_django_settings, 'CITY_SHP_PATH',
-            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp')
+            _DEFAULT_BASE + '行政区划/市界.shp')
     if _DJANGO_AVAILABLE else
-    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国市级行政区划数据/市级行政区划/市.shp'
+    _DEFAULT_BASE + '行政区划/市界.shp'
 )
 COUNTY_SHP_PATH = (
     getattr(_django_settings, 'COUNTY_SHP_PATH',
-            _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp')
+            _DEFAULT_BASE + '行政区划/县界.shp')
     if _DJANGO_AVAILABLE else
-    _DEFAULT_BASE + '省市边界/全国行政区划数据最高乡镇级别/全国县级行政区划数据/县级行政区划/县.shp'
+    _DEFAULT_BASE + '行政区划/县界.shp'
 )
 # 地级市点位数据
 CITY_POINTS_SHP_PATH = (
