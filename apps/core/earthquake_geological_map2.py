@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 基于QGIS 3.40.15的地震震中地质构造图生成脚本
-参考 earthquake_geological_map.py 的布局、指北针、经纬度、比例尺、烈度圈、省市加载方式。
+参考 earthquake_geological_map.py 的布局、指北针、经纬度、比例尺、省市加载方式。
 
 完全适配QGIS 3.40.15 API。
 
@@ -15,10 +15,8 @@
 import os
 import sys
 import math
-import re
 import struct
 import logging
-from xml.etree import ElementTree as ET
 
 # ============================================================
 # Django settings 导入（可选）
@@ -204,22 +202,11 @@ LEGEND_YANXING_TITLE_FONT_SIZE_PT = 9
 # === 比例尺字体 ===
 SCALE_FONT_SIZE_PT = 8
 
-# === 烈度圈样式 ===
-INTENSITY_LINE_COLOR = QColor(0, 0, 0)
-INTENSITY_LINE_WIDTH_MM = 0.5
-INTENSITY_HALO_COLOR = QColor(255, 255, 255)
-INTENSITY_HALO_WIDTH_MM = 1.0
-INTENSITY_LABEL_FONT_SIZE_PT = 9
-
 # === 震中五角星 ===
 EPICENTER_STAR_SIZE_MM = 5.0
 EPICENTER_COLOR = QColor(255, 0, 0)
 EPICENTER_STROKE_COLOR = QColor(255, 255, 255)
 EPICENTER_STROKE_WIDTH_MM = 0.4
-
-# === 烈度图例颜色 ===
-INTENSITY_LEGEND_COLOR = QColor(0, 0, 0)
-INTENSITY_LEGEND_LINE_WIDTH_MM = 0.5
 
 # WGS84
 CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -264,20 +251,6 @@ def resolve_path(relative_path):
     """将相对路径转换为绝对路径"""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(base_dir, relative_path))
-
-
-def int_to_roman(num):
-    """将阿拉伯数字转换为罗马数字"""
-    val = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
-    syms = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
-    result = ""
-    i = 0
-    while num > 0:
-        for _ in range(num // val[i]):
-            result += syms[i]
-            num -= val[i]
-        i += 1
-    return result
 
 
 def _choose_tick_step(range_deg, target_min=4, target_max=6):
@@ -656,169 +629,6 @@ def build_yanxing_legend_list(tif_path, raster_layer=None):
 
     print(f"  构建岩性图例列表完成，共 {len(result)} 项")
     return result
-
-
-# ============================================================
-# KML烈度圈解析
-# ============================================================
-
-def parse_intensity_kml(kml_path):
-    """解析KML文件，提取烈度圈坐标数据"""
-    if not kml_path or not os.path.exists(kml_path):
-        print(f"[警告] KML文件不存在或未提供: {kml_path}")
-        return []
-
-    intensity_data = []
-    try:
-        tree = ET.parse(kml_path)
-        root = tree.getroot()
-        ns = ""
-        if root.tag.startswith("{"):
-            ns = root.tag.split("}")[0] + "}"
-
-        for pm in root.iter(ns + "Placemark"):
-            name_elem = pm.find(ns + "name")
-            if name_elem is None or name_elem.text is None:
-                continue
-            intensity = _extract_intensity_from_name(name_elem.text)
-            if intensity is None:
-                continue
-            coords = _extract_kml_linestring_coords(pm, ns)
-            if coords:
-                intensity_data.append({
-                    "intensity": intensity,
-                    "coords": coords,
-                })
-        print(f"[信息] 从KML解析到 {len(intensity_data)} 个烈度圈")
-    except Exception as e:
-        print(f"[错误] 解析KML文件失败: {e}")
-    return intensity_data
-
-
-def _extract_intensity_from_name(name):
-    """从Placemark名称中提取烈度值"""
-    if not name:
-        return None
-    name = name.strip()
-    m = re.match(r'(\d+)\s*度?', name)
-    if m:
-        return int(m.group(1))
-    roman_map = {
-        'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5,
-        'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10,
-        'XI': 11, 'XII': 12,
-    }
-    clean = re.sub(r'\s*度\s*', '', name).strip()
-    if clean.upper() in roman_map:
-        return roman_map[clean.upper()]
-    return None
-
-
-def _extract_kml_linestring_coords(placemark, ns):
-    """从Placemark中提取LineString坐标"""
-    coords_list = []
-    for ls in placemark.iter(ns + "LineString"):
-        coords_elem = ls.find(ns + "coordinates")
-        if coords_elem is not None and coords_elem.text:
-            parsed = _parse_kml_coords(coords_elem.text)
-            coords_list.extend(parsed)
-    return coords_list
-
-
-def _parse_kml_coords(text):
-    """解析KML坐标文本为(lon, lat)元组列表"""
-    coords = []
-    for part in text.strip().split():
-        vals = part.split(",")
-        if len(vals) >= 2:
-            try:
-                lon = float(vals[0])
-                lat = float(vals[1])
-                coords.append((lon, lat))
-            except ValueError:
-                continue
-    return coords
-
-
-def create_intensity_layer(intensity_data):
-    """根据解析的烈度圈数据创建QGIS矢量图层"""
-    if not intensity_data:
-        return None
-
-    layer = QgsVectorLayer("LineString?crs=EPSG:4326", "烈度圈", "memory")
-    provider = layer.dataProvider()
-    provider.addAttributes([
-        QgsField("intensity", QVariant.Int),
-        QgsField("label", QVariant.String),
-    ])
-    layer.updateFields()
-
-    features = []
-    for item in intensity_data:
-        intensity = item["intensity"]
-        coords = item["coords"]
-        if len(coords) < 2:
-            continue
-        points = [QgsPointXY(lon, lat) for lon, lat in coords]
-        geom = QgsGeometry.fromPolylineXY(points)
-        feat = QgsFeature(layer.fields())
-        feat.setGeometry(geom)
-        feat.setAttribute("intensity", intensity)
-        feat.setAttribute("label", int_to_roman(intensity))
-        features.append(feat)
-
-    provider.addFeatures(features)
-    layer.updateExtents()
-
-    halo_sl = QgsSimpleLineSymbolLayer()
-    halo_sl.setColor(INTENSITY_HALO_COLOR)
-    halo_sl.setWidth(INTENSITY_HALO_WIDTH_MM)
-    halo_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    halo_sl.setPenStyle(Qt.SolidLine)
-
-    line_sl = QgsSimpleLineSymbolLayer()
-    line_sl.setColor(INTENSITY_LINE_COLOR)
-    line_sl.setWidth(INTENSITY_LINE_WIDTH_MM)
-    line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    line_sl.setPenStyle(Qt.SolidLine)
-
-    symbol = QgsLineSymbol()
-    symbol.changeSymbolLayer(0, halo_sl)
-    symbol.appendSymbolLayer(line_sl)
-
-    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
-    _setup_intensity_labels(layer)
-    layer.triggerRepaint()
-
-    print(f"[信息] 创建烈度圈图层，共 {len(features)} 条烈度线")
-    return layer
-
-
-def _setup_intensity_labels(layer):
-    """配置烈度圈图层的标注"""
-    settings = QgsPalLayerSettings()
-    settings.fieldName = "label"
-    settings.placement = Qgis.LabelPlacement.Line
-
-    text_format = QgsTextFormat()
-    font = QFont("Times New Roman", INTENSITY_LABEL_FONT_SIZE_PT)
-    font.setBold(True)
-    text_format.setFont(font)
-    text_format.setSize(INTENSITY_LABEL_FONT_SIZE_PT)
-    text_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    text_format.setColor(QColor(0, 0, 0))
-
-    buffer_settings = QgsTextBufferSettings()
-    buffer_settings.setEnabled(True)
-    buffer_settings.setSize(0.8)
-    buffer_settings.setSizeUnit(QgsUnitTypes.RenderMillimeters)
-    buffer_settings.setColor(QColor(255, 255, 255))
-    text_format.setBuffer(buffer_settings)
-
-    settings.setFormat(text_format)
-    labeling = QgsVectorLayerSimpleLabeling(settings)
-    layer.setLabelsEnabled(True)
-    layer.setLabeling(labeling)
 
 
 # ============================================================
@@ -1212,27 +1022,6 @@ def create_city_point_layer(extent):
     return layer
 
 
-def create_intensity_legend_layer():
-    """创建烈度图例用的线图层"""
-    layer = QgsVectorLayer("LineString?crs=EPSG:4326", "烈度", "memory")
-    provider = layer.dataProvider()
-    provider.addAttributes([QgsField("name", QVariant.String)])
-    layer.updateFields()
-
-    line_sl = QgsSimpleLineSymbolLayer()
-    line_sl.setColor(INTENSITY_LEGEND_COLOR)
-    line_sl.setWidth(INTENSITY_LEGEND_LINE_WIDTH_MM)
-    line_sl.setWidthUnit(QgsUnitTypes.RenderMillimeters)
-    line_sl.setPenStyle(Qt.SolidLine)
-
-    symbol = QgsLineSymbol()
-    symbol.changeSymbolLayer(0, line_sl)
-    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
-    layer.triggerRepaint()
-    print("[信息] 创建烈度图例图层")
-    return layer
-
-
 def create_province_legend_layer():
     """创建省界图例用的线图层"""
     layer = QgsVectorLayer("LineString?crs=EPSG:4326", "省界", "memory")
@@ -1351,8 +1140,8 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
 
     _setup_map_grid(map_item, extent)
     _add_north_arrow(layout, map_height_mm)
-    _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
-    _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanxing_list)
+    _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanxing_list,
+                scale=scale, extent=extent, center_lat=latitude)
 
     return layout
 
@@ -1428,142 +1217,14 @@ def _add_north_arrow(layout, map_height_mm):
     print(f"[信息] 指北针添加完成（无边框）")
 
 
-def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
-    """添加比例尺"""
-    map_left = BORDER_LEFT_MM
-    map_top = BORDER_TOP_MM
-    map_right = map_left + MAP_WIDTH_MM
-    map_bottom = map_top + map_height_mm
-
-    lon_range_deg = extent.xMaximum() - extent.xMinimum()
-    map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
-    km_per_mm = map_total_km / MAP_WIDTH_MM
-    target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
-
-    nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-    bar_km = nice_values[0]
-    for nv in nice_values:
-        if nv <= target_bar_km * 1.5:
-            bar_km = nv
-        else:
-            break
-
-    bar_length_mm = bar_km / km_per_mm
-    bar_length_mm = max(bar_length_mm, 20.0)
-    num_segments = 4
-
-    sb_width = bar_length_mm + 16.0
-    sb_height = 14.0
-    sb_x = map_right - sb_width
-    sb_y = map_bottom - sb_height
-
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(sb_x, sb_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(sb_width, sb_height, QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    bg_shape.setFrameEnabled(True)
-    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(bg_shape)
-
-    scale_label = QgsLayoutItemLabel(layout)
-    scale_label.setText(f"1:{scale:,}")
-    label_format = QgsTextFormat()
-    label_format.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
-    label_format.setSize(SCALE_FONT_SIZE_PT)
-    label_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    label_format.setColor(QColor(0, 0, 0))
-    scale_label.setTextFormat(label_format)
-    scale_label.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
-    scale_label.attemptResize(QgsLayoutSize(sb_width, 4.5, QgsUnitTypes.LayoutMillimeters))
-    scale_label.setHAlign(Qt.AlignHCenter)
-    scale_label.setVAlign(Qt.AlignVCenter)
-    scale_label.setFrameEnabled(False)
-    scale_label.setBackgroundEnabled(False)
-    layout.addLayoutItem(scale_label)
-
-    bar_start_x = sb_x + (sb_width - bar_length_mm) / 2.0
-    bar_y = sb_y + 5.5
-    bar_h = 1.8
-    seg_width_mm = bar_length_mm / num_segments
-
-    for i in range(num_segments):
-        seg_shape = QgsLayoutItemShape(layout)
-        seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-        seg_x = bar_start_x + i * seg_width_mm
-        seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
-        seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h, QgsUnitTypes.LayoutMillimeters))
-        fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
-        seg_symbol = QgsFillSymbol.createSimple({
-            'color': fill_color,
-            'outline_color': '0,0,0,255',
-            'outline_width': '0.15',
-            'outline_width_unit': 'MM',
-        })
-        seg_shape.setSymbol(seg_symbol)
-        seg_shape.setFrameEnabled(False)
-        layout.addLayoutItem(seg_shape)
-
-    label_y = bar_y + bar_h + 0.3
-    label_h = 3.5
-    tick_format = QgsTextFormat()
-    tick_format.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
-    tick_format.setSize(SCALE_FONT_SIZE_PT)
-    tick_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    tick_format.setColor(QColor(0, 0, 0))
-
-    lbl_0 = QgsLayoutItemLabel(layout)
-    lbl_0.setText("0")
-    lbl_0.setTextFormat(tick_format)
-    lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y, QgsUnitTypes.LayoutMillimeters))
-    lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
-    lbl_0.setHAlign(Qt.AlignHCenter)
-    lbl_0.setVAlign(Qt.AlignTop)
-    lbl_0.setFrameEnabled(False)
-    lbl_0.setBackgroundEnabled(False)
-    layout.addLayoutItem(lbl_0)
-
-    mid_km = bar_km // 2
-    if mid_km > 0:
-        lbl_mid = QgsLayoutItemLabel(layout)
-        lbl_mid.setText(str(mid_km))
-        lbl_mid.setTextFormat(tick_format)
-        mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
-        lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
-        lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
-        lbl_mid.setHAlign(Qt.AlignHCenter)
-        lbl_mid.setVAlign(Qt.AlignTop)
-        lbl_mid.setFrameEnabled(False)
-        lbl_mid.setBackgroundEnabled(False)
-        layout.addLayoutItem(lbl_mid)
-
-    lbl_end = QgsLayoutItemLabel(layout)
-    lbl_end.setText(f"{bar_km} km")
-    lbl_end.setTextFormat(tick_format)
-    end_x = bar_start_x + bar_length_mm - 4.0
-    lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
-    lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
-    lbl_end.setHAlign(Qt.AlignHCenter)
-    lbl_end.setVAlign(Qt.AlignTop)
-    lbl_end.setFrameEnabled(False)
-    lbl_end.setBackgroundEnabled(False)
-    layout.addLayoutItem(lbl_end)
-
-    print(f"[信息] 比例尺添加完成，1:{scale:,}")
-
-
-def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanxing_list=None):
+def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanxing_list=None,
+                scale=None, extent=None, center_lat=None):
     """
     添加图例。
-    - 上部：震中/地级市/省界/市界/县界/烈度（2行3列，平行排列）
+    - 上部：震中/地级市/省界/市界/县界（3列排列）
     - 下部：岩性图例（色块 + yanxing名称，首行文字与色块对齐，超长文字折行）
     - 新增："工程岩土体分组"标题，位于岩性图例上方
+    - 底部：比例尺
     """
     legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
     legend_y = BORDER_TOP_MM
@@ -1618,11 +1279,10 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
     title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(title_label)
 
-    # 上部图例：2行3列
+    # 上部图例：按3列排列（震中/地级市/省界/市界/县界）
     top_legend_start_y = legend_y + 7.0
 
     col_count = 3
-    row_count = 2
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
@@ -1640,7 +1300,6 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         ("省界", "省界", "solid_line"),
         ("市界", "市界", "dash_line_city"),
         ("县界", "县界", "dash_line_county"),
-        ("烈度", "烈度", "solid_line_black"),
     ]
 
     for idx, (layer_name, display_name, draw_type) in enumerate(legend_items):
@@ -1666,9 +1325,6 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
             # 县界：线宽0.14mm，虚线间隔0.2mm
             _draw_dash_line_icon(layout, item_x, icon_center_y, icon_width,
                                  COUNTY_COLOR, COUNTY_LINE_WIDTH_MM, COUNTY_DASH_GAP_MM)
-        elif draw_type == "solid_line_black":
-            _draw_line_icon(layout, item_x, icon_center_y, icon_width,
-                            INTENSITY_LEGEND_COLOR, INTENSITY_LEGEND_LINE_WIDTH_MM, solid=True)
 
         text_x = item_x + icon_width + icon_text_gap
         text_width = col_width - icon_width - icon_text_gap
@@ -1684,11 +1340,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         text_label.setBackgroundEnabled(False)
         layout.addLayoutItem(text_label)
 
+    row_count = (len(legend_items) + col_count - 1) // col_count
     top_legend_height = row_count * row_height
+
+    # 计算比例尺尺寸，用于预留底部空间
+    scale_bar_reserved = 0.0
+    if scale is not None and extent is not None and center_lat is not None:
+        scale_bar_reserved = 13.0  # 比例尺高度 + 底部留白
 
     # ==== 新增：工程岩土体分组标题 ====
     if yanxing_list:
-        # 标题位置：上部图例下方留4mm间距
+        # 标题位置：上部图例下方
         yanxing_title_y = top_legend_start_y + top_legend_height
 
         # 标题文本格式
@@ -1704,7 +1366,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         yanxing_title_label.setTextFormat(yanxing_title_format)
         yanxing_title_label.attemptMove(QgsLayoutPoint(legend_x, yanxing_title_y,
                                                        QgsUnitTypes.LayoutMillimeters))
-        yanxing_title_label.attemptResize(QgsLayoutSize(legend_width, 5.0,
+        yanxing_title_label.attemptResize(QgsLayoutSize(legend_width, 4.5,
                                                         QgsUnitTypes.LayoutMillimeters))
         yanxing_title_label.setHAlign(Qt.AlignHCenter)
         yanxing_title_label.setVAlign(Qt.AlignVCenter)
@@ -1712,8 +1374,8 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         yanxing_title_label.setBackgroundEnabled(False)
         layout.addLayoutItem(yanxing_title_label)
 
-        # 岩性图例项起始Y坐标（标题下方留1mm间距）
-        item_start_y = yanxing_title_y + 5.0 + 1.0
+        # 岩性图例项起始Y坐标（标题下方留0.5mm间距）
+        item_start_y = yanxing_title_y + 4.5 + 0.5
         print(f"[信息] 添加'工程岩土体分组'标题")
 
         # 岩性图例参数
@@ -1734,15 +1396,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
 
         current_y = item_start_y
         displayed_count = 0
+        # 岩性图例底部裁剪边界：为比例尺预留空间
+        yanxing_clip_y = legend_y + legend_height - scale_bar_reserved - 1.0
 
         for idx, (value, color_rgba, yanxing_name) in enumerate(yanxing_list):
             text_lines = _wrap_text(yanxing_name, max_chars_per_line)
             num_lines = len(text_lines)
 
             text_total_height = num_lines * line_height_mm
-            item_height = max(yanxing_icon_height, text_total_height) + 1.0
+            item_height = max(yanxing_icon_height, text_total_height) + 0.8
 
-            if current_y + item_height > legend_y + legend_height - 2.0:
+            if current_y + item_height > yanxing_clip_y:
                 break
 
             icon_y = current_y
@@ -1786,6 +1450,131 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, yanx
         print(f"[信息] 岩性图例添加完成，共 {displayed_count} 项，字体大小 {LEGEND_YANXING_FONT_SIZE_PT}pt")
     else:
         print("[信息] 无岩性数据，跳过岩性图例")
+
+    # ==== 比例尺（位于图例底部）====
+    if scale is not None and extent is not None and center_lat is not None:
+        lon_range_deg = extent.xMaximum() - extent.xMinimum()
+        map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
+        km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
+        target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
+
+        nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+        bar_km = nice_values[0]
+        for nv in nice_values:
+            if nv <= target_bar_km * 1.5:
+                bar_km = nv
+            else:
+                break
+
+        bar_length_mm = bar_km / km_per_mm if km_per_mm > 0 else 20.0
+        bar_length_mm = max(bar_length_mm, 20.0)
+        num_segments = 4
+
+        std_bar_width = bar_length_mm + 16.0
+        std_bar_height = 12.0
+
+        avail_width = legend_width - 4.0
+        if std_bar_width > avail_width:
+            scale_factor = avail_width / std_bar_width
+            std_bar_width = avail_width
+            bar_length_mm *= scale_factor
+            std_bar_height *= scale_factor
+        else:
+            scale_factor = 1.0
+
+        sb_height = std_bar_height
+        sb_y = legend_y + legend_height - sb_height - 2.0
+        sb_x = legend_x + (legend_width - std_bar_width) / 2.0
+
+        scale_tf = QgsTextFormat()
+        scale_tf.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
+        scale_tf.setSize(SCALE_FONT_SIZE_PT)
+        scale_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        scale_tf.setColor(QColor(0, 0, 0))
+
+        lbl_scale = QgsLayoutItemLabel(layout)
+        lbl_scale.setText(f"1:{scale:,}")
+        lbl_scale.setTextFormat(scale_tf)
+        lbl_scale.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.attemptResize(QgsLayoutSize(std_bar_width, 4.5 * scale_factor,
+                                              QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.setHAlign(Qt.AlignHCenter)
+        lbl_scale.setVAlign(Qt.AlignVCenter)
+        lbl_scale.setFrameEnabled(False)
+        lbl_scale.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_scale)
+
+        bar_start_x = sb_x + (std_bar_width - bar_length_mm) / 2.0
+        bar_y = sb_y + 5.0 * scale_factor
+        bar_h = 1.6 * scale_factor
+        seg_width_mm = bar_length_mm / num_segments
+
+        for i in range(num_segments):
+            seg_shape = QgsLayoutItemShape(layout)
+            seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+            seg_x = bar_start_x + i * seg_width_mm
+            seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
+            seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h,
+                                                  QgsUnitTypes.LayoutMillimeters))
+            fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
+            seg_symbol = QgsFillSymbol.createSimple({
+                'color': fill_color,
+                'outline_color': '0,0,0,255',
+                'outline_width': '0.15',
+                'outline_width_unit': 'MM',
+            })
+            seg_shape.setSymbol(seg_symbol)
+            seg_shape.setFrameEnabled(False)
+            layout.addLayoutItem(seg_shape)
+
+        tick_tf = QgsTextFormat()
+        tick_tf.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
+        tick_tf.setSize(SCALE_FONT_SIZE_PT)
+        tick_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        tick_tf.setColor(QColor(0, 0, 0))
+
+        label_y = bar_y + bar_h + 0.3
+        label_h = 3.5 * scale_factor
+
+        lbl_0 = QgsLayoutItemLabel(layout)
+        lbl_0.setText("0")
+        lbl_0.setTextFormat(tick_tf)
+        lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y,
+                                         QgsUnitTypes.LayoutMillimeters))
+        lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_0.setHAlign(Qt.AlignHCenter)
+        lbl_0.setVAlign(Qt.AlignTop)
+        lbl_0.setFrameEnabled(False)
+        lbl_0.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_0)
+
+        mid_km = bar_km // 2
+        if mid_km > 0:
+            lbl_mid = QgsLayoutItemLabel(layout)
+            lbl_mid.setText(str(mid_km))
+            lbl_mid.setTextFormat(tick_tf)
+            mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
+            lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.setHAlign(Qt.AlignHCenter)
+            lbl_mid.setVAlign(Qt.AlignTop)
+            lbl_mid.setFrameEnabled(False)
+            lbl_mid.setBackgroundEnabled(False)
+            layout.addLayoutItem(lbl_mid)
+
+        lbl_end = QgsLayoutItemLabel(layout)
+        lbl_end.setText(f"{bar_km} km")
+        lbl_end.setTextFormat(tick_tf)
+        end_x = bar_start_x + bar_length_mm - 4.0
+        lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.setHAlign(Qt.AlignHCenter)
+        lbl_end.setVAlign(Qt.AlignTop)
+        lbl_end.setFrameEnabled(False)
+        lbl_end.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_end)
+
+        print(f"[信息] 比例尺添加到图例区完成，1:{scale:,}")
 
     print("[信息] 图例添加完成")
 
@@ -1938,14 +1727,13 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
 
 def generate_earthquake_geology_map(longitude, latitude, magnitude,
                                     output_path="output_geology_map.png",
-                                    kml_path=None,
                                     basemap_path=None, annotation_path=None):
     """生成地震震中地质构造图（主入口函数）"""
     logger.info('开始生成地质构造图: lon=%.4f lat=%.4f M=%.1f output=%s',
                 longitude, latitude, magnitude, output_path)
     try:
         return _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
-                                                     output_path, kml_path,
+                                                     output_path,
                                                      basemap_path=basemap_path,
                                                      annotation_path=annotation_path)
     except Exception as exc:
@@ -1954,15 +1742,13 @@ def generate_earthquake_geology_map(longitude, latitude, magnitude,
 
 
 def _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
-                                          output_path, kml_path,
+                                          output_path,
                                           basemap_path=None, annotation_path=None):
     """generate_earthquake_geology_map 的实际实现。"""
     print("=" * 60)
     print(f"[开始] 生成地震地质构造图")
     print(f"  震中: ({longitude}, {latitude}), 震级: M{magnitude}")
     print(f"  输出: {output_path}")
-    if kml_path:
-        print(f"  烈度圈KML: {kml_path}")
     print("=" * 60)
 
     config = get_magnitude_config(magnitude)
@@ -2063,22 +1849,6 @@ def _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
         if county_legend_layer:
             project.addMapLayer(county_legend_layer)
 
-        intensity_legend_layer = create_intensity_legend_layer()
-        if intensity_legend_layer:
-            project.addMapLayer(intensity_legend_layer)
-
-        intensity_data = []
-        intensity_layer = None
-        if kml_path:
-            abs_kml = kml_path
-            if not os.path.isabs(kml_path):
-                abs_kml = resolve_path(kml_path)
-            intensity_data = parse_intensity_kml(abs_kml)
-            if intensity_data:
-                intensity_layer = create_intensity_layer(intensity_data)
-                if intensity_layer:
-                    project.addMapLayer(intensity_layer)
-
         epicenter_layer = create_epicenter_layer(longitude, latitude)
         if epicenter_layer:
             project.addMapLayer(epicenter_layer)
@@ -2088,7 +1858,6 @@ def _generate_earthquake_geology_map_impl(longitude, latitude, magnitude,
             epicenter_layer,
             locals().get('city_point_layer'),
             locals().get('annotation_raster'),
-            locals().get('intensity_layer'),
             locals().get('province_label_layer'),
             locals().get('province_layer'),
             locals().get('city_layer'),
@@ -2195,19 +1964,6 @@ def test_calculate_extent():
     print("  所有范围计算测试通过 ✓")
 
 
-def test_int_to_roman():
-    """测试罗马数字转换"""
-    print("\n--- 测试: int_to_roman ---")
-    assert int_to_roman(4) == "IV"
-    assert int_to_roman(5) == "V"
-    assert int_to_roman(6) == "VI"
-    assert int_to_roman(9) == "IX"
-    assert int_to_roman(10) == "X"
-    assert int_to_roman(12) == "XII"
-    print("  IV=4, V=5, VI=6, IX=9, X=10, XII=12 ✓")
-    print("  罗马数字转换测试通过 ✓")
-
-
 def test_build_yanxing_legend_list():
     """测试岩性图例列表构建"""
     print("\n--- 测试: build_yanxing_legend_list ---")
@@ -2261,7 +2017,6 @@ def run_all_tests():
 
     test_magnitude_config()
     test_calculate_extent()
-    test_int_to_roman()
     test_build_yanxing_legend_list()
     test_boundary_styles()
 
@@ -2282,11 +2037,10 @@ if __name__ == "__main__":
             lat = float(sys.argv[2])
             mag = float(sys.argv[3])
             out = sys.argv[4] if len(sys.argv) > 4 else f"earthquake_geology_M{mag}_{lon}_{lat}.png"
-            kml = sys.argv[5] if len(sys.argv) > 5 else None
-            generate_earthquake_geology_map(lon, lat, mag, out, kml)
+            generate_earthquake_geology_map(lon, lat, mag, out)
         except ValueError as e:
             print(f"[错误] 参数格式错误: {e}")
-            print("用法: python earthquake_geological_map2.py <经度> <纬度> <震级> [输出文件名] [kml路径]")
+            print("用法: python earthquake_geological_map2.py <经度> <纬度> <震级> [输出文件名]")
     else:
         print("使用默认参数运行（唐山地震 M7.8）...")
         generate_earthquake_geology_map(
