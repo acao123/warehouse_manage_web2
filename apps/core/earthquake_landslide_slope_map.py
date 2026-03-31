@@ -1445,7 +1445,7 @@ def _add_legend(layout, map_item, map_height_mm, scale=None, extent=None, center
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
-    row_height = 8.0
+    row_height = 6.0
     icon_width = 4.0
     icon_height = 2.5
     icon_text_gap = 1.0
@@ -1511,7 +1511,7 @@ def _add_legend(layout, map_item, map_height_mm, scale=None, extent=None, center
     hazard_title_format.setColor(QColor(0, 0, 0))
 
     hazard_title_label = QgsLayoutItemLabel(layout)
-    hazard_title_label.setText("历史滑坡灾害")
+    hazard_title_label.setText("历史滑坡")
     hazard_title_label.setTextFormat(hazard_title_format)
     hazard_title_label.attemptMove(QgsLayoutPoint(legend_x, hazard_title_y, QgsUnitTypes.LayoutMillimeters))
     hazard_title_label.attemptResize(QgsLayoutSize(legend_width, 5.0, QgsUnitTypes.LayoutMillimeters))
