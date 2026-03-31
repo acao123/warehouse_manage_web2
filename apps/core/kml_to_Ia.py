@@ -113,6 +113,7 @@ from qgis.analysis import (
     QgsTinInterpolator,
 )
 from qgis.core import (
+    QgsApplication,
     QgsFeature,
     QgsField,
     QgsFields,
@@ -749,6 +750,8 @@ class KmlToIaConverter:
                 extent,
                 self._n_cols,
                 self._n_rows,
+                self._res_lon,
+                self._res_lat,
             )
             ret = writer.writeFile()
             if ret != 0:
@@ -1637,7 +1640,11 @@ class KmlToIaConverter:
 
 # ==================== 入口 ====================
 if __name__ == "__main__":
-    converter = KmlToIaConverter(
+    QgsApplication.setPrefixPath('', True)
+    _qgs_app = QgsApplication([], False)
+    _qgs_app.initQgis()
+    try:
+        converter = KmlToIaConverter(
         kml_path="../../data/geology/kml/source.kml",  # 输入KML文件路径
         ia_output_path="../../data/geology/ia/Ia.tif",  # Ia输出路径
 
@@ -1659,7 +1666,7 @@ if __name__ == "__main__":
 
         # 其他可用方法
         # interp_method='scipy_idw',  # scipy RBF - 速度快（可能有边界突变）
-        # interp_method='kriging',    # 普通克里金 - 统计精度最高，速度最慢
+        # interp_method='scipy_tin',  # scipy TIN - 无需pykrige，比kriging快
         # interp_method='qgis_idw',   # QGIS IDW - 无需额外依赖
         # interp_method='qgis_tin',   # QGIS TIN - 无需额外依赖
 
@@ -1687,5 +1694,7 @@ if __name__ == "__main__":
         # 内存优化参数
         chunk_size=1000,  # 栅格分块行数；推荐500~2000
         max_memory_gb=10.0,  # 最大内存使用限制(GB)；参考值，实际由上方参数控制
-    )
-    converter.run()
+        )
+        converter.run()
+    finally:
+        _qgs_app.exitQgis()
