@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.1）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.2）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -11,6 +11,13 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.1）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
 
+主要改进（v3.2 相较 v3.1）：
+    1. QGIS插值优化：使用 QgsGridFileWriter 替代逐像素 Python 循环，
+       改为 C++ 批量插值，大幅提升 qgis_idw/qgis_tin 速度
+    2. scipy插值并行优化：使用 ThreadPoolExecutor 并行处理分块，
+       scipy C扩展在插值时释放GIL，多线程可有效提升吞吐量
+    3. 新增 max_interp_workers 参数控制并行线程数（默认2）
+
 主要改进（v3.1 相较 v3.0）：
     1. 修复经度方向分辨率未考虑纬度余弦的Bug（像素非正方形问题）
     2. 移除无用的EPSG:4326→EPSG:4326恒等坐标变换，直接使用经纬度坐标
@@ -20,9 +27,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.1）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: Copilot (重构版 v3.1)
-日期: 2026-03-19
-版本: 3.1
+作者: Copilot (重构版 v3.2)
+日期: 2026-03-31
+版本: 3.2
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -51,12 +58,14 @@ QGIS版本: 3.40.15
     - run()方法使用try-finally确保异常时也能释放资源
 """
 
+import concurrent.futures
 import gc
 import logging
 import math
 import os
 import random
 import re
+import tempfile
 import time
 import traceback
 import warnings
@@ -95,6 +104,7 @@ from qgis.core import (
     QgsFields,
     QgsGeometry,
     QgsPointXY,
+    QgsRectangle,
     QgsVectorLayer,
 )
 
@@ -135,7 +145,7 @@ _PGA_NAME_PATTERN = re.compile(r'^([0-9]*\.?[0-9]+)\s*[gG]$')
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.1）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.2）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -218,6 +228,9 @@ class KmlToIaConverter:
         chunk_size: int = 1000,
         coord_batch_size: int = 10000,
         max_memory_gb: float = 10.0,
+
+        # ---- 并行插值参数 ----
+        max_interp_workers: int = 2,        # scipy插值并行线程数，推荐 1~4
     ):
         self.kml_path = kml_path
         self.ia_output_path = ia_output_path
@@ -254,6 +267,8 @@ class KmlToIaConverter:
         self.chunk_size = chunk_size
         self.coord_batch_size = coord_batch_size
         self.max_memory_gb = max_memory_gb
+        # 并行插值参数
+        self.max_interp_workers = max(1, max_interp_workers)
 
         # 运行时数据（由 run() 过程填充）
         self._contours: List[dict] = []
@@ -665,7 +680,10 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        使用 QGIS 插值器手动插值（优化版：批量处理每行）
+        使用 QGIS QgsGridFileWriter 批量插值（优化版：C++ 批量处理，替代逐像素 Python 循环）
+
+        QgsGridFileWriter 在 C++ 层遍历所有像素并调用插值器，比 Python 循环快几个数量级。
+        输出为临时 ASC 文件，之后通过 GDAL 转换为带正确投影和仿射变换的 GeoTIFF。
 
         参数:
             x_arr: 采样点X坐标(经度)
@@ -674,9 +692,10 @@ class KmlToIaConverter:
             output_tif_path: 输出 GeoTIFF 文件路径
         """
         layer = None
-        out_ds = None
-        band = None
         interpolator = None
+        temp_asc_path = None
+        asc_ds = None
+        out_ds = None
 
         try:
             layer = self._build_qgs_vector_layer(x_arr, y_arr, values)
@@ -703,53 +722,75 @@ class KmlToIaConverter:
             else:
                 raise ValueError(f"不支持的QGIS插值方法: '{method}'")
 
+            # 创建临时 ASC 文件供 QgsGridFileWriter 写入
+            with tempfile.NamedTemporaryFile(suffix='.asc', delete=False) as tmp_f:
+                temp_asc_path = tmp_f.name
+
+            # QgsGridFileWriter 使用 C++ 批量插值，替代 Python 逐像素循环
+            # cellSizeX/Y 告知 writer 每个像素的地理坐标步长，
+            # 与 _geo_transform 一致，确保像素中心坐标正确
+            extent = QgsRectangle(self._x_min, self._y_min, self._x_max, self._y_max)
+            writer = QgsGridFileWriter(
+                interpolator,
+                temp_asc_path,
+                extent,
+                self._n_cols,
+                self._n_rows,
+                self._res_lon,
+                self._res_lat,
+            )
+
+            logger.info("开始 QGIS 批量插值（C++），共 %d 列 × %d 行 = %s 像素...",
+                        self._n_cols, self._n_rows, f"{self._n_cols * self._n_rows:,}")
+            start_time = time.time()
+
+            ret = writer.writeFile(False)
+            if ret != 0:
+                raise RuntimeError(f"QgsGridFileWriter.writeFile() 返回错误码: {ret}")
+
+            elapsed = time.time() - start_time
+            logger.info("QGIS 批量插值完成，耗时: %.1fs", elapsed)
+
+            # 将临时 ASC 转换为带正确投影和非方形像素仿射变换的 GeoTIFF
+            # ASC 格式只存单一 cellsize，因此仿射变换需手动覆盖
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
             self._ensure_file_writable(output_tif_path)
-            driver = gdal.GetDriverByName('GTiff')
-            out_ds = driver.Create(
+
+            asc_ds = gdal.Open(temp_asc_path)
+            if asc_ds is None:
+                raise RuntimeError(f"无法读取临时 ASC 文件: {temp_asc_path}")
+
+            tif_driver = gdal.GetDriverByName('GTiff')
+            out_ds = tif_driver.CreateCopy(
                 output_tif_path,
-                self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
-                ['COMPRESS=LZW', 'TILED=YES'],
+                asc_ds,
+                options=['COMPRESS=LZW', 'TILED=YES'],
             )
+            if out_ds is None:
+                raise RuntimeError(f"GDAL CreateCopy 创建 GeoTIFF 失败: {output_tif_path}")
+
+            # 覆盖仿射变换（ASC 为方形像素，需修正为经纬度非方形分辨率）和投影
             out_ds.SetGeoTransform(self._geo_transform)
             out_ds.SetProjection(self._utm_srs.ExportToWkt())
+
             band = out_ds.GetRasterBand(1)
-            band.SetNoDataValue(-9999.0)
-
-            # 列坐标（经度）使用经度分辨率
-            grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
-
-            n_rows = self._n_rows
-            logger.info("开始插值，共 %d 行 × %d 列 = %s 像素...",
-                        n_rows, self._n_cols, f"{n_rows * self._n_cols:,}")
-
-            start_time = time.time()
-            report_interval = max(1, n_rows // 20)
-
-            for row_idx in range(n_rows):
-                y = self._y_max - (row_idx + 0.5) * self._res_lat
-
-                row_data = np.full(self._n_cols, -9999.0, dtype=np.float32)
-                for col_idx, x in enumerate(grid_x):
-                    try:
-                        success, value = interpolator.interpolatePoint(x, y)
-                        if success == 0:
-                            row_data[col_idx] = max(0.0, value)
-                    except Exception:
-                        # 单点插值失败不影响其他像素
-                        pass
-
-                band.WriteArray(row_data.reshape(1, -1), 0, row_idx)
-
-                if (row_idx + 1) % report_interval == 0 or row_idx == n_rows - 1:
-                    elapsed = time.time() - start_time
-                    progress = 100.0 * (row_idx + 1) / n_rows
-                    eta = elapsed / (row_idx + 1) * (n_rows - row_idx - 1) if row_idx > 0 else 0
-                    logger.info("进度: %d/%d 行 (%.1f%%), 已用时: %.1fs, 预计剩余: %.1fs",
-                                row_idx + 1, n_rows, progress, elapsed, eta)
+            # 将插值结果中小于 0 的有效像素归零（nodata 保持不变）
+            nodata_val = band.GetNoDataValue()
+            arr = band.ReadAsArray()
+            if nodata_val is not None:
+                valid_mask = arr != nodata_val
+            else:
+                valid_mask = np.ones(arr.shape, dtype=bool)
+            negative_mask = valid_mask & (arr < 0)
+            if negative_mask.any():
+                arr[negative_mask] = 0.0
+                band.WriteArray(arr)
+            del arr, valid_mask, negative_mask
 
             band.ComputeStatistics(False)
             band.FlushCache()
+            asc_ds = None
+            out_ds = None
 
             total_time = time.time() - start_time
             logger.info("QGIS插值完成，总耗时: %.1fs, 已保存: %s", total_time, output_tif_path)
@@ -758,8 +799,20 @@ class KmlToIaConverter:
             logger.error("QGIS插值失败: %s", exc, exc_info=True)
             raise
         finally:
+            asc_ds = None
             out_ds = None
-            band = None
+            # 删除临时 ASC 文件及其伴随文件
+            if temp_asc_path:
+                _base = os.path.splitext(temp_asc_path)[0]
+                for _path in [temp_asc_path,
+                               temp_asc_path + '.aux.xml',
+                               _base + '.prj',
+                               _base + '.tfw']:
+                    if os.path.exists(_path):
+                        try:
+                            os.remove(_path)
+                        except OSError:
+                            pass
             del interpolator, layer
             gc.collect()
 
@@ -773,7 +826,11 @@ class KmlToIaConverter:
         output_tif_path: str,
     ) -> None:
         """
-        使用 scipy RBFInterpolator 进行IDW近似插值，分块写入 GeoTIFF。
+        使用 scipy RBFInterpolator 进行IDW近似插值，分块并行写入 GeoTIFF。
+
+        优化说明：使用 ThreadPoolExecutor（max_interp_workers 线程）并行处理分块。
+        scipy 的 RBFInterpolator.__call__ 在 C 扩展层释放 GIL，多线程可有效提升吞吐量。
+        每次最多有 max_interp_workers 个分块的结果同时在内存中，按顺序写盘后立即释放。
 
         参数:
             x_arr: 采样点X坐标(经度)
@@ -821,34 +878,63 @@ class KmlToIaConverter:
 
             n_rows = self._n_rows
             chunk_rows = self.chunk_size
+            chunk_starts = list(range(0, n_rows, chunk_rows))
 
-            start_time = time.time()
-            for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
+            # 辅助函数：在线程中计算单个分块的插值结果
+            def _compute_chunk_idw(row_start: int) -> Tuple[int, np.ndarray]:
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
-
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
-
                 xx, yy = np.meshgrid(grid_x, grid_y)
                 pts = np.column_stack([xx.ravel(), yy.ravel()])
                 del xx, yy
-
-                try:
-                    chunk_vals = rbf(pts).reshape(actual_rows, self._n_cols)
-                except Exception as exc:
-                    logger.error("scipy RBF 插值第 %d 块失败: %s", chunk_idx, exc)
-                    raise
+                result = rbf(pts).reshape(actual_rows, self._n_cols).astype(np.float32)
                 del pts
+                np.maximum(result, 0.0, out=result)
+                return row_start, result
 
-                np.maximum(chunk_vals, 0.0, out=chunk_vals)
-                band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
-                del chunk_vals
-                gc.collect()
+            start_time = time.time()
+            logger.info("scipy_idw 插值开始，分块数=%d，并行线程数=%d",
+                        len(chunk_starts), self.max_interp_workers)
 
-                if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
-                    elapsed = time.time() - start_time
-                    logger.info("scipy_idw 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
-                                row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
+            # 使用字典映射 row_start → Future，按顺序消费、并行计算
+            # 每次最多保留 max_interp_workers 个未消费的 Future 在内存中
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.max_interp_workers
+            ) as executor:
+                # pending: row_start → Future（只包含已提交但未消费的分块）
+                pending: dict = {}
+                submit_ptr = 0  # 下一个待提交分块的索引
+
+                # 预先提交前 max_interp_workers 个分块
+                while submit_ptr < len(chunk_starts) and submit_ptr < self.max_interp_workers:
+                    rs = chunk_starts[submit_ptr]
+                    pending[rs] = executor.submit(_compute_chunk_idw, rs)
+                    submit_ptr += 1
+
+                for chunk_idx, rs in enumerate(chunk_starts):
+                    # 等待当前分块的计算结果（一定在 pending 中）
+                    try:
+                        row_start_res, chunk_vals = pending.pop(rs).result()
+                    except Exception as exc:
+                        logger.error("scipy_idw 插值分块 row_start=%d 失败: %s", rs, exc)
+                        raise
+
+                    band.WriteArray(chunk_vals, 0, row_start_res)
+                    del chunk_vals
+                    gc.collect()
+
+                    # 提交下一个分块（维持滑动窗口大小）
+                    if submit_ptr < len(chunk_starts):
+                        next_rs = chunk_starts[submit_ptr]
+                        pending[next_rs] = executor.submit(_compute_chunk_idw, next_rs)
+                        submit_ptr += 1
+
+                    row_end = min(rs + chunk_rows, n_rows)
+                    if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
+                        elapsed = time.time() - start_time
+                        logger.info("scipy_idw 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
+                                    row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
 
             band.ComputeStatistics(False)
             band.FlushCache()
@@ -876,7 +962,11 @@ class KmlToIaConverter:
         output_tif_path: str,
     ) -> None:
         """
-        使用 scipy Delaunay 三角网插值，分块写入 GeoTIFF。
+        使用 scipy Delaunay 三角网插值，分块并行写入 GeoTIFF。
+
+        优化说明：使用 ThreadPoolExecutor（max_interp_workers 线程）并行处理分块。
+        scipy TIN 插值在 C 扩展层处理三角剖分查找，不修改内部状态，线程安全可复用。
+        三角网外部的 NaN 像素用最近邻 RBFInterpolator（neighbors=1）填充。
 
         参数:
             x_arr: 采样点X坐标(经度)
@@ -908,6 +998,14 @@ class KmlToIaConverter:
             del points
             gc.collect()
 
+            # 预先计算用于NaN填充的最近邻插值器（三角网外部区域）
+            nn_rbf = _RBFInterpolator(
+                np.column_stack([x_arr, y_arr]),
+                values.astype(np.float64),
+                kernel='linear',
+                neighbors=1,
+            )
+
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
             self._ensure_file_writable(output_tif_path)
             driver = gdal.GetDriverByName('GTiff')
@@ -925,30 +1023,18 @@ class KmlToIaConverter:
 
             n_rows = self._n_rows
             chunk_rows = self.chunk_size
-            start_time = time.time()
+            chunk_starts = list(range(0, n_rows, chunk_rows))
 
-            # 预先计算用于NaN填充的最近邻值（三角网外部区域）
-            nn_rbf = _RBFInterpolator(
-                np.column_stack([x_arr, y_arr]),
-                values.astype(np.float64),
-                kernel='linear',
-                neighbors=1,
-            )
-
-            for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
+            # 辅助函数：在线程中计算单个分块的 TIN 插值结果
+            def _compute_chunk_tin(row_start: int) -> Tuple[int, np.ndarray]:
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
-
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
                 xx, yy = np.meshgrid(grid_x, grid_y)
                 pts = np.column_stack([xx.ravel(), yy.ravel()])
                 del xx, yy
 
-                try:
-                    chunk_vals = interp(pts)
-                except Exception as exc:
-                    logger.error("scipy_tin 插值第 %d 块失败: %s", chunk_idx, exc)
-                    raise
+                chunk_vals = interp(pts)
 
                 # 用最近邻值填充三角网外部的 NaN 像素
                 nan_mask = np.isnan(chunk_vals)
@@ -956,21 +1042,57 @@ class KmlToIaConverter:
                     try:
                         chunk_vals[nan_mask] = nn_rbf(pts[nan_mask])
                     except Exception as exc:
-                        logger.warning("NaN填充失败（第%d块），使用0填充: %s", chunk_idx, exc)
+                        logger.warning("NaN填充失败（row_start=%d），使用0填充: %s",
+                                       row_start, exc)
                         chunk_vals[nan_mask] = 0.0
 
                 del pts
-
-                chunk_vals = chunk_vals.reshape(actual_rows, self._n_cols)
+                chunk_vals = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
                 np.maximum(chunk_vals, 0.0, out=chunk_vals)
-                band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
-                del chunk_vals
-                gc.collect()
+                return row_start, chunk_vals
 
-                if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
-                    elapsed = time.time() - start_time
-                    logger.info("scipy_tin 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
-                                row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
+            start_time = time.time()
+            logger.info("scipy_tin 插值开始，分块数=%d，并行线程数=%d",
+                        len(chunk_starts), self.max_interp_workers)
+
+            # 使用字典映射 row_start → Future，按顺序消费、并行计算
+            # 每次最多保留 max_interp_workers 个未消费的 Future 在内存中
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.max_interp_workers
+            ) as executor:
+                # pending: row_start → Future（只包含已提交但未消费的分块）
+                pending: dict = {}
+                submit_ptr = 0  # 下一个待提交分块的索引
+
+                # 预先提交前 max_interp_workers 个分块
+                while submit_ptr < len(chunk_starts) and submit_ptr < self.max_interp_workers:
+                    rs = chunk_starts[submit_ptr]
+                    pending[rs] = executor.submit(_compute_chunk_tin, rs)
+                    submit_ptr += 1
+
+                for chunk_idx, rs in enumerate(chunk_starts):
+                    # 等待当前分块的计算结果（一定在 pending 中）
+                    try:
+                        row_start_res, chunk_vals = pending.pop(rs).result()
+                    except Exception as exc:
+                        logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
+                        raise
+
+                    band.WriteArray(chunk_vals, 0, row_start_res)
+                    del chunk_vals
+                    gc.collect()
+
+                    # 提交下一个分块（维持滑动窗口大小）
+                    if submit_ptr < len(chunk_starts):
+                        next_rs = chunk_starts[submit_ptr]
+                        pending[next_rs] = executor.submit(_compute_chunk_tin, next_rs)
+                        submit_ptr += 1
+
+                    row_end = min(rs + chunk_rows, n_rows)
+                    if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
+                        elapsed = time.time() - start_time
+                        logger.info("scipy_tin 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
+                                    row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
 
             band.ComputeStatistics(False)
             band.FlushCache()
@@ -1591,5 +1713,8 @@ if __name__ == "__main__":
         chunk_size=1000,  # 栅格分块行数；推荐500~2000
         coord_batch_size=10000,  # 坐标转换批次大小；推荐5000~50000
         max_memory_gb=10.0,  # 最大内存使用限制(GB)；参考值，实际由上方参数控制
+
+        # 并行插值参数（scipy方法适用）
+        max_interp_workers=2,  # scipy插值并行线程数；推荐1~4，越多速度越快但内存消耗越大
     )
     converter.run()
