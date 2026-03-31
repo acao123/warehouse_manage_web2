@@ -493,7 +493,7 @@ def _gen_img10(task: ReportTask, output_dir: str, dn_tif_path: str | None):
         return None
 
 
-def _gen_img11(task: ReportTask, output_dir: str):
+def _gen_img11(task: ReportTask, output_dir: str, dn_tif_path: str):
     """
     生成图十一：地震危险性图。
 
@@ -507,10 +507,11 @@ def _gen_img11(task: ReportTask, output_dir: str):
             longitude=float(task.longitude),
             latitude=float(task.latitude),
             magnitude=task.magnitude,
-            output_path=out,
             a=0.1169,
             b=-0.1803,
-            c=0.5165
+            c=0.5165,
+            output_path=out,
+            dn_tif_path = dn_tif_path
         )
         img_info = statistics_summary
         logger.info('[任务 %s] 图十一生成完成: %s, 最大Dn=%s cm, 说明=%s',
@@ -778,7 +779,7 @@ def execute_report_task(task_id: int) -> None:
 
         # ---- 10.5 生成 图十一 ----
         try:
-            img11_path, img11_info = _gen_img11(task, output_dir)
+            img11_path, img11_info = _gen_img11(task, output_dir, dn_tif_path)
             record_kwargs['img11_path'] = img11_path
             record_kwargs['img11_info'] = img11_info
             _update_task_progress(task_id, PROGRESS_STEPS['img11'],
