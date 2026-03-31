@@ -503,17 +503,18 @@ def _gen_img11(task: ReportTask, output_dir: str):
     try:
         from core.earthquake_hazard_map import generate_earthquake_hazard_map
         out = _img_path(output_dir, 11)
-        img_path, img_info = generate_earthquake_hazard_map(
+        img_path, max_dn_value, statistics_summary = generate_earthquake_hazard_map(
             longitude=float(task.longitude),
             latitude=float(task.latitude),
             magnitude=task.magnitude,
             output_path=out,
-            kml_path=task.intensity_kml_path,
             a=0.1169,
             b=-0.1803,
             c=0.5165
         )
-        logger.info('[任务 %s] 图十一生成完成: %s, 说明=%s', task.id, img_path, img_info)
+        img_info = statistics_summary
+        logger.info('[任务 %s] 图十一生成完成: %s, 最大Dn=%s cm, 说明=%s',
+                    task.id, img_path, max_dn_value, img_info)
         return img_path, str(img_info) if img_info else None
     except Exception as exc:
         logger.error('[任务 %s] 图十一生成失败: %s', task.id, exc, exc_info=True)
