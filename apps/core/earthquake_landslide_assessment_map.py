@@ -88,7 +88,7 @@ from qgis.PyQt.QtGui import QColor, QFont
 
 # GDAL导入（用于栅格裁剪和统计）
 try:
-    from osgeo import gdal, osr
+    from osgeo import gdal, osr, ogr
     GDAL_AVAILABLE = True
 except ImportError:
     GDAL_AVAILABLE = False
@@ -274,6 +274,9 @@ CLIP_BUFFER_DEGREES = 0.1
 M2_TO_KM2 = 1_000_000.0       # 平方米转平方千米
 KM_PER_DEGREE = 111.0          # 每度纬度对应的千米数（近似值）
 
+# === 危险等级判断阈值（%） ===
+DANGER_LEVEL_THRESHOLD_PERCENT = 10.0
+
 # === 图例布局和字体设置 ===
 LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"
 
@@ -281,6 +284,20 @@ LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"
 # ============================================================
 # 工具函数
 # ============================================================
+
+def _format_area(area_km2):
+    """
+    格式化面积数值：面积>=1时取整，面积<1时保留2位小数
+
+    参数:
+        area_km2 (float): 面积（平方千米）
+
+    返回:
+        int or float: 格式化后的面积值
+    """
+    if area_km2 >= 1:
+        return round(area_km2)
+    return round(area_km2, 2)
 
 def get_magnitude_config(magnitude):
     """
@@ -817,7 +834,7 @@ def build_landslide_legend_list():
 # 滑坡评估面积统计函数
 # ============================================================
 
-def compute_landslide_area_statistics(tif_path, extent):
+def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
     """
     统计指定范围内各危险等级的面积和占比
 
@@ -831,6 +848,7 @@ def compute_landslide_area_statistics(tif_path, extent):
     参数:
         tif_path (str): TIF文件路径（可以是裁剪后的临时文件或原始文件）
         extent (QgsRectangle): 统计范围（WGS84坐标）
+        kml_path (str): 烈度圈KML文件路径（可选）；提供时，统计仅限于最小烈度圈范围内
 
     返回:
         list: 统计结果列表，每项为字典 {"label": str, "area_km2": float, "percentage": float}
@@ -943,6 +961,70 @@ def compute_landslide_area_statistics(tif_path, extent):
             print(f"[信息] 中心纬度: {center_lat:.4f}°, cos(lat)={cos_lat:.6f}")
             print(f"[信息] 单像素面积: {pixel_area_km2:.6f} km²")
 
+        # 若提供了KML文件，创建最小烈度圈掩膜限定统计区域
+        kml_mask = None
+        if kml_path:
+            try:
+                intensity_data = parse_intensity_kml(kml_path)
+                if intensity_data:
+                    min_item = min(intensity_data, key=lambda x: x["intensity"])
+                    coords_wgs84 = min_item["coords"]
+
+                    # 建立坐标转换（WGS84 -> TIF CRS）
+                    wgs84_srs = osr.SpatialReference()
+                    wgs84_srs.ImportFromEPSG(4326)
+                    wgs84_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+                    tif_srs_obj = osr.SpatialReference()
+                    need_transform = False
+                    if tif_wkt:
+                        tif_srs_obj.ImportFromWkt(tif_wkt)
+                        tif_srs_obj.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                        need_transform = not tif_srs_obj.IsSame(wgs84_srs)
+
+                    transform_ct = (osr.CoordinateTransformation(wgs84_srs, tif_srs_obj)
+                                    if need_transform else None)
+
+                    # 构建OGR多边形
+                    ring = ogr.Geometry(ogr.wkbLinearRing)
+                    for lon, lat in coords_wgs84:
+                        if transform_ct:
+                            x, y, _ = transform_ct.TransformPoint(lon, lat)
+                        else:
+                            x, y = lon, lat
+                        ring.AddPoint(x, y)
+                    ring.CloseRings()
+                    polygon = ogr.Geometry(ogr.wkbPolygon)
+                    polygon.AddGeometry(ring)
+
+                    # 创建与数据窗口对齐的掩膜栅格
+                    sub_x_origin = raster_xmin + col_start * pixel_width
+                    sub_y_origin = raster_ymax - row_start * pixel_height
+                    sub_gt = (sub_x_origin, pixel_width, 0.0,
+                              sub_y_origin, 0.0, -pixel_height)
+
+                    drv = gdal.GetDriverByName('MEM')
+                    mask_ds = drv.Create('', read_width, read_height, 1, gdal.GDT_Byte)
+                    mask_ds.SetGeoTransform(sub_gt)
+                    if tif_wkt:
+                        mask_ds.SetProjection(tif_wkt)
+
+                    mem_drv = ogr.GetDriverByName('Memory')
+                    mem_src = mem_drv.CreateDataSource('tmp_kml_mask')
+                    mem_layer = mem_src.CreateLayer(
+                        'mask', srs=tif_srs_obj if tif_wkt else None)
+                    feat = ogr.Feature(mem_layer.GetLayerDefn())
+                    feat.SetGeometry(polygon)
+                    mem_layer.CreateFeature(feat)
+
+                    gdal.RasterizeLayer(mask_ds, [1], mem_layer, burn_values=[1])
+                    kml_mask = mask_ds.GetRasterBand(1).ReadAsArray().astype(bool)
+                    mask_ds = None
+                    print(f"[信息] KML最小烈度圈({min_item['intensity']}度)掩膜创建成功")
+            except Exception as mask_err:
+                print(f"[警告] KML掩膜创建失败: {mask_err}，将使用完整范围统计")
+                kml_mask = None
+
         # 统计各等级像素数量
         stats_result = []
         total_valid_pixels = 0
@@ -950,7 +1032,10 @@ def compute_landslide_area_statistics(tif_path, extent):
 
         for cls in LANDSLIDE_CLASSES:
             value = cls["value"]
-            count = int(np.sum(data == value))
+            if kml_mask is not None:
+                count = int(np.sum((data == value) & kml_mask))
+            else:
+                count = int(np.sum(data == value))
             class_pixel_counts[value] = count
             total_valid_pixels += count
 
@@ -964,7 +1049,7 @@ def compute_landslide_area_statistics(tif_path, extent):
                 "value": value,
                 "label": cls["label"],
                 "pixel_count": count,
-                "area_km2": round(area_km2, 2),
+                "area_km2": _format_area(area_km2),
                 "percentage": round(percentage, 2),
             })
             print(f"[统计] {cls['label']}: {count}像素, {area_km2:.2f}km², {percentage:.2f}%")
@@ -983,7 +1068,8 @@ def determine_overall_danger_level(stats_list):
     """
     根据统计结果判断整体危险性等级
 
-    规则：占比最大的等级为整体危险性描述
+    规则：从高到低（高 > 较高 > 中等 > 较低 > 低）遍历各等级，
+    选取占比超过10%的最高等级；若均不超过10%，则选取占比最高的等级。
 
     参数:
         stats_list (list): compute_landslide_area_statistics返回的统计结果列表
@@ -994,11 +1080,8 @@ def determine_overall_danger_level(stats_list):
     if not stats_list:
         return "未知"
 
-    # 找出占比最大的等级
-    max_item = max(stats_list, key=lambda x: x["percentage"])
-    label = max_item["label"]
-
-    # 从标签中提取危险性简称
+    # 危险等级从高到低的顺序
+    danger_order = ["高度危险区", "较高危险区", "中等危险区", "较低危险区", "低度危险区"]
     danger_map = {
         "低度危险区": "低",
         "较低危险区": "较低",
@@ -1006,26 +1089,37 @@ def determine_overall_danger_level(stats_list):
         "较高危险区": "较高",
         "高度危险区": "高",
     }
-    return danger_map.get(label, "未知")
+
+    # 建立 label -> percentage 查找表
+    pct_by_label = {item["label"]: item["percentage"] for item in stats_list}
+
+    # 从高到低遍历，选取第一个占比超过阈值的等级
+    for label in danger_order:
+        pct = pct_by_label.get(label, 0.0)
+        if pct > DANGER_LEVEL_THRESHOLD_PERCENT:
+            return danger_map[label]
+
+    # 若均不超过 10%，返回占比最大的等级
+    max_item = max(stats_list, key=lambda x: x["percentage"])
+    return danger_map.get(max_item["label"], "未知")
 
 
-def format_stats_message(half_size_km, stats_list):
+def format_stats_message(stats_list):
     """
     格式化统计信息为描述性字符串
 
     参数:
-        half_size_km (float): 震中半径范围（千米）
         stats_list (list): compute_landslide_area_statistics返回的统计结果列表
 
     返回:
         str: 格式化后的统计信息字符串
     """
     if not stats_list:
-        return f"距本次地震震中{int(half_size_km)}千米内，无法获取地震诱发斜坡地质灾害危险性数据。"
+        return "总的来看，无法获取地震诱发斜坡地质灾害危险性数据。"
 
     overall_level = determine_overall_danger_level(stats_list)
 
-    # 构建各等级描述
+    # 构建各等级描述（area_km2已在compute_landslide_area_statistics中格式化）
     parts = []
     for item in stats_list:
         parts.append(
@@ -1035,8 +1129,7 @@ def format_stats_message(half_size_km, stats_list):
     detail_str = "；".join(parts)
 
     message = (
-        f"距本次地震震中{int(half_size_km)}千米内，"
-        f"地震诱发斜坡地质灾害危险性相对{overall_level}。"
+        f"总的来看，地震诱发斜坡地质灾害危险性{overall_level}。"
         f"其中，{detail_str}"
     )
     return message
@@ -1833,10 +1926,9 @@ def create_print_layout(project, longitude, latitude, magnitude, extent, scale, 
     _setup_map_grid(map_item, extent)
     # 指北针
     _add_north_arrow(layout, map_height_mm)
-    # 比例尺
-    _add_scale_bar(layout, map_item, scale, extent, latitude, map_height_mm)
-    # 图例
-    _add_legend(layout, map_item, project, map_height_mm, output_height_mm, landslide_legend_list)
+    # 图例（含比例尺）
+    _add_legend(layout, map_item, project, map_height_mm, output_height_mm, landslide_legend_list,
+                scale=scale, extent=extent, center_lat=latitude)
 
     return layout
 
@@ -2056,11 +2148,13 @@ def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
     layout.addLayoutItem(lbl_end)
 
 
-def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, landslide_legend_list=None):
+def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
+                landslide_legend_list=None, scale=None, extent=None, center_lat=None):
     """
     添加图例
-    - 上部：震中/地级市/省界/市界/县界/烈度（3行2列，平行排列）
+    - 上部：震中/地级市/省界/市界/县界（3行2列，平行排列）
     - 下部：滑坡评估图例（色块 + 危险等级名称）
+    - 底部：比例尺
 
     参数:
         layout (QgsPrintLayout): 打印布局
@@ -2069,6 +2163,9 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
         map_height_mm (float): 地图高度（毫米）
         output_height_mm (float): 输出高度（毫米）
         landslide_legend_list (list): 滑坡评估图例列表
+        scale (int): 比例尺分母（用于绘制比例尺）
+        extent (QgsRectangle): 地图范围（用于计算比例尺）
+        center_lat (float): 地图中心纬度（用于计算比例尺）
     """
     legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
     legend_y = BORDER_TOP_MM
@@ -2140,14 +2237,13 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
     available_width = legend_width - left_pad - right_pad - (col_count - 1) * col_gap
     col_width = available_width / col_count
 
-    # 基本图例项列表
+    # 基本图例项列表（不含烈度）
     legend_items = [
         ("震中", "star"),
         ("地级市", "circle"),
         ("省界", "solid_line"),
         ("市界", "dash_line_city"),
         ("县界", "dash_line_county"),
-        ("烈度", "solid_line_black"),
     ]
 
     for idx, (display_name, draw_type) in enumerate(legend_items):
@@ -2279,6 +2375,135 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, land
         print(f"[信息] 滑坡评估图例添加完成，共 {displayed_count} 项")
     else:
         print("[信息] 无滑坡评估图例数据，跳过")
+
+    # ── 比例尺（位于图例内容下方）──
+    if scale is not None and extent is not None and center_lat is not None:
+        lon_range_deg = extent.xMaximum() - extent.xMinimum()
+        map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
+        km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
+        target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
+
+        nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+        bar_km = nice_values[0]
+        for nv in nice_values:
+            if nv <= target_bar_km * 1.5:
+                bar_km = nv
+            else:
+                break
+
+        bar_length_mm = bar_km / km_per_mm if km_per_mm > 0 else 20.0
+        bar_length_mm = max(bar_length_mm, 20.0)
+        num_segments = 4
+
+        std_bar_width = bar_length_mm + 16.0
+        std_bar_height = 14.0
+
+        avail_width = legend_width - 4.0
+        if std_bar_width > avail_width:
+            scale_factor = avail_width / std_bar_width
+            std_bar_width = avail_width
+            bar_length_mm *= scale_factor
+            std_bar_height *= scale_factor
+        else:
+            scale_factor = 1.0
+
+        # 比例尺垂直位置：距底部留 4mm 空间
+        sb_height = std_bar_height
+        sb_y = legend_y + legend_height - sb_height - 4.0
+        sb_x = legend_x + (legend_width - std_bar_width) / 2.0
+
+        scale_font_size = SCALE_FONT_SIZE_PT
+        scale_tf = QgsTextFormat()
+        scale_tf.setFont(QFont("Times New Roman", scale_font_size))
+        scale_tf.setSize(scale_font_size)
+        scale_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        scale_tf.setColor(QColor(0, 0, 0))
+
+        lbl_scale = QgsLayoutItemLabel(layout)
+        lbl_scale.setText(f"1:{scale:,}")
+        lbl_scale.setTextFormat(scale_tf)
+        lbl_scale.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.attemptResize(QgsLayoutSize(std_bar_width, 4.5 * scale_factor,
+                                              QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.setHAlign(Qt.AlignHCenter)
+        lbl_scale.setVAlign(Qt.AlignVCenter)
+        lbl_scale.setFrameEnabled(False)
+        lbl_scale.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_scale)
+
+        bar_start_x = sb_x + (std_bar_width - bar_length_mm) / 2.0
+        bar_y = sb_y + 5.5 * scale_factor
+        bar_h = 1.8 * scale_factor
+        seg_width_mm = bar_length_mm / num_segments
+
+        for i in range(num_segments):
+            seg_shape = QgsLayoutItemShape(layout)
+            seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
+            seg_x = bar_start_x + i * seg_width_mm
+            seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
+            seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h,
+                                                  QgsUnitTypes.LayoutMillimeters))
+            fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
+            seg_symbol = QgsFillSymbol.createSimple({
+                'color': fill_color,
+                'outline_color': '0,0,0,255',
+                'outline_width': '0.15',
+                'outline_width_unit': 'MM',
+            })
+            seg_shape.setSymbol(seg_symbol)
+            seg_shape.setFrameEnabled(False)
+            layout.addLayoutItem(seg_shape)
+
+        tick_tf = QgsTextFormat()
+        tick_tf.setFont(QFont("Times New Roman", scale_font_size))
+        tick_tf.setSize(scale_font_size)
+        tick_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
+        tick_tf.setColor(QColor(0, 0, 0))
+
+        label_y = bar_y + bar_h + 0.3
+        label_h = 3.5 * scale_factor
+
+        lbl_0 = QgsLayoutItemLabel(layout)
+        lbl_0.setText("0")
+        lbl_0.setTextFormat(tick_tf)
+        lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y,
+                                         QgsUnitTypes.LayoutMillimeters))
+        lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_0.setHAlign(Qt.AlignHCenter)
+        lbl_0.setVAlign(Qt.AlignTop)
+        lbl_0.setFrameEnabled(False)
+        lbl_0.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_0)
+
+        mid_km = bar_km // 2
+        if mid_km > 0:
+            lbl_mid = QgsLayoutItemLabel(layout)
+            lbl_mid.setText(str(mid_km))
+            lbl_mid.setTextFormat(tick_tf)
+            mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
+            lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
+            lbl_mid.setHAlign(Qt.AlignHCenter)
+            lbl_mid.setVAlign(Qt.AlignTop)
+            lbl_mid.setFrameEnabled(False)
+            lbl_mid.setBackgroundEnabled(False)
+            layout.addLayoutItem(lbl_mid)
+
+        lbl_end = QgsLayoutItemLabel(layout)
+        lbl_end.setText(f"{bar_km} km")
+        lbl_end.setTextFormat(tick_tf)
+        end_x = bar_start_x + bar_length_mm - 4.0
+        lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
+        lbl_end.setHAlign(Qt.AlignHCenter)
+        lbl_end.setVAlign(Qt.AlignTop)
+        lbl_end.setFrameEnabled(False)
+        lbl_end.setBackgroundEnabled(False)
+        layout.addLayoutItem(lbl_end)
+
+        print(f"[信息] 比例尺添加到图例区完成，1:{scale:,}")
+
+    print("[信息] 图例添加完成")
 
 
 def _draw_star_icon(layout, x, center_y, width, height):
@@ -2686,14 +2911,12 @@ def _generate_earthquake_landslide_assessment_map_impl(longitude, latitude, magn
         # 统计各危险等级面积和占比
         # ============================================================
         if stats_tif_path:
-            stats_list = compute_landslide_area_statistics(stats_tif_path, extent)
+            stats_list = compute_landslide_area_statistics(stats_tif_path, extent, kml_path=kml_path)
             result_dict["stats_detail"] = stats_list
-            result_dict["stats_message"] = format_stats_message(half_size_km, stats_list)
+            result_dict["stats_message"] = format_stats_message(stats_list)
             print(f"\n[统计结果] {result_dict['stats_message']}")
         else:
-            result_dict["stats_message"] = (
-                f"距本次地震震中{int(half_size_km)}千米内，无法获取地震诱发斜坡地质灾害危险性数据。"
-            )
+            result_dict["stats_message"] = "总的来看，无法获取地震诱发斜坡地质灾害危险性数据。"
             print(f"[警告] 无法获取滑坡评估底图进行统计")
 
     finally:
@@ -2872,7 +3095,7 @@ def test_determine_overall_danger_level():
     """测试整体危险性等级判断"""
     print("\n--- 测试: determine_overall_danger_level ---")
 
-    # 测试低度危险区占比最大
+    # 测试：较高危险区>10%，应返回"较高"
     stats_low = [
         {"value": 1, "label": "低度危险区", "pixel_count": 1000, "area_km2": 50.0, "percentage": 40.0},
         {"value": 2, "label": "较低危险区", "pixel_count": 500, "area_km2": 25.0, "percentage": 20.0},
@@ -2881,10 +3104,10 @@ def test_determine_overall_danger_level():
         {"value": 5, "label": "高度危险区", "pixel_count": 200, "area_km2": 10.0, "percentage": 8.0},
     ]
     level = determine_overall_danger_level(stats_low)
-    assert level == "低"
-    print(f"  低度危险区占比最大 -> 整体: '{level}' ✓")
+    assert level == "较高", f"期望'较高'，实际'{level}'"
+    print(f"  较高危险区>10%（高度危险区<=10%）-> 整体: '{level}' ✓")
 
-    # 测试高度危险区占比最大
+    # 测试：高度危险区60%>10%，应返回"高"
     stats_high = [
         {"value": 1, "label": "低度危险区", "pixel_count": 100, "area_km2": 5.0, "percentage": 5.0},
         {"value": 2, "label": "较低危险区", "pixel_count": 100, "area_km2": 5.0, "percentage": 5.0},
@@ -2893,10 +3116,10 @@ def test_determine_overall_danger_level():
         {"value": 5, "label": "高度危险区", "pixel_count": 1200, "area_km2": 60.0, "percentage": 60.0},
     ]
     level = determine_overall_danger_level(stats_high)
-    assert level == "高"
-    print(f"  高度危险区占比最大 -> 整体: '{level}' ✓")
+    assert level == "高", f"期望'高'，实际'{level}'"
+    print(f"  高度危险区60%>10% -> 整体: '{level}' ✓")
 
-    # 测试中等危险区占比最大
+    # 测试：中等危险区60%>10%，应返回"中等"
     stats_mid = [
         {"value": 1, "label": "低度危险区", "pixel_count": 200, "area_km2": 10.0, "percentage": 10.0},
         {"value": 2, "label": "较低危险区", "pixel_count": 200, "area_km2": 10.0, "percentage": 10.0},
@@ -2905,8 +3128,20 @@ def test_determine_overall_danger_level():
         {"value": 5, "label": "高度危险区", "pixel_count": 200, "area_km2": 10.0, "percentage": 10.0},
     ]
     level = determine_overall_danger_level(stats_mid)
-    assert level == "中等"
-    print(f"  中等危险区占比最大 -> 整体: '{level}' ✓")
+    assert level == "中等", f"期望'中等'，实际'{level}'"
+    print(f"  中等危险区60%>10%（更高等级均<=10%）-> 整体: '{level}' ✓")
+
+    # 测试：均不超过10%时，返回占比最高等级
+    stats_all_low = [
+        {"value": 1, "label": "低度危险区", "pixel_count": 500, "area_km2": 5.0, "percentage": 9.0},
+        {"value": 2, "label": "较低危险区", "pixel_count": 400, "area_km2": 4.0, "percentage": 8.0},
+        {"value": 3, "label": "中等危险区", "pixel_count": 300, "area_km2": 3.0, "percentage": 6.0},
+        {"value": 4, "label": "较高危险区", "pixel_count": 200, "area_km2": 2.0, "percentage": 4.0},
+        {"value": 5, "label": "高度危险区", "pixel_count": 100, "area_km2": 1.0, "percentage": 2.0},
+    ]
+    level = determine_overall_danger_level(stats_all_low)
+    assert level == "低", f"期望'低'，实际'{level}'"
+    print(f"  所有等级均<=10%，返回占比最高等级 -> 整体: '{level}' ✓")
 
     # 测试空列表
     level_empty = determine_overall_danger_level([])
@@ -2921,31 +3156,46 @@ def test_format_stats_message():
     print("\n--- 测试: format_stats_message ---")
 
     stats_list = [
-        {"value": 1, "label": "低度危险区", "pixel_count": 1000, "area_km2": 500.0, "percentage": 40.0},
-        {"value": 2, "label": "较低危险区", "pixel_count": 600, "area_km2": 300.0, "percentage": 24.0},
-        {"value": 3, "label": "中等危险区", "pixel_count": 400, "area_km2": 200.0, "percentage": 16.0},
-        {"value": 4, "label": "较高危险区", "pixel_count": 300, "area_km2": 150.0, "percentage": 12.0},
-        {"value": 5, "label": "高度危险区", "pixel_count": 200, "area_km2": 100.0, "percentage": 8.0},
+        {"value": 1, "label": "低度危险区", "pixel_count": 1000, "area_km2": 500, "percentage": 40.0},
+        {"value": 2, "label": "较低危险区", "pixel_count": 600, "area_km2": 300, "percentage": 24.0},
+        {"value": 3, "label": "中等危险区", "pixel_count": 400, "area_km2": 200, "percentage": 16.0},
+        {"value": 4, "label": "较高危险区", "pixel_count": 300, "area_km2": 150, "percentage": 12.0},
+        {"value": 5, "label": "高度危险区", "pixel_count": 200, "area_km2": 100, "percentage": 8.0},
     ]
 
-    message = format_stats_message(150.0, stats_list)
+    message = format_stats_message(stats_list)
     print(f"  生成消息: {message}")
 
-    # 验证消息包含关键信息
-    assert "150千米" in message
-    assert "低度危险区面积为500.0平方千米" in message
+    # 验证消息包含关键信息（>=1面积取整）
+    assert "总的来看" in message
+    assert "地震诱发斜坡地质灾害危险性" in message
+    assert "低度危险区面积为500平方千米" in message
     assert "占比40.0%" in message
-    assert "较低危险区面积为300.0平方千米" in message
-    assert "中等危险区面积为200.0平方千米" in message
-    assert "较高危险区面积为150.0平方千米" in message
-    assert "高度危险区面积为100.0平方千米" in message
-    assert "相对低" in message  # 低度危险区占比最大
+    assert "较低危险区面积为300平方千米" in message
+    assert "中等危险区面积为200平方千米" in message
+    assert "较高危险区面积为150平方千米" in message
+    assert "高度危险区面积为100平方千米" in message
+    # 较高危险区12%>10%，高度危险区8%<=10% -> 整体"较高"
+    assert "危险性较高" in message
     print("  消息内容验证 ✓")
 
+    # 测试小面积（<1 km²）保留2位小数
+    stats_small = [
+        {"value": 1, "label": "低度危险区", "pixel_count": 10, "area_km2": 0.55, "percentage": 55.0},
+        {"value": 2, "label": "较低危险区", "pixel_count": 8, "area_km2": 0.44, "percentage": 44.0},
+        {"value": 3, "label": "中等危险区", "pixel_count": 1, "area_km2": 0.00, "percentage": 0.0},
+        {"value": 4, "label": "较高危险区", "pixel_count": 1, "area_km2": 0.00, "percentage": 0.0},
+        {"value": 5, "label": "高度危险区", "pixel_count": 1, "area_km2": 0.00, "percentage": 0.0},
+    ]
+    small_msg = format_stats_message(stats_small)
+    assert "低度危险区面积为0.55平方千米" in small_msg
+    assert "较低危险区面积为0.44平方千米" in small_msg
+    print(f"  小面积保留2位小数验证 ✓")
+
     # 测试空统计列表
-    empty_msg = format_stats_message(50.0, [])
-    assert "50千米" in empty_msg
+    empty_msg = format_stats_message([])
     assert "无法获取" in empty_msg
+    assert "总的来看" in empty_msg
     print(f"  空列表消息: {empty_msg} ✓")
 
     print("  统计信息格式化测试通过 ✓")
