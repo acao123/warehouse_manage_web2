@@ -206,7 +206,7 @@ NEWMARK_LEGEND_FONT_SIZE_PT = 10  # Newmark位移图例字体大小
 
 # === 基本图例项配置（可单独设置） ===
 BASIC_LEGEND_FONT_SIZE_PT = 10  # 基本图例项字体大小
-BASIC_LEGEND_ROW_HEIGHT_MM = 8.0  # 基本图例项行高
+BASIC_LEGEND_ROW_HEIGHT_MM = 6.0  # 基本图例项行高
 
 # === Newmark位移图例项配置（可单独设置） ===
 NEWMARK_LEGEND_ITEM_FONT_SIZE_PT = 10  # Newmark位移图例项字体大小
