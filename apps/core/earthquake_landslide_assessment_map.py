@@ -3699,7 +3699,8 @@ if __name__ == "__main__":
         print("使用默认参数运行（唐山 M2.8）...")
         result = generate_earthquake_landslide_assessment_map(
             longitude=103.36, latitude=34.09,
-            magnitude=2.0, output_path="earthquake_landslide_tangshan_M2.8.png"
+            magnitude=2.0, output_path="earthquake_landslide_tangshan_M2.8.png",
+            kml_path = "../../data/geology/n0432881302350072.kml"
         )
         if result:
             print(f"\n[输出图片] {result['image_path']}")

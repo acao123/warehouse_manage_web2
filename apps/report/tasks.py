@@ -191,7 +191,7 @@ def _build_output_dir(task_id: int) -> str:
     """
     base = getattr(settings, 'FILE_BASE_PATH', os.path.join(settings.BASE_DIR, 'data', 'report'))
     timestamp = datetime.now().strftime('%Y%m%d')
-    return str(Path(base) / "task" / timestamp / str(task_id))
+    return str(Path(base) / "task" / timestamp / str(task_id)).replace("\\", "/")
 
 
 def _img_path(output_dir: str, img_no: int) -> str:
@@ -257,7 +257,7 @@ def _gen_img2(task: ReportTask, output_dir: str, basemap_path=None, annotation_p
                     info = int_to_roman(int(max_intensity))
                 except Exception:
                     info = str(max_intensity)
-        info = f'预计极震区烈度可达 {info} 度，极震区面积估算为 {result['max_intensity_area']:.0f} 平方千米'
+        info = f'预计极震区烈度可达{info}度，极震区面积估算为{format_area(result['max_intensity_area'])}平方千米'
         logger.info('[任务 %s] 图二生成完成: %s, 说明=%s', task.id, out, info)
         return out, info
     except Exception as exc:
@@ -420,7 +420,7 @@ def _gen_ia_tif(task: ReportTask, output_dir: str) -> str | None:
     """
     try:
         from core.kml_to_Ia import KmlToIaConverter
-        ia_path = os.path.join(output_dir, 'Ia.tif')
+        ia_path = os.path.join(output_dir, 'Ia.tif').replace("\\", "/")
         converter = KmlToIaConverter(
             kml_path=task.pga_kml_path,
             ia_output_path=ia_path,
@@ -449,8 +449,8 @@ def _gen_dn_tif(task: ReportTask, output_dir: str, ia_tif_path: str) -> str | No
     """
     try:
         from core.ac_ia_to_dn import calculate_dn_optimized
-        ac_tif_path = getattr(settings, 'AC_TIF_PATH', 'C:/地质/ac/ac分割版/ac2.TIF')
-        dn_path = os.path.join(output_dir, 'Dn.tif')
+        ac_tif_path = getattr(settings, 'AC_TIF_PATH', 'C:/地质/ac/全国ac分布/ac.tif')
+        dn_path = os.path.join(output_dir, 'Dn.tif').replace("\\", "/")
         calculate_dn_optimized(
             ac_tif_path=ac_tif_path,
             ia_tif_path=ia_tif_path,
@@ -502,7 +502,7 @@ def _gen_img11(task: ReportTask, output_dir: str, dn_tif_path: str):
     """
     try:
         from core.earthquake_hazard_map import generate_earthquake_hazard_map
-        out = _img_path(output_dir, 11)
+        out = _img_path(output_dir, 11).replace("\\", "/")
         img_path, max_dn_value, statistics_summary = generate_earthquake_hazard_map(
             longitude=float(task.longitude),
             latitude=float(task.latitude),
@@ -531,7 +531,7 @@ def _gen_img12(task: ReportTask, output_dir: str, basemap_path=None, annotation_
     """
     try:
         from core.earthquake_landslide_assessment_map import generate_earthquake_landslide_assessment_map
-        out = _img_path(output_dir, 12)
+        out = _img_path(output_dir, 12).replace("\\", "/")
         result = generate_earthquake_landslide_assessment_map(
             longitude=float(task.longitude),
             latitude=float(task.latitude),
@@ -1424,3 +1424,9 @@ def start_task_async(task_id: int) -> None:
     future.add_done_callback(
         lambda f: logger.info('[任务 %s] 线程池执行完毕', task_id)
     )
+
+def format_area(num):
+    if num > 1:
+        return f"{num:.0f}"
+    else:
+        return f"{num:.2f}"

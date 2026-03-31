@@ -1351,10 +1351,16 @@ def generate_analysis_text(intensity_data, areas):
     vi_above_area = sum(areas.get(i, 0) for i in intensity_data.keys() if i >= 6)
 
     analysis = (f"预计极震区地震烈度可达{int_to_roman(max_intensity)}度，"
-                f"极震区面积估算为{max_area:.0f}平方千米，"
-                f"地震烈度VI度以上区域面积达{vi_above_area:.0f}平方千米。")
+                f"极震区面积估算为{format_area(max_area)}平方千米，"
+                f"地震烈度VI度以上区域面积达{format_area(vi_above_area)}平方千米。")
     return analysis
 
+
+def format_area(num):
+    if num > 1:
+        return f"{num:.0f}"
+    else:
+        return f"{num:.2f}"
 
 def calculate_intensity_areas(intensity_data):
     """

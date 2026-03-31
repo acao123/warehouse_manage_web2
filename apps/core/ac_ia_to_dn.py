@@ -544,7 +544,7 @@ if __name__ == "__main__":
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
     )
 
-    ac_tif_path = r"C:\地质\ac\ac分割版\ac2.TIF"
+    ac_tif_path = r"C:\地质\ac\全国ac分布\ac.tif"
     ia_tif_path = "../../data/geology/ia/Ia.tif"
     output_path = "../../data/geology/ia/Dn.tif"
 

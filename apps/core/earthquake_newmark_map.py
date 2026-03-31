@@ -2693,5 +2693,6 @@ if __name__ == "__main__":
         print("使用默认参数运行...")
         generate_earthquake_newmark_map(
             longitude=103.36, latitude=34.09,
-            magnitude=7.0, output_path="earthquake_newmark_M7.0.png"
+            magnitude=3.0, output_path="earthquake_newmark_M7.0.png",
+            dn_tif_path= "../../data/geology/ia/Dn.tif"
         )

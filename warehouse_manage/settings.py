@@ -237,7 +237,7 @@ LANDSLIDE_SHP_PATH = MAP_DATA_BASE_PATH + '滑坡和危险斜坡/滑坡.shp'
 SLOPE_SHP_PATH = MAP_DATA_BASE_PATH + '滑坡和危险斜坡/斜坡.shp'
 
 # AC 临界加速度栅格
-AC_TIF_PATH = 'C:/地质/ac/ac分割版/ac2.TIF'
+AC_TIF_PATH = 'C:/地质/ac/全国ac分布/ac.tif'
 
 LANDSLIDE_ASSESSMENT_TIF_PATH = MAP_DATA_BASE_PATH + '图12/ChinaRecla1.tif'
 

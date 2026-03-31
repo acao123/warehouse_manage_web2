@@ -112,13 +112,32 @@ TIANDITU_TK = '1ef76ef90c6eb961cb49618f9b1a399d'
 # 数据文件路径（优先从 Django settings 读取）
 _DEFAULT_BASE = "../../data/geology/"
 
-DN_TIF_PATH ="../../data/geology/ia/Dn.tif"
+DN_TIF_PATH =""
 # DN_TIF_PATH ='../../data/geology/ia/Dn.tif'
-PROVINCE_SHP_PATH =  _DEFAULT_BASE +'行政区划/省界.shp'
-CITY_SHP_PATH =  _DEFAULT_BASE+'行政区划/市界.shp'
-COUNTY_SHP_PATH = _DEFAULT_BASE + '行政区划/县界.shp'
+PROVINCE_SHP_PATH = (
+    getattr(_django_settings, 'PROVINCE_SHP_PATH',
+            _DEFAULT_BASE + '行政区划/省界.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '行政区划/省界.shp'
+)
+CITY_SHP_PATH = (
+    getattr(_django_settings, 'CITY_SHP_PATH',
+            _DEFAULT_BASE + '行政区划/市界.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '行政区划/市界.shp'
+)
+COUNTY_SHP_PATH = (
+    getattr(_django_settings, 'COUNTY_SHP_PATH',
+            _DEFAULT_BASE + '行政区划/县界.shp')
+    if _DJANGO_AVAILABLE else
+    _DEFAULT_BASE + '行政区划/县界.shp'
+)
 # 地级市点位数据
-CITY_POINTS_SHP_PATH = _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
+CITY_POINTS_SHP_PATH = (
+    getattr(_django_settings, 'CITY_POINTS_SHP_PATH',
+            _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp')
+    if _DJANGO_AVAILABLE else _DEFAULT_BASE + '2023地级市点位数据/地级市点位数据.shp'
+)
 
 
 # === 布局尺寸常量 ===
@@ -3110,13 +3129,13 @@ if __name__ == "__main__":
         # 使用默认参数演示运行
         print("使用默认参数运行示例...")
         _img_path, _max_dn, _summary = generate_earthquake_hazard_map(
-            longitude=103.36,
-            latitude=34.09,
-            magnitude=5.0,
+            longitude=103.36, latitude=34.09,
+            magnitude=3.0,
             a=0.1169,
             b=-0.1803,
             c=0.5165,
-            output_path="earthquake_hazard_M7.0.png"
+            output_path="earthquake_hazard_M7.0.png",
+            dn_tif_path="../../data/geology/ia/Dn.tif"
         )
         if _img_path:
             print(f"\n最大Dn值: {_max_dn} cm")
