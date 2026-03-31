@@ -1322,7 +1322,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
-    row_height = 5.0
+    row_height = 6.0
     icon_width = 5.0
     icon_height = 2.5
     icon_text_gap = 1.0
@@ -1395,7 +1395,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     layout.addLayoutItem(road_title_label)
 
     road_item_start_y = road_legend_start_y + 5.0
-    road_item_height = 5.0
+    road_item_height = 5.5
     road_icon_width = 6.0
     road_icon_text_gap = 1.5
 
