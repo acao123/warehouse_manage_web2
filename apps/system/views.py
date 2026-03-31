@@ -184,6 +184,15 @@ def index_view(request):
     })
 
 
+def about_view(request):
+    """
+    关于本站页面视图
+    :param request: HTTP请求对象
+    :return: 关于本站HTML
+    """
+    return render(request, 'about.html')
+
+
 # ==================== 用户管理视图 ====================
 
 def user_list_view(request):

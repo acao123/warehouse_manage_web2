@@ -79,7 +79,13 @@ INSERT INTO `sys_menu` (`id`, `menu_name`, `parent_id`, `menu_order`, `route_pat
 (1, '系统管理', NULL, 1, '', 'layui-icon-set'),
 (2, '用户管理', 1, 1, '/system/user/list/', 'layui-icon-user'),
 (3, '角色管理', 1, 2, '/system/role/list/', 'layui-icon-group'),
-(4, '菜单管理', 1, 3, '/system/menu/list/', 'layui-icon-menu-fill');
+(4, '菜单管理', 1, 3, '/system/menu/list/', 'layui-icon-menu-fill'),
+(5, '首页', NULL, 0, '/index/', 'layui-icon-home'),
+(6, '报告管理', NULL, 2, '', 'layui-icon-file'),
+(7, '执行报告', 6, 1, '/report/execute/', 'layui-icon-app'),
+(8, '报告预览', 6, 2, '/report/record/', 'layui-icon-app'),
+(9, '数据管理仓', NULL, 4, '/ac/data/list/', 'layui-icon-storage'),
+(10, '关于本站', NULL, 5, '/about/', 'layui-icon-about');
 
 -- 插入角色数据
 INSERT INTO `sys_role` (`id`, `role_name`, `role_key`) VALUES
@@ -88,7 +94,7 @@ INSERT INTO `sys_role` (`id`, `role_name`, `role_key`) VALUES
 
 -- 插入角色菜单关联数据
 INSERT INTO `sys_role_menus` (`role_id`, `menu_id`) VALUES
-(1, 1), (1, 2), (1, 3), (1, 4),  -- 管理员拥有所有菜单权限
+(1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7), (1, 8), (1, 9), (1, 10),  -- 管理员拥有所有菜单权限
 (2, 1), (2, 2);  -- 普通用户只有用户管理权限
 
 -- 插入用户数据
