@@ -498,7 +498,7 @@ def _gen_img11(task: ReportTask, output_dir: str, dn_tif_path: str):
     生成图十一：地震危险性图。
 
     返回:
-        (img_path, img_info) 或 (None, None)
+        (img_path, img_info, max_dn_value) 或 (None, None, None)
     """
     try:
         from core.earthquake_hazard_map import generate_earthquake_hazard_map
@@ -516,10 +516,10 @@ def _gen_img11(task: ReportTask, output_dir: str, dn_tif_path: str):
         img_info = statistics_summary
         logger.info('[任务 %s] 图十一生成完成: %s, 最大Dn=%s cm, 说明=%s',
                     task.id, img_path, max_dn_value, img_info)
-        return img_path, str(img_info) if img_info else None
+        return img_path, str(img_info) if img_info else None, max_dn_value
     except Exception as exc:
         logger.error('[任务 %s] 图十一生成失败: %s', task.id, exc, exc_info=True)
-        return None, None
+        return None, None, None
 
 
 def _gen_img12(task: ReportTask, output_dir: str, basemap_path=None, annotation_path=None):
@@ -779,9 +779,10 @@ def execute_report_task(task_id: int) -> None:
 
         # ---- 10.5 生成 图十一 ----
         try:
-            img11_path, img11_info = _gen_img11(task, output_dir, dn_tif_path)
+            img11_path, img11_info, max_dn_value = _gen_img11(task, output_dir, dn_tif_path)
             record_kwargs['img11_path'] = img11_path
             record_kwargs['img11_info'] = img11_info
+            record_kwargs['dn_max_value'] = round(max_dn_value * 10) if max_dn_value is not None else None
             _update_task_progress(task_id, PROGRESS_STEPS['img11'],
                                   append_message='img11已完成，')
         except Exception as exc:
