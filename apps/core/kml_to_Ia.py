@@ -742,8 +742,6 @@ class KmlToIaConverter:
                 extent,
                 self._n_cols,
                 self._n_rows,
-                self._res_lon,
-                self._res_lat,
             )
             ret = writer.writeFile()
             if ret != 0:
@@ -1376,7 +1374,7 @@ class KmlToIaConverter:
 
             min_pga = self._contours[-1]['pga_mps2'] if self._contours else 0.0
 
-            mem_driver = ogr.GetDriverByName('Memory')
+            mem_driver = ogr.GetDriverByName('MEM')
             mem_ds = mem_driver.CreateDataSource('pga_contours')
             layer = mem_ds.CreateLayer(
                 'contours', srs=self._output_srs, geom_type=ogr.wkbPolygon
