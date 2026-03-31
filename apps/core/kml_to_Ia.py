@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.1）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.2）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -11,6 +11,22 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.1）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
 
+主要改进（v3.2 相较 v3.1）：
+    1. 修正误导性变量命名：_utm_epsg/_utm_srs → _output_epsg/_output_srs
+    2. 移除 _run_impl 中冗余的文件存在性检查（parse_kml 已抛出 FileNotFoundError）
+    3. 移除 _run_impl 中永远不可到达的 return False 路径
+    4. 移除从未使用的 coord_batch_size 参数
+    5. 径向插值中心改用最高PGA等值线重心（替代全采样点均值，几何更准确）
+    6. 修复日志中断码字符：合并后控制点数
+    7. scipy_tin NaN填充改用 NearestNDInterpolator（比 RBF neighbors=1 更准确）
+    8. QGIS插值改用 QgsGridFileWriter（C++实现，绕过逐像素Python循环，速度显著提升）
+    9. 克里金 backend 改为 'vectorized'（比 'loop' 快数倍）
+    10. gc.collect() 改为每N块调用一次（减少GC开销）
+    11. 内存估算乘数注释说明（4×float32 = 16 bytes/pixel）
+    12. driver.Create()、band.WriteArray()、gdal.RasterizeLayer() 返回值均加检查
+    13. _ensure_file_writable 增加父目录可写性检查
+    14. _build_qgs_vector_layer 增加 layer.isValid() 检查
+
 主要改进（v3.1 相较 v3.0）：
     1. 修复经度方向分辨率未考虑纬度余弦的Bug（像素非正方形问题）
     2. 移除无用的EPSG:4326→EPSG:4326恒等坐标变换，直接使用经纬度坐标
@@ -20,9 +36,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.1）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: Copilot (重构版 v3.1)
-日期: 2026-03-19
-版本: 3.1
+作者: Copilot (重构版 v3.2)
+日期: 2026-03-31
+版本: 3.2
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -95,6 +111,7 @@ from qgis.core import (
     QgsFields,
     QgsGeometry,
     QgsPointXY,
+    QgsRectangle,
     QgsVectorLayer,
 )
 
@@ -113,6 +130,7 @@ try:
         RBFInterpolator as _RBFInterpolator,
         LinearNDInterpolator as _LinearNDInterpolator,
         CloughTocher2DInterpolator as _CloughTocher2DInterpolator,
+        NearestNDInterpolator as _NearestNDInterpolator,
         interp1d as _interp1d,
     )
     _HAS_SCIPY = True
@@ -135,7 +153,7 @@ _PGA_NAME_PATTERN = re.compile(r'^([0-9]*\.?[0-9]+)\s*[gG]$')
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.1）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.2）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -216,7 +234,6 @@ class KmlToIaConverter:
 
         # ---- 内存优化参数 ----
         chunk_size: int = 1000,
-        coord_batch_size: int = 10000,
         max_memory_gb: float = 10.0,
     ):
         self.kml_path = kml_path
@@ -252,13 +269,12 @@ class KmlToIaConverter:
         self.kriging_neighbors = kriging_neighbors
         # 内存优化参数
         self.chunk_size = chunk_size
-        self.coord_batch_size = coord_batch_size
         self.max_memory_gb = max_memory_gb
 
         # 运行时数据（由 run() 过程填充）
         self._contours: List[dict] = []
-        self._utm_epsg: int = 0
-        self._utm_srs: Optional[osr.SpatialReference] = None
+        self._output_epsg: int = 0
+        self._output_srs: Optional[osr.SpatialReference] = None
         self._geo_transform: Optional[tuple] = None
         self._n_cols: int = 0
         self._n_rows: int = 0
@@ -423,12 +439,12 @@ class KmlToIaConverter:
         输出直接使用经纬度坐标系，无需坐标转换。
         """
         try:
-            self._utm_epsg = 4326
+            self._output_epsg = 4326
 
             srs = osr.SpatialReference()
             srs.ImportFromEPSG(4326)
             srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-            self._utm_srs = srs
+            self._output_srs = srs
 
             logger.info("输出坐标系: EPSG:4326 (WGS 84)")
         except Exception as exc:
@@ -588,7 +604,8 @@ class KmlToIaConverter:
             logger.info("  纬度范围: %.6f° ~ %.6f°", y_min, y_max)
             logger.info("  总像素数: %s", f"{self._n_cols * self._n_rows:,}")
 
-            # 估算内存使用
+            # 估算峰值内存：4 个 float32 中间数组（输入网格、插值结果、NaN掩码、输出缓冲）
+            # 每像素 4 bytes × 4 数组 = 16 bytes/pixel
             memory_bytes = self._n_cols * self._n_rows * 4 * 4
             memory_gb = memory_bytes / (1024 ** 3)
             logger.info("  估算峰值内存: %.2f GB", memory_gb)
@@ -625,10 +642,12 @@ class KmlToIaConverter:
             QgsVectorLayer: QGIS 内存点图层
         """
         try:
-            crs_auth_id = f"EPSG:{self._utm_epsg}"
+            crs_auth_id = f"EPSG:{self._output_epsg}"
             layer = QgsVectorLayer(
                 f"Point?crs={crs_auth_id}", "sample_points", "memory"
             )
+            if not layer.isValid():
+                raise RuntimeError(f"QGIS内存矢量图层创建失败，CRS: {crs_auth_id}")
 
             provider = layer.dataProvider()
             provider.addAttributes([QgsField(field_name, QMetaType.Type.Double)])
@@ -665,7 +684,8 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        使用 QGIS 插值器手动插值（优化版：批量处理每行）
+        使用 QGIS 插值器进行插值，通过 QgsGridFileWriter 调用 C++ 内部循环
+        代替逐像素的 Python 调用，大幅提升性能。
 
         参数:
             x_arr: 采样点X坐标(经度)
@@ -675,8 +695,10 @@ class KmlToIaConverter:
         """
         layer = None
         out_ds = None
+        src_ds = None
         band = None
         interpolator = None
+        tmp_grid_path = None
 
         try:
             layer = self._build_qgs_vector_layer(x_arr, y_arr, values)
@@ -705,48 +727,57 @@ class KmlToIaConverter:
 
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
             self._ensure_file_writable(output_tif_path)
-            driver = gdal.GetDriverByName('GTiff')
-            out_ds = driver.Create(
-                output_tif_path,
-                self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
-                ['COMPRESS=LZW', 'TILED=YES'],
+
+            start_time = time.time()
+            logger.info("使用 QgsGridFileWriter 插值（C++内部循环），共 %d 列 × %d 行 = %s 像素...",
+                        self._n_cols, self._n_rows, f"{self._n_cols * self._n_rows:,}")
+
+            # QgsGridFileWriter 在 C++ 层面完成插值循环，避免逐像素 Python 调用
+            extent = QgsRectangle(self._x_min, self._y_min, self._x_max, self._y_max)
+            tmp_grid_path = output_tif_path + '.tmp_grid.asc'
+            self._ensure_file_writable(tmp_grid_path)
+            writer = QgsGridFileWriter(
+                interpolator,
+                tmp_grid_path,
+                extent,
+                self._n_cols,
+                self._n_rows,
+                self._res_lon,
+                self._res_lat,
             )
+            ret = writer.writeFile()
+            if ret != 0:
+                raise RuntimeError(f"QgsGridFileWriter.writeFile() 失败，返回值: {ret}")
+
+            # 将生成的 ASCII 网格文件转为 GeoTIFF，并修正坐标系/地理变换
+            src_ds = gdal.Open(tmp_grid_path)
+            if src_ds is None:
+                raise RuntimeError(f"无法打开临时网格文件: {tmp_grid_path}")
+
+            driver = gdal.GetDriverByName('GTiff')
+            out_ds = driver.CreateCopy(
+                output_tif_path, src_ds,
+                options=['COMPRESS=LZW', 'TILED=YES'],
+            )
+            src_ds = None  # 关闭源数据集（GDAL临时文件可释放）
+            if out_ds is None:
+                raise RuntimeError(f"GeoTIFF文件创建失败: {output_tif_path}")
+
+            # 强制设置正确的仿射变换和坐标系，覆盖 CreateCopy 可能推断出的值
             out_ds.SetGeoTransform(self._geo_transform)
-            out_ds.SetProjection(self._utm_srs.ExportToWkt())
+            out_ds.SetProjection(self._output_srs.ExportToWkt())
             band = out_ds.GetRasterBand(1)
             band.SetNoDataValue(-9999.0)
 
-            # 列坐标（经度）使用经度分辨率
-            grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
-
-            n_rows = self._n_rows
-            logger.info("开始插值，共 %d 行 × %d 列 = %s 像素...",
-                        n_rows, self._n_cols, f"{n_rows * self._n_cols:,}")
-
-            start_time = time.time()
-            report_interval = max(1, n_rows // 20)
-
-            for row_idx in range(n_rows):
-                y = self._y_max - (row_idx + 0.5) * self._res_lat
-
-                row_data = np.full(self._n_cols, -9999.0, dtype=np.float32)
-                for col_idx, x in enumerate(grid_x):
-                    try:
-                        success, value = interpolator.interpolatePoint(x, y)
-                        if success == 0:
-                            row_data[col_idx] = max(0.0, value)
-                    except Exception:
-                        # 单点插值失败不影响其他像素
-                        pass
-
-                band.WriteArray(row_data.reshape(1, -1), 0, row_idx)
-
-                if (row_idx + 1) % report_interval == 0 or row_idx == n_rows - 1:
-                    elapsed = time.time() - start_time
-                    progress = 100.0 * (row_idx + 1) / n_rows
-                    eta = elapsed / (row_idx + 1) * (n_rows - row_idx - 1) if row_idx > 0 else 0
-                    logger.info("进度: %d/%d 行 (%.1f%%), 已用时: %.1fs, 预计剩余: %.1fs",
-                                row_idx + 1, n_rows, progress, elapsed, eta)
+            # 将有效像素中负值裁剪为 0（插值器可能返回微小负值）
+            data = band.ReadAsArray()
+            nodata_mask = data == -9999.0
+            np.maximum(data, 0.0, out=data)
+            data[nodata_mask] = -9999.0  # 恢复 nodata 像素
+            ret = band.WriteArray(data)
+            if ret != 0:
+                raise RuntimeError("band.WriteArray() 写入失败")
+            del data, nodata_mask
 
             band.ComputeStatistics(False)
             band.FlushCache()
@@ -759,7 +790,13 @@ class KmlToIaConverter:
             raise
         finally:
             out_ds = None
+            src_ds = None
             band = None
+            if tmp_grid_path and os.path.exists(tmp_grid_path):
+                try:
+                    os.remove(tmp_grid_path)
+                except OSError as e:
+                    logger.warning("删除临时网格文件失败: %s", e)
             del interpolator, layer
             gc.collect()
 
@@ -812,8 +849,10 @@ class KmlToIaConverter:
                 self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
                 ['COMPRESS=LZW', 'TILED=YES'],
             )
+            if out_ds is None:
+                raise RuntimeError(f"创建GeoTIFF文件失败: {output_tif_path}")
             out_ds.SetGeoTransform(self._geo_transform)
-            out_ds.SetProjection(self._utm_srs.ExportToWkt())
+            out_ds.SetProjection(self._output_srs.ExportToWkt())
             band = out_ds.GetRasterBand(1)
             band.SetNoDataValue(-9999.0)
 
@@ -821,13 +860,15 @@ class KmlToIaConverter:
 
             n_rows = self._n_rows
             chunk_rows = self.chunk_size
+            # 预先计算全部行的 Y 坐标（中心点），按块切片复用
+            full_grid_y = self._y_max - (np.arange(n_rows) + 0.5) * self._res_lat
 
             start_time = time.time()
             for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
 
-                grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
+                grid_y = full_grid_y[row_start:row_end]
 
                 xx, yy = np.meshgrid(grid_x, grid_y)
                 pts = np.column_stack([xx.ravel(), yy.ravel()])
@@ -841,9 +882,13 @@ class KmlToIaConverter:
                 del pts
 
                 np.maximum(chunk_vals, 0.0, out=chunk_vals)
-                band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
+                ret = band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
+                if ret != 0:
+                    raise RuntimeError(f"band.WriteArray() 写入失败（第 {chunk_idx} 块）")
                 del chunk_vals
-                gc.collect()
+                # 每 10 块清理一次 GC，避免过于频繁的 GC 开销
+                if (chunk_idx + 1) % 10 == 0:
+                    gc.collect()
 
                 if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
                     elapsed = time.time() - start_time
@@ -891,7 +936,7 @@ class KmlToIaConverter:
             )
 
         interp = None
-        nn_rbf = None
+        nn_interp = None  # NearestNDInterpolator for NaN fill outside convex hull
         out_ds = None
         band = None
 
@@ -916,8 +961,10 @@ class KmlToIaConverter:
                 self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
                 ['COMPRESS=LZW', 'TILED=YES'],
             )
+            if out_ds is None:
+                raise RuntimeError(f"创建GeoTIFF文件失败: {output_tif_path}")
             out_ds.SetGeoTransform(self._geo_transform)
-            out_ds.SetProjection(self._utm_srs.ExportToWkt())
+            out_ds.SetProjection(self._output_srs.ExportToWkt())
             band = out_ds.GetRasterBand(1)
             band.SetNoDataValue(-9999.0)
 
@@ -925,21 +972,22 @@ class KmlToIaConverter:
 
             n_rows = self._n_rows
             chunk_rows = self.chunk_size
+            # 预先计算全部行的 Y 坐标（中心点），按块切片复用
+            full_grid_y = self._y_max - (np.arange(n_rows) + 0.5) * self._res_lat
             start_time = time.time()
 
-            # 预先计算用于NaN填充的最近邻值（三角网外部区域）
-            nn_rbf = _RBFInterpolator(
+            # 使用 NearestNDInterpolator 填充三角网凸包外的 NaN 像素
+            # （比 RBFInterpolator neighbors=1 更准确、更快）
+            nn_interp = _NearestNDInterpolator(
                 np.column_stack([x_arr, y_arr]),
                 values.astype(np.float64),
-                kernel='linear',
-                neighbors=1,
             )
 
             for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
 
-                grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
+                grid_y = full_grid_y[row_start:row_end]
                 xx, yy = np.meshgrid(grid_x, grid_y)
                 pts = np.column_stack([xx.ravel(), yy.ravel()])
                 del xx, yy
@@ -950,11 +998,11 @@ class KmlToIaConverter:
                     logger.error("scipy_tin 插值第 %d 块失败: %s", chunk_idx, exc)
                     raise
 
-                # 用最近邻值填充三角网外部的 NaN 像素
+                # 用最近邻值填充三角网外部的 NaN 像素（凸包以外区域）
                 nan_mask = np.isnan(chunk_vals)
                 if nan_mask.any():
                     try:
-                        chunk_vals[nan_mask] = nn_rbf(pts[nan_mask])
+                        chunk_vals[nan_mask] = nn_interp(pts[nan_mask])
                     except Exception as exc:
                         logger.warning("NaN填充失败（第%d块），使用0填充: %s", chunk_idx, exc)
                         chunk_vals[nan_mask] = 0.0
@@ -963,9 +1011,13 @@ class KmlToIaConverter:
 
                 chunk_vals = chunk_vals.reshape(actual_rows, self._n_cols)
                 np.maximum(chunk_vals, 0.0, out=chunk_vals)
-                band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
+                ret = band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
+                if ret != 0:
+                    raise RuntimeError(f"band.WriteArray() 写入失败（第 {chunk_idx} 块）")
                 del chunk_vals
-                gc.collect()
+                # 每 10 块清理一次 GC，避免过于频繁的 GC 开销
+                if (chunk_idx + 1) % 10 == 0:
+                    gc.collect()
 
                 if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
                     elapsed = time.time() - start_time
@@ -985,7 +1037,7 @@ class KmlToIaConverter:
         finally:
             out_ds = None
             band = None
-            del interp, nn_rbf
+            del interp, nn_interp
             gc.collect()
 
     # ==================== 径向距离插值方法 ====================
@@ -1017,10 +1069,13 @@ class KmlToIaConverter:
         band = None
 
         try:
-            # 计算震中（几何中心）
-            center_x = float(np.mean(x_arr))
-            center_y = float(np.mean(y_arr))
-            logger.info("震中坐标（经纬度）: (%.6f°, %.6f°)", center_x, center_y)
+            # 使用最高PGA等值线（self._contours 已按PGA降序排列，首项即最高值）的重心
+            # 作为径向插值的震中，比全采样点均值在非均匀采样时更几何准确
+            highest_coords = np.array(self._contours[0]['coordinates'], dtype=np.float64)
+            center_x = float(np.mean(highest_coords[:, 0]))
+            center_y = float(np.mean(highest_coords[:, 1]))
+            del highest_coords
+            logger.info("震中坐标（最高PGA等值线重心）: (%.6f°, %.6f°)", center_x, center_y)
 
             # 计算距离时考虑经纬度的不等距性
             # 使用加权欧氏距离：经度方向乘以 cos(center_lat)
@@ -1062,7 +1117,7 @@ class KmlToIaConverter:
             val_arr = np.array(merged_vals, dtype=np.float64)
             del merged_dists, merged_vals
 
-            logger.info("距离范围: %.6f° ~ %.6f°，合并��控制点数: %d",
+            logger.info("距离范围: %.6f° ~ %.6f°，合并后控制点数: %d",
                         dist_arr[0], dist_arr[-1], len(dist_arr))
 
             interp_func = _interp1d(
@@ -1082,8 +1137,10 @@ class KmlToIaConverter:
                 self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
                 ['COMPRESS=LZW', 'TILED=YES'],
             )
+            if out_ds is None:
+                raise RuntimeError(f"创建GeoTIFF文件失败: {output_tif_path}")
             out_ds.SetGeoTransform(self._geo_transform)
-            out_ds.SetProjection(self._utm_srs.ExportToWkt())
+            out_ds.SetProjection(self._output_srs.ExportToWkt())
             band = out_ds.GetRasterBand(1)
             band.SetNoDataValue(-9999.0)
 
@@ -1091,13 +1148,15 @@ class KmlToIaConverter:
 
             n_rows = self._n_rows
             chunk_rows = self.chunk_size
+            # 预先计算全部行的 Y 坐标（中心点），按块切片复用
+            full_grid_y = self._y_max - (np.arange(n_rows) + 0.5) * self._res_lat
             start_time = time.time()
 
             for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
 
-                grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
+                grid_y = full_grid_y[row_start:row_end]
                 xx, yy = np.meshgrid(grid_x, grid_y)
 
                 # 计算距离时同样考虑经纬度不等距性
@@ -1113,9 +1172,13 @@ class KmlToIaConverter:
                     raise
                 del pixel_dists
                 np.maximum(chunk_vals, 0.0, out=chunk_vals)
-                band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
+                ret = band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
+                if ret != 0:
+                    raise RuntimeError(f"band.WriteArray() 写入失败（第 {chunk_idx} 块）")
                 del chunk_vals
-                gc.collect()
+                # 每 10 块清理一次 GC，避免过于频繁的 GC 开销
+                if (chunk_idx + 1) % 10 == 0:
+                    gc.collect()
 
                 if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
                     elapsed = time.time() - start_time
@@ -1189,8 +1252,10 @@ class KmlToIaConverter:
                 self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
                 ['COMPRESS=LZW', 'TILED=YES'],
             )
+            if out_ds is None:
+                raise RuntimeError(f"创建GeoTIFF文件失败: {output_tif_path}")
             out_ds.SetGeoTransform(self._geo_transform)
-            out_ds.SetProjection(self._utm_srs.ExportToWkt())
+            out_ds.SetProjection(self._output_srs.ExportToWkt())
             band = out_ds.GetRasterBand(1)
             band.SetNoDataValue(-9999.0)
 
@@ -1198,12 +1263,14 @@ class KmlToIaConverter:
 
             n_rows = self._n_rows
             chunk_rows = self.chunk_size
+            # 预先计算全部行的 Y 坐标（中心点），按块切片复用
+            full_grid_y = self._y_max - (np.arange(n_rows) + 0.5) * self._res_lat
             start_time = time.time()
 
             for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
                 row_end = min(row_start + chunk_rows, n_rows)
 
-                grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
+                grid_y = full_grid_y[row_start:row_end]
 
                 try:
                     z, _ss = ok.execute(
@@ -1211,7 +1278,7 @@ class KmlToIaConverter:
                         grid_x.astype(np.float64),
                         grid_y.astype(np.float64),
                         n_closest_points=self.kriging_neighbors,
-                        backend='loop',
+                        backend='vectorized',   # vectorized 比 loop 快数倍
                     )
                 except Exception as exc:
                     logger.error("kriging 插值第 %d 块失败: %s", chunk_idx, exc)
@@ -1221,9 +1288,13 @@ class KmlToIaConverter:
                 chunk_vals = np.array(z, dtype=np.float32)
                 del z
                 np.maximum(chunk_vals, 0.0, out=chunk_vals)
-                band.WriteArray(chunk_vals, 0, row_start)
+                ret = band.WriteArray(chunk_vals, 0, row_start)
+                if ret != 0:
+                    raise RuntimeError(f"band.WriteArray() 写入失败（第 {chunk_idx} 块）")
                 del chunk_vals
-                gc.collect()
+                # 每 10 块清理一次 GC，避免过于频繁的 GC 开销
+                if (chunk_idx + 1) % 10 == 0:
+                    gc.collect()
 
                 if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
                     elapsed = time.time() - start_time
@@ -1308,7 +1379,7 @@ class KmlToIaConverter:
             mem_driver = ogr.GetDriverByName('Memory')
             mem_ds = mem_driver.CreateDataSource('pga_contours')
             layer = mem_ds.CreateLayer(
-                'contours', srs=self._utm_srs, geom_type=ogr.wkbPolygon
+                'contours', srs=self._output_srs, geom_type=ogr.wkbPolygon
             )
 
             field_defn = ogr.FieldDefn('PGA', ogr.OFTReal)
@@ -1342,17 +1413,21 @@ class KmlToIaConverter:
             raster_ds = raster_driver.Create(
                 '', self._n_cols, self._n_rows, 1, gdal.GDT_Float32
             )
+            if raster_ds is None:
+                raise RuntimeError("内存栅格数据集创建失败")
             raster_ds.SetGeoTransform(self._geo_transform)
-            raster_ds.SetProjection(self._utm_srs.ExportToWkt())
+            raster_ds.SetProjection(self._output_srs.ExportToWkt())
 
             band = raster_ds.GetRasterBand(1)
             band.SetNoDataValue(-9999.0)
             band.Fill(min_pga)
 
-            gdal.RasterizeLayer(
+            err = gdal.RasterizeLayer(
                 raster_ds, [1], layer,
                 options=["ATTRIBUTE=PGA"]
             )
+            if err != 0:
+                raise RuntimeError(f"gdal.RasterizeLayer 失败，错误码: {err}")
             band.ComputeStatistics(False)
             band.FlushCache()
 
@@ -1388,7 +1463,7 @@ class KmlToIaConverter:
         self, file_path: str, max_retries: int = 3, retry_delay: float = 1.0
     ) -> None:
         """
-        确保输出文件可写，如果文件已存在则尝试删除。
+        确保输出文件可写：先检查父目录可写性，再尝试删除已存在的文件。
 
         参数:
             file_path: 输出文件路径
@@ -1396,8 +1471,19 @@ class KmlToIaConverter:
             retry_delay: 重试间隔（秒）
 
         异常:
-            RuntimeError: 文件无法删除或写入
+            RuntimeError: 父目录不可写，或文件无法删除
         """
+        # 检查父目录是否可写，防止后续 driver.Create() 因权限问题返回 None
+        parent_dir = os.path.dirname(os.path.abspath(file_path))
+        if not os.path.isdir(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+        if not os.access(parent_dir, os.W_OK):
+            raise RuntimeError(
+                f"输出目录不可写，请检查权限：\n"
+                f"  目录路径: {parent_dir}\n"
+                f"  文件路径: {file_path}"
+            )
+
         if not os.path.exists(file_path):
             return
 
@@ -1429,7 +1515,7 @@ class KmlToIaConverter:
         """
         logger.info("清理临时资源...")
         self._contours.clear()
-        self._utm_srs = None
+        self._output_srs = None
         gc.collect()
         logger.info("资源清理完成")
 
@@ -1465,9 +1551,13 @@ class KmlToIaConverter:
             raise
 
     def _run_impl(self) -> bool:
-        """run() 的实际实现。"""
+        """
+        run() 的实际实现。
+
+        成功时返回 True；所有失败路径均通过异常向上传播（不返回 False）。
+        """
         logger.info("=" * 60)
-        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.1）")
+        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.2）")
         logger.info("插值方法: %s", self.interp_method)
         logger.info("采样间隔: %d，最大采样点数: %d",
                      self.sample_interval, self.max_sample_points)
@@ -1476,27 +1566,20 @@ class KmlToIaConverter:
         logger.info("=" * 60)
 
         try:
-            # 1. 检查输入文件
-            if not os.path.exists(self.kml_path):
-                logger.error("KML文件不存在: %s", self.kml_path)
-                return False
+            # 1. 解析KML（parse_kml 内部已检查文件存在性，不存在时抛出 FileNotFoundError；
+            #    解析结果同时存入 self._contours 供后续步骤使用）
+            self.parse_kml()
 
-            # 2. 解析KML
-            contours = self.parse_kml()
-            if len(contours) == 0:
-                logger.error("未找到有效的PGA等值线")
-                return False
-
-            # 3. 设置 EPSG:4326 输出���标系
+            # 2. 设置 EPSG:4326 输出坐标系
             self._setup_output_crs()
 
-            # 4. 准备采样点（坐标保持经纬度）
+            # 3. 准备采样点（坐标保持经纬度）
             x_arr, y_arr, ia_values = self._prepare_sample_points()
 
-            # 5. 构建栅格网格（经纬度坐标，分辨率按度计算，经度修正纬度余弦）
+            # 4. 构建栅格网格（经纬度坐标，分辨率按度计算，经度修正纬度余弦）
             self._build_grid(x_arr, y_arr)
 
-            # 6. PGA矢量栅格化（可选）
+            # 5. PGA矢量栅格化（可选）
             if self.export_pga and self.pga_output_path:
                 logger.info("-" * 40)
                 logger.info("步骤: PGA等值线矢量栅格化（非插值）")
@@ -1506,7 +1589,7 @@ class KmlToIaConverter:
                 pga_elapsed = time.time() - pga_start
                 logger.info("PGA栅格化耗时: %.2f 秒", pga_elapsed)
 
-            # 7. Ia插值
+            # 6. Ia插值
             logger.info("-" * 40)
             logger.info("步骤: Ia插值计算（%s）", self.interp_method)
             logger.info("-" * 40)
@@ -1520,7 +1603,7 @@ class KmlToIaConverter:
             interp_elapsed = time.time() - interp_start
             logger.info("✅ Ia插值计算到输出文件耗时: %.2f 秒", interp_elapsed)
 
-            # 8. 汇总
+            # 7. 汇总
             logger.info("=" * 60)
             logger.info("处理完成!")
             if self.export_pga and self.pga_output_path:
@@ -1589,7 +1672,6 @@ if __name__ == "__main__":
 
         # 内存优化参数
         chunk_size=1000,  # 栅格分块行数；推荐500~2000
-        coord_batch_size=10000,  # 坐标转换批次大小；推荐5000~50000
         max_memory_gb=10.0,  # 最大内存使用限制(GB)；参考值，实际由上方参数控制
     )
     converter.run()
