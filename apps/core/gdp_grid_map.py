@@ -200,14 +200,14 @@ LEGEND_ITEM_FONT_SIZE_PT = 10
 LEGEND_GDP_FONT_SIZE_PT = 10  # GDP图例字体大小
 # 顶部图例（2x3）字体与布局
 LEGEND_TOP_ITEM_FONT_SIZE_PT = 10
-TOP_LEGEND_ROW_HEIGHT_MM = 5.0
+TOP_LEGEND_ROW_HEIGHT_MM = 6.0
 TOP_LEGEND_COL_GAP_MM = 1.0
 # GDP图例字体与间距
 LEGEND_GDP_TITLE_FONT_SIZE_PT = 10
 LEGEND_GDP_ITEM_FONT_SIZE_PT = 10
 GDP_LEGEND_TITLE_HEIGHT_MM = 5.0
 GDP_LEGEND_TITLE_GAP_MM = 2.0
-GDP_LEGEND_ITEM_HEIGHT_MM = 5.5
+GDP_LEGEND_ITEM_HEIGHT_MM = 6.5
 GDP_LEGEND_ITEM_GAP_MM = 0.5
 
 # === 比例尺字体 ===
@@ -1579,7 +1579,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm, gdp_
         item_start_y = gdp_title_y + GDP_LEGEND_TITLE_HEIGHT_MM + GDP_LEGEND_TITLE_GAP_MM
 
         gdp_icon_width = 5.0
-        gdp_icon_height = 3.0
+        gdp_icon_height = 4.5
         gdp_gap = 1.5
         gdp_left_pad = 2.0
         gdp_right_pad = 2.0

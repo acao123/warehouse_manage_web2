@@ -1268,7 +1268,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     left_pad = 2.0
     right_pad = 2.0
     col_gap = 1.0
-    row_height = 8.0
+    row_height = 6.0
     icon_width = 4.0
     icon_height = 2.5
     icon_text_gap = 1.0
@@ -1387,8 +1387,8 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     # 人口密度分档色块和标签
     pop_item_start_y = pop_legend_start_y + 5.5
     pop_icon_width = 5.0
-    pop_icon_height = 2.5
-    pop_item_height = 4
+    pop_icon_height = 4.5
+    pop_item_height = 6.5
     pop_gap = 1.5
 
     population_legend_list = build_population_legend_list()
