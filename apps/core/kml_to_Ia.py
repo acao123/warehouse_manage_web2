@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.2）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.3）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,14 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.2）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.3 相较 v3.2）：
+    1. 移除未使用的 import traceback
+    2. _interpolate_ia_to_file 添加 try-except 异常处理并向上抛出
+    3. cleanup 方法添加异常保护（不掩盖原始异常）
+    4. scipy_idw/scipy_tin 分块循环预分配 pts 数组，避免 meshgrid 中间拷贝
+    5. radial 距离合并改用 numpy 向量化（np.diff + np.bincount），替代 Python 逐点循环
+    6. 修正 __main__ 块注释（kriging 方法注释误写为 'scipy TIN'）
 
 主要改进（v3.2 相较 v3.1）：
     1. 修正误导性变量命名：_utm_epsg/_utm_srs → _output_epsg/_output_srs
@@ -36,9 +44,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.2）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: Copilot (重构版 v3.2)
+作者: Copilot (重构版 v3.3)
 日期: 2026-03-31
-版本: 3.2
+版本: 3.3
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -74,7 +82,6 @@ import os
 import random
 import re
 import time
-import traceback
 import warnings
 from typing import Iterator, List, Optional, Tuple
 from xml.etree import ElementTree as ET
@@ -153,7 +160,7 @@ _PGA_NAME_PATTERN = re.compile(r'^([0-9]*\.?[0-9]+)\s*[gG]$')
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.2）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.3）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -861,23 +868,29 @@ class KmlToIaConverter:
             # 预先计算全部行的 Y 坐标（中心点），按块切片复用
             full_grid_y = self._y_max - (np.arange(n_rows) + 0.5) * self._res_lat
 
+            # 预分配 pts 缓冲区（最大块大小），循环中复用，避免每次重新分配
+            # X 坐标在所有块中相同（tile），预先填充到 pts_buf 中
+            max_chunk_pts = chunk_rows * self._n_cols
+            pts_buf = np.empty((max_chunk_pts, 2), dtype=np.float64)
+            pts_buf[:, 0] = np.tile(grid_x, chunk_rows)
+
             start_time = time.time()
             for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
+                actual_pts = actual_rows * self._n_cols
 
                 grid_y = full_grid_y[row_start:row_end]
-
-                xx, yy = np.meshgrid(grid_x, grid_y)
-                pts = np.column_stack([xx.ravel(), yy.ravel()])
-                del xx, yy
+                pts = pts_buf[:actual_pts]
+                # 直接广播赋值，避免 meshgrid + ravel 的中间拷贝
+                pts_y_view = pts[:, 1].reshape(actual_rows, self._n_cols)
+                pts_y_view[:] = grid_y[:, np.newaxis]
 
                 try:
                     chunk_vals = rbf(pts).reshape(actual_rows, self._n_cols)
                 except Exception as exc:
                     logger.error("scipy RBF 插值第 %d 块失败: %s", chunk_idx, exc)
                     raise
-                del pts
 
                 np.maximum(chunk_vals, 0.0, out=chunk_vals)
                 ret = band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
@@ -981,14 +994,22 @@ class KmlToIaConverter:
                 values.astype(np.float64),
             )
 
+            # 预分配 pts 缓冲区（最大块大小），循环中复用，避免每次重新分配
+            # X 坐标在所有块中相同（tile），预先填充到 pts_buf 中
+            max_chunk_pts = chunk_rows * self._n_cols
+            pts_buf = np.empty((max_chunk_pts, 2), dtype=np.float64)
+            pts_buf[:, 0] = np.tile(grid_x, chunk_rows)
+
             for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
+                actual_pts = actual_rows * self._n_cols
 
                 grid_y = full_grid_y[row_start:row_end]
-                xx, yy = np.meshgrid(grid_x, grid_y)
-                pts = np.column_stack([xx.ravel(), yy.ravel()])
-                del xx, yy
+                pts = pts_buf[:actual_pts]
+                # 直接广播赋值，避免 meshgrid + ravel 的中间拷贝
+                pts_y_view = pts[:, 1].reshape(actual_rows, self._n_cols)
+                pts_y_view[:] = grid_y[:, np.newaxis]
 
                 try:
                     chunk_vals = interp(pts)
@@ -1004,8 +1025,6 @@ class KmlToIaConverter:
                     except Exception as exc:
                         logger.warning("NaN填充失败（第%d块），使用0填充: %s", chunk_idx, exc)
                         chunk_vals[nan_mask] = 0.0
-
-                del pts
 
                 chunk_vals = chunk_vals.reshape(actual_rows, self._n_cols)
                 np.maximum(chunk_vals, 0.0, out=chunk_vals)
@@ -1088,32 +1107,22 @@ class KmlToIaConverter:
             del distances, sorted_idx, dx, dy
             gc.collect()
 
-            # 对距离去重：将距离相差不超过 _res_lat/2 的点合并取均值
+            # 对距离去重：将距离相差不超过 _res_lat/2 的点合并取均值（向量化实现）
+            # 使用 np.diff + np.cumsum 划分组，再用 np.bincount 聚合统计
             tol = self._res_lat / 2.0
-            merged_dists = [float(dist_sorted[0])]
-            merged_vals = [float(val_sorted[0])]
-            running_sum = float(val_sorted[0])
-            running_cnt = 1
+            breaks = np.concatenate([[True], np.diff(dist_sorted) >= tol])
+            group_ids = np.cumsum(breaks) - 1  # 0-indexed 组编号
 
-            for d, v in zip(dist_sorted[1:], val_sorted[1:]):
-                d = float(d)
-                v = float(v)
-                if d - merged_dists[-1] < tol:
-                    running_sum += v
-                    running_cnt += 1
-                    merged_vals[-1] = running_sum / running_cnt
-                else:
-                    merged_dists.append(d)
-                    merged_vals.append(v)
-                    running_sum = v
-                    running_cnt = 1
+            group_sums = np.bincount(group_ids, weights=val_sorted)
+            group_cnts = np.bincount(group_ids)
+            val_arr = group_sums / group_cnts
 
-            del dist_sorted, val_sorted
+            # 取每组第一个距离值作为代表距离
+            _, first_idx = np.unique(group_ids, return_index=True)
+            dist_arr = dist_sorted[first_idx]
+
+            del dist_sorted, val_sorted, breaks, group_ids, group_sums, group_cnts, first_idx
             gc.collect()
-
-            dist_arr = np.array(merged_dists, dtype=np.float64)
-            val_arr = np.array(merged_vals, dtype=np.float64)
-            del merged_dists, merged_vals
 
             logger.info("距离范围: %.6f° ~ %.6f°，合并后控制点数: %d",
                         dist_arr[0], dist_arr[-1], len(dist_arr))
@@ -1333,23 +1342,27 @@ class KmlToIaConverter:
             ia_values: 采样点对应的Ia值
             output_tif_path: 输出Ia GeoTIFF 文件路径
         """
-        method = self.interp_method
+        try:
+            method = self.interp_method
 
-        if method in ('qgis_idw', 'qgis_tin'):
-            self._run_qgis_interpolation(x_arr, y_arr, ia_values, output_tif_path)
-        elif method == 'scipy_idw':
-            self._run_scipy_interpolation(x_arr, y_arr, ia_values, output_tif_path)
-        elif method == 'scipy_tin':
-            self._run_scipy_tin_interpolation(x_arr, y_arr, ia_values, output_tif_path)
-        elif method == 'radial':
-            self._run_radial_interpolation(x_arr, y_arr, ia_values, output_tif_path)
-        elif method == 'kriging':
-            self._run_kriging_interpolation(x_arr, y_arr, ia_values, output_tif_path)
-        else:
-            raise ValueError(
-                f"不支持的插值方法: '{method}'，"
-                f"可选: 'scipy_tin', 'radial', 'scipy_idw', 'kriging', 'qgis_idw', 'qgis_tin'"
-            )
+            if method in ('qgis_idw', 'qgis_tin'):
+                self._run_qgis_interpolation(x_arr, y_arr, ia_values, output_tif_path)
+            elif method == 'scipy_idw':
+                self._run_scipy_interpolation(x_arr, y_arr, ia_values, output_tif_path)
+            elif method == 'scipy_tin':
+                self._run_scipy_tin_interpolation(x_arr, y_arr, ia_values, output_tif_path)
+            elif method == 'radial':
+                self._run_radial_interpolation(x_arr, y_arr, ia_values, output_tif_path)
+            elif method == 'kriging':
+                self._run_kriging_interpolation(x_arr, y_arr, ia_values, output_tif_path)
+            else:
+                raise ValueError(
+                    f"不支持的插值方法: '{method}'，"
+                    f"可选: 'scipy_tin', 'radial', 'scipy_idw', 'kriging', 'qgis_idw', 'qgis_tin'"
+                )
+        except Exception as exc:
+            logger.error("插值失败 (method=%s): %s", self.interp_method, exc, exc_info=True)
+            raise
 
     # ==================== PGA 矢量栅格化 ====================
 
@@ -1511,11 +1524,14 @@ class KmlToIaConverter:
         """
         清理所有运行时资源，释放内存。
         """
-        logger.info("清理临时资源...")
-        self._contours.clear()
-        self._output_srs = None
-        gc.collect()
-        logger.info("资源清理完成")
+        try:
+            logger.info("清理临时资源...")
+            self._contours.clear()
+            self._output_srs = None
+            gc.collect()
+            logger.info("资源清理完成")
+        except Exception as exc:
+            logger.warning("资源清理异常（已忽略）: %s", exc)
 
     # ==================== 主流程 ====================
 
@@ -1555,7 +1571,7 @@ class KmlToIaConverter:
         成功时返回 True；所有失败路径均通过异常向上传播（不返回 False）。
         """
         logger.info("=" * 60)
-        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.2）")
+        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.3）")
         logger.info("插值方法: %s", self.interp_method)
         logger.info("采样间隔: %d，最大采样点数: %d",
                      self.sample_interval, self.max_sample_points)
@@ -1638,7 +1654,7 @@ if __name__ == "__main__":
 
         # ========== 选择插值方法 ==========
         # 推荐方法（平滑，无突变）
-        interp_method='kriging',  # scipy TIN - 平滑无突变（默认推荐）
+        interp_method='kriging',  # 普通克里金 - 统计精度最高（需安装pykrige）
         # interp_method='radial',   # 径向插值 - 专为同心圈，完美单调递增
 
         # 其他可用方法
