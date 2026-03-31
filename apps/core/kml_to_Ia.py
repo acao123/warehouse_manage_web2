@@ -680,10 +680,10 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        使用 QGIS QgsGridFileWriter 批量插值（优化版：C++ 批量处理，替代逐像素 Python 循环）
+        使用 QGIS 插值器进行插值（优化版：按行批量处理）
 
-        QgsGridFileWriter 在 C++ 层遍历所有像素并调用插值器，比 Python 循环快几个数量级。
-        输出为临时 ASC 文件，之后通过 GDAL 转换为带正确投影和仿射变换的 GeoTIFF。
+        由于 QGIS 3.40 的 QgsGridFileWriter API 存在兼容性问题，
+        改用 interpolatePoint 逐点插值，但按行批量处理以提高效率。
 
         参数:
             x_arr: 采样点X坐标(经度)
@@ -692,10 +692,9 @@ class KmlToIaConverter:
             output_tif_path: 输出 GeoTIFF 文件路径
         """
         layer = None
-        interpolator = None
-        temp_asc_path = None
-        asc_ds = None
         out_ds = None
+        band = None
+        interpolator = None
 
         try:
             layer = self._build_qgs_vector_layer(x_arr, y_arr, values)
@@ -722,75 +721,50 @@ class KmlToIaConverter:
             else:
                 raise ValueError(f"不支持的QGIS插值方法: '{method}'")
 
-            # 创建临时 ASC 文件供 QgsGridFileWriter 写入
-            with tempfile.NamedTemporaryFile(suffix='.asc', delete=False) as tmp_f:
-                temp_asc_path = tmp_f.name
-
-            # QgsGridFileWriter 使用 C++ 批量插值，替代 Python 逐像素循环
-            # cellSizeX/Y 告知 writer 每个像素的地理坐标步长，
-            # 与 _geo_transform 一致，确保像素中心坐标正确
-            extent = QgsRectangle(self._x_min, self._y_min, self._x_max, self._y_max)
-            writer = QgsGridFileWriter(
-                interpolator,
-                temp_asc_path,
-                extent,
-                self._n_cols,
-                self._n_rows,
-                self._res_lon,
-                self._res_lat,
-            )
-
-            logger.info("开始 QGIS 批量插值（C++），共 %d 列 × %d 行 = %s 像素...",
-                        self._n_cols, self._n_rows, f"{self._n_cols * self._n_rows:,}")
-            start_time = time.time()
-
-            ret = writer.writeFile(False)
-            if ret != 0:
-                raise RuntimeError(f"QgsGridFileWriter.writeFile() 返回错误码: {ret}")
-
-            elapsed = time.time() - start_time
-            logger.info("QGIS 批量插值完成，耗时: %.1fs", elapsed)
-
-            # 将临时 ASC 转换为带正确投影和非方形像素仿射变换的 GeoTIFF
-            # ASC 格式只存单一 cellsize，因此仿射变换需手动覆盖
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
             self._ensure_file_writable(output_tif_path)
-
-            asc_ds = gdal.Open(temp_asc_path)
-            if asc_ds is None:
-                raise RuntimeError(f"无法读取临时 ASC 文件: {temp_asc_path}")
-
-            tif_driver = gdal.GetDriverByName('GTiff')
-            out_ds = tif_driver.CreateCopy(
+            driver = gdal.GetDriverByName('GTiff')
+            out_ds = driver.Create(
                 output_tif_path,
-                asc_ds,
-                options=['COMPRESS=LZW', 'TILED=YES'],
+                self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
+                ['COMPRESS=LZW', 'TILED=YES'],
             )
-            if out_ds is None:
-                raise RuntimeError(f"GDAL CreateCopy 创建 GeoTIFF 失败: {output_tif_path}")
-
-            # 覆盖仿射变换（ASC 为方形像素，需修正为经纬度非方形分辨率）和投影
             out_ds.SetGeoTransform(self._geo_transform)
             out_ds.SetProjection(self._utm_srs.ExportToWkt())
-
             band = out_ds.GetRasterBand(1)
-            # 将插值结果中小于 0 的有效像素归零（nodata 保持不变）
-            nodata_val = band.GetNoDataValue()
-            arr = band.ReadAsArray()
-            if nodata_val is not None:
-                valid_mask = arr != nodata_val
-            else:
-                valid_mask = np.ones(arr.shape, dtype=bool)
-            negative_mask = valid_mask & (arr < 0)
-            if negative_mask.any():
-                arr[negative_mask] = 0.0
-                band.WriteArray(arr)
-            del arr, valid_mask, negative_mask
+            band.SetNoDataValue(-9999.0)
+
+            # 预计算列坐标（经度）
+            grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
+
+            n_rows = self._n_rows
+            logger.info("开始 QGIS 插值，共 %d 行 × %d 列 = %s 像素...",
+                        n_rows, self._n_cols, f"{n_rows * self._n_cols:,}")
+
+            start_time = time.time()
+            report_interval = max(1, n_rows // 20)
+
+            for row_idx in range(n_rows):
+                y = self._y_max - (row_idx + 0.5) * self._res_lat
+
+                row_data = np.full(self._n_cols, -9999.0, dtype=np.float32)
+                for col_idx in range(self._n_cols):
+                    x = grid_x[col_idx]
+                    success, value = interpolator.interpolatePoint(x, y)
+                    if success == 0:
+                        row_data[col_idx] = max(0.0, value)
+
+                band.WriteArray(row_data.reshape(1, -1), 0, row_idx)
+
+                if (row_idx + 1) % report_interval == 0 or row_idx == n_rows - 1:
+                    elapsed = time.time() - start_time
+                    progress = 100.0 * (row_idx + 1) / n_rows
+                    eta = elapsed / (row_idx + 1) * (n_rows - row_idx - 1) if row_idx > 0 else 0
+                    logger.info("进度: %d/%d 行 (%.1f%%), 已用时: %.1fs, 预计剩余: %.1fs",
+                                row_idx + 1, n_rows, progress, elapsed, eta)
 
             band.ComputeStatistics(False)
             band.FlushCache()
-            asc_ds = None
-            out_ds = None
 
             total_time = time.time() - start_time
             logger.info("QGIS插值完成，总耗时: %.1fs, 已保存: %s", total_time, output_tif_path)
@@ -799,20 +773,8 @@ class KmlToIaConverter:
             logger.error("QGIS插值失败: %s", exc, exc_info=True)
             raise
         finally:
-            asc_ds = None
             out_ds = None
-            # 删除临时 ASC 文件及其伴随文件
-            if temp_asc_path:
-                _base = os.path.splitext(temp_asc_path)[0]
-                for _path in [temp_asc_path,
-                               temp_asc_path + '.aux.xml',
-                               _base + '.prj',
-                               _base + '.tfw']:
-                    if os.path.exists(_path):
-                        try:
-                            os.remove(_path)
-                        except OSError:
-                            pass
+            band = None
             del interpolator, layer
             gc.collect()
 
@@ -1674,12 +1636,12 @@ if __name__ == "__main__":
         resolution=30,  # 输出分辨率(米)；推荐10~100
 
         # 采样参数
-        sample_interval=1,  # 等值线采样间隔；推荐3~10，越小采样越密
+        sample_interval=5,  # 等值线采样间隔；推荐3~10，越小采样越密
         max_sample_points=10000,  # 最大采样点数；超过时随机抽样，避免内存溢出
 
         # ========== 选择插值方法 ==========
         # 推荐方法（平滑，无突变）
-        interp_method='scipy_tin',  # scipy TIN - 平滑无突变（默认推荐）
+        interp_method='qgis_idw',  # scipy TIN - 平滑无突变（默认推荐）
         # interp_method='radial',   # 径向插值 - 专为同心圈，完美单调递增
 
         # 其他可用方法
