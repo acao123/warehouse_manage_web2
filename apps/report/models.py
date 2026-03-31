@@ -50,6 +50,7 @@ class ReportTaskRecord(models.Model):
     # 图片十一（预留）
     img11_info = models.CharField(max_length=800, null=True, blank=True, verbose_name='图片十一说明')
     img11_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='图片十一文件地址')
+    dn_max_value = models.IntegerField(null=True, blank=True, verbose_name='dn最大位移 单位mm')
 
     # 图片十二（预留）
     img12_info = models.CharField(max_length=1000, null=True, blank=True, verbose_name='图片十二说明')
