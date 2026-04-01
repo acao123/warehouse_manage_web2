@@ -275,8 +275,8 @@
 <!-- 操作列按钮模板 -->
 <script type="text/html" id="runningToolbar">
     <a class="layui-btn layui-btn-normal  layui-btn-xs" lay-event="execute">执行任务</a>
-    <a class="layui-btn layui-btn-primary layui-btn-xs" lay-event="export">导出报告</a>
-    <a class="layui-btn layui-btn-danger  layui-btn-xs" lay-event="stop">结束任务</a>
+    <a class="layui-btn layui-btn-normal layui-btn-xs" lay-event="export">导出报告</a>
+    <a class="layui-btn layui-btn-danger  layui-btn-xs" lay-event="stop">终止任务</a>
 </script>
 
 <script src="/static/layui/layui/layui.js"></script>
@@ -328,7 +328,7 @@
                 {field: 'interp_method',     title: '插值算法',        width: 120},
                 {field: 'sample_interval',   title: '等值线采样间隔',   width: 130},
                 {field: 'max_sample_points', title: '最大采样点数',    width: 120},
-                {fixed: 'right', title: '操作', toolbar: '#runningToolbar', width: 200}
+                {fixed: 'right', title: '操作', toolbar: '#runningToolbar', width: 238}
             ]]
         });
 

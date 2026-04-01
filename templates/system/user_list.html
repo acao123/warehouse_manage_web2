@@ -35,6 +35,7 @@
         <div class="report-block">
         <!-- 搜索栏 -->
         <div class="layui-form" style="margin-bottom: 15px;">
+            {% csrf_token %}
             <div class="layui-inline">
                 <input type="text" id="searchKeyword" placeholder="搜索用户名/昵称/手机号" class="layui-input">
             </div>
@@ -58,10 +59,17 @@
 
     <script src="/static/layui/layui/layui.js"></script>
     <script>
+       
         layui.use(['table', 'layer', 'form'], function(){
             var table = layui.table;
             var layer = layui.layer;
             var form = layui.form;
+
+            $.ajaxSetup({
+                headers: {
+                    "X-CSRFToken": $('[name=csrfmiddlewaretoken]').val()
+                }
+            });
             
             // 渲染表格
             var tableIns = table.render({
@@ -132,7 +140,7 @@
                 parent.layer.open({
                     type: 2,
                     title: '新增用户',
-                    area: ['600px', '550px'],
+                    area: ['600px', '800px'],
                     content: '/system/user/form/',
                     btn: ['保存', '取消'],
                     yes: function(index, layero){
