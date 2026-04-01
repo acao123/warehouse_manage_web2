@@ -8,8 +8,8 @@
     <style>
         /* 主题色按钮 */
         .layui-btn:not(.layui-btn-primary):not(.layui-btn-danger):not(.layui-btn-disabled) {
-            background-color: #5a93e8 !important;
-            border-color: #5a93e8 !important;
+            background-color: #2b72ef !important;
+            border-color: #2b72ef !important;
             color: #fff !important;
         }
         /* 表格优化 */
@@ -21,10 +21,18 @@
         .layui-table tbody tr:hover td {
             background-color: #edf4ff !important;
         }
+        .report-block {
+            border: 1px solid #e2e2e2;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 15px;
+            background: #fafafa;
+        }
     </style>
 </head>
 <body>
     <div style="padding: 15px;">
+        <div class="report-block">
         <!-- 搜索栏和上传按钮 -->
         <div class="layui-form" style="margin-bottom: 15px;">
             <div class="layui-inline">
@@ -56,6 +64,7 @@
         
         <!-- 数据表格 -->
         <table class="layui-hide" id="acTable" lay-filter="acTable"></table>
+        </div>
     </div>
 
     <!-- 操作列按钮模板 -->
