@@ -300,7 +300,6 @@ def _gen_img4(task: ReportTask, output_dir: str, basemap_path=None, annotation_p
             latitude=float(task.latitude),
             magnitude=task.magnitude,
             output_path=out,
-            kml_path=task.intensity_kml_path,
             basemap_path=basemap_path,
             annotation_path=annotation_path,
         )

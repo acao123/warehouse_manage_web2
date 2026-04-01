@@ -253,7 +253,7 @@ INTENSITY_LINE_WIDTH_MM = 0.6
 # ============================================================
 # 【震中标记样式】
 # ============================================================
-EPICENTER_STAR_SIZE_MM = 6.0
+EPICENTER_STAR_SIZE_MM = 5.0
 EPICENTER_COLOR = QColor(255, 0, 0)
 EPICENTER_STROKE_COLOR = QColor(255, 255, 255)
 EPICENTER_STROKE_WIDTH_MM = 0.4
