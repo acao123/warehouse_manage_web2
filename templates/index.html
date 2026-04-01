@@ -34,6 +34,7 @@
             flex-shrink: 0;
             z-index: 200;
             box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            background: url("/static/img/exported_image.svg") no-repeat right center;
         }
 
         .header-logo-box {
@@ -42,8 +43,12 @@
         }
 
         .logo-img1 {
-            height: 56px;
-            width: 56px;
+            width: 6%;
+            margin-right: 12px;
+        }
+        
+        .logo-img2 {
+            width: 30%;
             margin-right: 12px;
         }
 
@@ -116,7 +121,7 @@
             padding: 0 24px;
             flex-shrink: 0;
             z-index: 100;
-            box-shadow: 0 2px 6px rgba(43,114,239,0.3);
+            box-shadow: 0 4px 6px rgba(43,114,239,0.3);
         }
 
         .nav-list {
@@ -289,6 +294,15 @@
             font-size: 13px;
             margin-top: 30px;
         }
+
+        #head-title {
+            font-family: "Microsoft YaHei UI", "Microsoft YaHei", "微软雅黑", sans-serif;
+            font-weight: 700; /* 加粗，匹配图片的粗体效果 */
+            font-size: 18px; /* 可根据实际布局调整 */
+            color: #335890; /* 匹配图片的蓝色主色调 */
+            margin-top: 16px;
+            text-shadow: 0 8px 9px rgba(0, 82, 217, 0.2); /* 模糊阴影增强虚化感 */
+        }
     </style>
 </head>
 <body>
@@ -296,9 +310,10 @@
 <!-- 头部 -->
 <div class="gov-header-top">
     <div class="header-logo-box">
-        <img src="/static/img/logo.png" class="logo-img1" alt="系统Logo">
-        <div class="title-box">
-            <h1>地震滑坡评估系统</h1>
+        <img src="/static/img/logo_new.png" class="logo-img1" alt="系统Logo">
+        <img src="/static/img/logo_new3.png" class="logo-img2" alt="系统Logo">
+        <div class="title-box" id="head-title">
+            地震滑坡评估系统
         </div>
     </div>
     <div class="user-info-box">
@@ -390,10 +405,10 @@
             // 更新面包屑
             var html = '<a href="javascript:loadPage(\'首页\',\'\',\'\')">首页</a>';
             if (parentName) {
-                html += '<span></span><a href="javascript:;">' + parentName + '</a>';
-                html += '<span></span><a><cite>' + title + '</cite></a>';
+                html += '<span></span><a href="javascript:;">/' + parentName + '</a>';
+                html += '<span></span><a><cite>/' + title + '</cite></a>';
             } else {
-                html += '<span></span><a><cite>' + title + '</cite></a>';
+                html += '<span></span><a><cite>/' + title + '</cite></a>';
             }
             $breadcrumb.html(html);
         }

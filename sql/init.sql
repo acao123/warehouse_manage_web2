@@ -75,17 +75,11 @@ CREATE TABLE IF NOT EXISTS `sys_user_roles` (
 -- 插入测试数据
 
 -- 插入菜单数据
-INSERT INTO `sys_menu` (`id`, `menu_name`, `parent_id`, `menu_order`, `route_path`, `menu_icon`) VALUES
-(1, '系统管理', NULL, 1, '', 'layui-icon-set'),
-(2, '用户管理', 1, 1, '/system/user/list/', 'layui-icon-user'),
-(3, '角色管理', 1, 2, '/system/role/list/', 'layui-icon-group'),
-(4, '菜单管理', 1, 3, '/system/menu/list/', 'layui-icon-menu-fill'),
-(5, '首页', NULL, 0, '/index/', 'layui-icon-home'),
-(6, '报告管理', NULL, 2, '', 'layui-icon-file'),
-(7, '执行报告', 6, 1, '/report/execute/', 'layui-icon-app'),
-(8, '报告预览', 6, 2, '/report/record/', 'layui-icon-app'),
-(9, '数据管理仓', NULL, 4, '/ac/data/list/', 'layui-icon-storage'),
-(10, '关于本站', NULL, 5, '/about/', 'layui-icon-about');
+INSERT INTO `sys_menu` (`id`, `menu_name`, `parent_id`, `menu_order`, `route_path`, `menu_icon`,`created_at`,`updated_at`) VALUES
+(5, '首页', NULL, 0, '/index/', 'layui-icon-home',now(),now()),
+(8, '报告预览', 6, 2, '/report/record/', 'layui-icon-app',now(),now()),
+(9, '数据管理仓', NULL, 4, '/ac/data/list/', 'layui-icon-storage',now(),now()),
+(10, '关于本站', NULL, 5, '/about/', 'layui-icon-about',now(),now());
 
 -- 插入角色数据
 INSERT INTO `sys_role` (`id`, `role_name`, `role_key`) VALUES

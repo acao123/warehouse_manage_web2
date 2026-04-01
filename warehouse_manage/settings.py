@@ -94,7 +94,7 @@ WSGI_APPLICATION = 'warehouse_manage.wsgi.application'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 # 数据库配置：可以通过修改USE_MYSQL来切换SQLite和MySQL
 
-USE_MYSQL = False
+USE_MYSQL = True
 
 if USE_MYSQL:
     # MySQL数据库配置（生产环境）
@@ -103,7 +103,7 @@ if USE_MYSQL:
             'ENGINE': 'django.db.backends.mysql',
             'NAME': os.environ.get('DB_NAME', 'warehouse_manage'),
             'USER': os.environ.get('DB_USER', 'root'),
-            'PASSWORD': os.environ.get('DB_PASSWORD', '123456'),
+            'PASSWORD': os.environ.get('DB_PASSWORD', 'N{#A5mcAO2#='),
             'HOST': os.environ.get('DB_HOST', 'localhost'),
             'PORT': os.environ.get('DB_PORT', '3306'),
             'OPTIONS': {
