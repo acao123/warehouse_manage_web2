@@ -176,6 +176,11 @@ def update_progress(task_id: int, step: str, progress: int) -> None:
 # 输出路径生成
 # ============================================================
 
+def _normalize_path(path: str) -> str:
+    """将路径中所有反斜杠统一替换为正斜杠，确保跨平台路径一致性。"""
+    return path.replace("\\", "/")
+
+
 def _build_output_dir(task_id: int) -> str:
     """
     生成本次任务的输出目录路径。
@@ -191,12 +196,12 @@ def _build_output_dir(task_id: int) -> str:
     """
     base = getattr(settings, 'FILE_BASE_PATH', os.path.join(settings.BASE_DIR, 'data', 'report'))
     timestamp = datetime.now().strftime('%Y%m%d')
-    return str(Path(base) / "task" / timestamp / str(task_id)).replace("\\", "/")
+    return _normalize_path(str(Path(base) / "task" / timestamp / str(task_id)))
 
 
 def _img_path(output_dir: str, img_no: int) -> str:
     """返回第 img_no 张图片的输出路径（如 .../1.png）。"""
-    return str(Path(output_dir) / f'{img_no}.png').replace("\\", "/")
+    return _normalize_path(str(Path(output_dir) / f'{img_no}.png'))
 
 
 # ============================================================
@@ -420,7 +425,7 @@ def _gen_ia_tif(task: ReportTask, output_dir: str) -> str | None:
     """
     try:
         from core.kml_to_Ia import KmlToIaConverter
-        ia_path = os.path.join(output_dir, 'Ia.tif').replace("\\", "/")
+        ia_path = _normalize_path(os.path.join(output_dir, 'Ia.tif'))
         converter = KmlToIaConverter(
             kml_path=task.pga_kml_path,
             ia_output_path=ia_path,
@@ -450,7 +455,7 @@ def _gen_dn_tif(task: ReportTask, output_dir: str, ia_tif_path: str) -> str | No
     try:
         from core.ac_ia_to_dn import calculate_dn_optimized
         ac_tif_path = getattr(settings, 'AC_TIF_PATH', 'C:/地质/ac/全国ac分布/ac.tif')
-        dn_path = os.path.join(output_dir, 'Dn.tif').replace("\\", "/")
+        dn_path = _normalize_path(os.path.join(output_dir, 'Dn.tif'))
         calculate_dn_optimized(
             ac_tif_path=ac_tif_path,
             ia_tif_path=ia_tif_path,
@@ -502,7 +507,7 @@ def _gen_img11(task: ReportTask, output_dir: str, dn_tif_path: str):
     """
     try:
         from core.earthquake_hazard_map import generate_earthquake_hazard_map
-        out = _img_path(output_dir, 11).replace("\\", "/")
+        out = _img_path(output_dir, 11)
         img_path, max_dn_value, statistics_summary = generate_earthquake_hazard_map(
             longitude=float(task.longitude),
             latitude=float(task.latitude),
@@ -531,7 +536,7 @@ def _gen_img12(task: ReportTask, output_dir: str, basemap_path=None, annotation_
     """
     try:
         from core.earthquake_landslide_assessment_map import generate_earthquake_landslide_assessment_map
-        out = _img_path(output_dir, 12).replace("\\", "/")
+        out = _img_path(output_dir, 12)
         result = generate_earthquake_landslide_assessment_map(
             longitude=float(task.longitude),
             latitude=float(task.latitude),
@@ -864,6 +869,8 @@ def _mark_failed(task: ReportTask, error_message: str = None) -> None:
         error_message: 可选的错误日志内容
     """
     try:
+        # 刷新 task 对象，避免使用过期（stale）数据导致更新失败
+        task.refresh_from_db()
         update_fields = ['task_status', 'updated_at']
         task.task_status = ReportTask.STATUS_FAILED
         if error_message is not None:
@@ -1031,7 +1038,7 @@ def _calculate_image_size_for_word(
         final_height_mm = max_height_mm
         final_width_mm *= scale
 
-    return (width_px, height_px)
+    return (final_width_mm, final_height_mm)
 
 
 def _create_inline_image(
