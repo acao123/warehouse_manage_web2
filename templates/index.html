@@ -14,12 +14,13 @@
             height: 100%;
             overflow: hidden;
             font-family: "Microsoft YaHei", sans-serif;
+            letter-spacing: 0.5px;
         }
 
         body {
             display: flex;
             flex-direction: column;
-            background-color: #f8f9fa;
+            background-color: #f0f2f5;
         }
 
         /* ===== 头部 ===== */
@@ -28,11 +29,12 @@
             height: 90px;
             display: flex;
             align-items: center;
-            padding: 0 20px;
+            padding: 0 24px;
             border-bottom: 1px solid #e8f0fe;
             justify-content: space-between;
             flex-shrink: 0;
             z-index: 200;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
         }
 
         .header-logo-box {
@@ -43,13 +45,14 @@
         .logo-img1 {
             height: 56px;
             width: 56px;
-            margin-right: 10px;
+            margin-right: 12px;
         }
 
         .title-box h1 {
-            font-size: 30px;
-            color: #5a93e8;
+            font-size: 28px;
+            color: #2b72ef;
             font-weight: bold;
+            letter-spacing: 1px;
         }
 
         /* 用户信息区 */
@@ -64,7 +67,7 @@
             width: 40px;
             height: 40px;
             border-radius: 50%;
-            background-color: #5a93e8;
+            background-color: #2b72ef;
             color: white;
             text-align: center;
             line-height: 40px;
@@ -73,7 +76,7 @@
         }
 
         .user-name {
-            font-size: 16px;
+            font-size: 15px;
             color: #333;
         }
 
@@ -83,8 +86,8 @@
             right: 0;
             background: #fff;
             width: 120px;
-            border-radius: 4px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
             display: none;
             z-index: 9999;
         }
@@ -98,8 +101,8 @@
         }
 
         .logout-menu a:hover {
-            background-color: #f5f7fa;
-            color: #5a93e8;
+            background-color: #f0f5ff;
+            color: #2b72ef;
         }
 
         .user-info-box:hover .logout-menu {
@@ -108,13 +111,13 @@
 
         /* ===== 导航条 ===== */
         .gov-nav-box {
-            background: #5a93e8;
+            background: #2b72ef;
             height: 50px;
             line-height: 50px;
-            padding: 0 20px;
+            padding: 0 24px;
             flex-shrink: 0;
             z-index: 100;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            box-shadow: 0 2px 6px rgba(43,114,239,0.3);
         }
 
         .nav-list {
@@ -124,24 +127,27 @@
 
         .nav-list > li {
             position: relative;
-            padding: 0 20px;
+            padding: 0 18px;
             cursor: pointer;
+            border-radius: 4px;
+            transition: background 0.2s;
         }
 
         .nav-list > li > a {
             color: #ffffff;
-            font-size: 16px;
+            font-size: 15px;
             text-decoration: none;
             display: block;
             transition: color 0.2s;
         }
 
         .nav-list > li > a:hover {
-            color: #e8f0fe !important;
+            color: #d6e8ff !important;
         }
 
         .nav-list > li.active {
-            background-color: #4d8eee !important;
+            background-color: #1f5bbf !important;
+            border-radius: 4px;
         }
 
         /* 二级菜单 */
@@ -150,35 +156,58 @@
             top: 50px;
             left: 0;
             background: #ffffff;
-            width: 200px;
+            width: 180px;
             border-radius: 6px;
-            box-shadow: 0 6px 15px rgba(0,0,0,0.12);
+            box-shadow: 0 6px 18px rgba(0,0,0,0.14);
             display: none;
             z-index: 9999;
             overflow: hidden;
             padding: 6px 0;
             list-style: none;
+            border-top: 3px solid #2b72ef;
         }
 
         .nav-list li .sub-nav li {
             padding: 0;
-            height: 42px;
-            line-height: 42px;
-            padding-left: 18px;
+            height: 40px;
+            line-height: 40px;
+            padding-left: 0;
+            position: relative;
         }
 
         .nav-list li .sub-nav li a {
             color: #333 !important;
-            font-size: 15px;
+            font-size: 14px;
             text-decoration: none;
-            display: block;
-            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            padding: 0 14px 0 28px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+            height: 40px;
+        }
+
+        .nav-list li .sub-nav li a::before {
+            content: '';
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: #c0c8d8;
+            border-radius: 50%;
+            margin-right: 8px;
+            flex-shrink: 0;
+            transition: background 0.2s;
         }
 
         .nav-list li .sub-nav li a:hover {
-            background-color: #edf4ff !important;
-            color: #367fa9 !important;
-            padding-left: 6px;
+            background-color: #eef3fd !important;
+            color: #2b72ef !important;
+            padding-left: 28px;
+            border-left: 3px solid #2b72ef;
+        }
+
+        .nav-list li .sub-nav li a:hover::before {
+            background: #2b72ef;
         }
 
         /* 三角图标 */
@@ -186,9 +215,9 @@
             display: inline-block;
             width: 0;
             height: 0;
-            border-left: 5px solid transparent;
-            border-right: 5px solid transparent;
-            border-top: 5px solid #ffffff;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid rgba(255,255,255,0.8);
             margin-left: 5px;
             vertical-align: middle;
             transition: transform 0.3s ease;
@@ -196,6 +225,17 @@
 
         .nav-list > li:hover .triangle-icon {
             transform: rotate(180deg);
+        }
+
+        /* ===== 面包屑 ===== */
+        .layui-breadcrumb {
+            padding: 10px 20px;
+            background: #fff;
+            border-radius: 4px;
+            margin: 10px 15px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+            flex-shrink: 0;
+            font-size: 13px;
         }
 
         /* ===== 内容主体 ===== */
@@ -207,23 +247,36 @@
             min-height: 0;
         }
 
-        .layui-tab-card {
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            margin: 0;
-            border-radius: 0;
-        }
-
-        .layui-tab-content {
+        .content-area {
             flex: 1;
             overflow: hidden;
-            padding: 0;
+            position: relative;
         }
 
-        .layui-tab-item {
+        /* 首页欢迎面板 */
+        .home-panel {
+            padding: 20px;
+            background: #f0f2f5;
             height: 100%;
-            padding: 0;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .home-panel.active {
+            display: block;
+        }
+
+        /* iframe 容器 */
+        .iframe-wrap {
+            width: 100%;
+            height: 100%;
+            display: none;
+            position: absolute;
+            top: 0; left: 0;
+        }
+
+        .iframe-wrap.active {
+            display: block;
         }
 
         iframe {
@@ -232,28 +285,17 @@
             border: none;
         }
 
-        /* Tab 关闭按钮 */
-        .layui-tab-title li {
-            position: relative;
-            padding-right: 40px !important;
-        }
+        /* ===== 翻页右对齐 ===== */
+        .layui-laypage { text-align: right; }
 
-        .layui-tab-title li .layui-tab-close {
-            position: relative;
-            display: inline-block;
-            width: 18px;
-            height: 18px;
-            line-height: 20px;
-            margin-left: 15px;
-            {#top: 10px;#}
+        /* ===== 页脚 ===== */
+        .gov-footer {
+            background: #2a2a2a;
+            color: #ccc;
             text-align: center;
-            color: #c2c2c2;
-            transition: all .2s;
-            -webkit-transition: all .2s;
-        }
-
-        .layui-tab-title li .layui-tab-close:hover {
-            color: #ff5722;
+            padding: 15px 0;
+            font-size: 13px;
+            flex-shrink: 0;
         }
     </style>
 </head>
@@ -282,112 +324,113 @@
         {% for menu in menus %}
         <li>
             {% if menu.children %}
-            <a href="javascript:;">{{ menu.name }} <span class="triangle-icon"></span></a>
+            <a href="javascript:;" data-name="{{ menu.name }}" data-parent="">{{ menu.name }} <span class="triangle-icon"></span></a>
             <ul class="sub-nav">
                 {% for child in menu.children %}
-                <li><a href="javascript:;" onclick="addTab('{{ child.name }}', '{{ child.route }}')">{{ child.name }}</a></li>
+                <li><a href="javascript:;" onclick="loadPage('{{ child.name }}', '{{ child.route }}', '{{ menu.name }}')">{{ child.name }}</a></li>
                 {% endfor %}
             </ul>
             {% else %}
-            <a href="javascript:;" onclick="addTab('{{ menu.name }}', '{{ menu.route }}')">{{ menu.name }}</a>
+            <a href="javascript:;" onclick="loadPage('{{ menu.name }}', '{{ menu.route }}', '')">{{ menu.name }}</a>
             {% endif %}
         </li>
         {% endfor %}
     </ul>
 </div>
 
+<!-- 面包屑 -->
+<div class="layui-breadcrumb" id="breadcrumb">
+    <a href="javascript:loadPage('首页','','')">首页</a>
+</div>
+
 <!-- 内容主体 -->
 <div class="main-body">
-    <div class="layui-tab layui-tab-card" lay-filter="bodyTab" lay-allowclose="true">
-        <ul class="layui-tab-title">
-            <li class="layui-this" lay-id="home">首页</li>
-        </ul>
-        <div class="layui-tab-content">
-            <div class="layui-tab-item layui-show">
-                <div style="padding: 20px; background: #f8f9fa; height: 100%; overflow-y: auto;">
-                    <blockquote class="layui-elem-quote layui-quote-nm" style="background:#fff; border-left:4px solid #5a93e8; padding:15px 20px; margin-bottom:20px;">
-                        欢迎使用地震滑坡评估系统！
-                    </blockquote>
-                    <div class="layui-row layui-col-space15">
-                        <div class="layui-col-md4">
-                            <div style="padding:20px; background:#fff; border-radius:4px; box-shadow:0 1px 3px rgba(0,0,0,0.05); border:1px solid #e8f0fe;">
-                                <p>当前用户：<strong>{{ user.nickname }}</strong></p>
-                                <p style="margin-top:8px;">用户名：{{ user.username }}</p>
-                                <p style="margin-top:8px;">部门：{{ user.department }}</p>
-                            </div>
-                        </div>
+    <div class="content-area">
+        <!-- 首页欢迎面板 -->
+        <div class="home-panel active" id="homePanel">
+            <blockquote class="layui-elem-quote layui-quote-nm" style="background:#fff; border-left:4px solid #2b72ef; padding:15px 20px; margin-bottom:20px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+                欢迎使用地震滑坡评估系统！
+            </blockquote>
+            <div class="layui-row layui-col-space15">
+                <div class="layui-col-md4">
+                    <div style="padding:20px; background:#fff; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,0.06); border:1px solid #e8f0fe;">
+                        <p>当前用户：<strong>{{ user.nickname }}</strong></p>
+                        <p style="margin-top:8px;">用户名：{{ user.username }}</p>
+                        <p style="margin-top:8px;">部门：{{ user.department }}</p>
                     </div>
                 </div>
             </div>
         </div>
+        <!-- iframe 内容区 -->
+        <div class="iframe-wrap" id="iframeWrap">
+            <iframe id="mainFrame" src="" frameborder="0"></iframe>
+        </div>
     </div>
+</div>
+
+<!-- 页脚 -->
+<div class="gov-footer">
+    <p>© 2026 版权所有：中国地震灾害防御中心 &nbsp; 技术联系：010-69941228 &nbsp; 158***5400 徐XX</p>
 </div>
 
 <script src="/static/js/jquery-3.6.0.min.js"></script>
 <script src="/static/layui/layui/layui.js"></script>
 <script>
-    layui.use(['element', 'layer'], function () {
-        var element = layui.element;
+    layui.use(['layer'], function () {});
 
-        element.on('tab(bodyTab)', function (data) {
-            console.log('切换到Tab', data.index);
-        });
+    // 加载页面（替换 iframe src，更新面包屑）
+    function loadPage(title, url, parentName) {
+        var $homePanel = $('#homePanel');
+        var $iframeWrap = $('#iframeWrap');
+        var $breadcrumb = $('#breadcrumb');
+        var $frame = $('#mainFrame');
 
-        // 一级菜单点击激活
-        $('.nav-list > li').click(function () {
-            $('.nav-list > li').removeClass('active');
-            $(this).addClass('active');
-        });
+        if (!url) {
+            // 首页
+            $iframeWrap.removeClass('active');
+            $homePanel.addClass('active');
+            $breadcrumb.html('<a href="javascript:loadPage(\'首页\',\'\',\'\')">首页</a>');
+        } else {
+            $homePanel.removeClass('active');
+            $iframeWrap.addClass('active');
+            $frame.attr('src', url);
 
-        // 二级菜单点击：关闭下拉 + 激活父级
-        $('.sub-nav li a').click(function (e) {
-            e.stopPropagation();
-            $('.sub-nav').hide();
-            var parentLi = $(this).closest('.nav-list > li');
-            $('.nav-list > li').removeClass('active');
-            parentLi.addClass('active');
-        });
-
-        // 鼠标离开导航条隐藏下拉
-        $(".gov-nav-box").mouseleave(function () {
-            $(".sub-nav").hide();
-        });
-
-        // 鼠标移入显示下拉
-        $(".nav-list > li").mouseenter(function () {
-            $(this).find(".sub-nav").show();
-        });
-    });
-
-    // 添加 Tab 页
-    function addTab(title, url) {
-        var element = layui.element;
-        var tabId = 'tab_' + new Date().getTime();
-
-        var isActive = false;
-        $('.layui-tab-title li').each(function () {
-            if ($(this).attr('lay-id') !== undefined && $(this).text().indexOf(title) !== -1) {
-                element.tabChange('bodyTab', $(this).attr('lay-id'));
-                isActive = true;
-                return false;
+            // 更新面包屑
+            var html = '<a href="javascript:loadPage(\'首页\',\'\',\'\')">首页</a>';
+            if (parentName) {
+                html += '<span></span><a href="javascript:;">' + parentName + '</a>';
+                html += '<span></span><a><cite>' + title + '</cite></a>';
+            } else {
+                html += '<span></span><a><cite>' + title + '</cite></a>';
             }
-        });
-
-        if (!isActive) {
-            element.tabAdd('bodyTab', {
-                title: title + '<i class="layui-icon layui-icon-close layui-tab-close" onclick="closeTab(\'' + tabId + '\')"></i>',
-                content: '<iframe src="' + url + '" frameborder="0" style="width:100%;height:100%;"></iframe>',
-                id: tabId
-            });
-            element.tabChange('bodyTab', tabId);
+            $breadcrumb.html(html);
         }
     }
 
-    // 关闭 Tab 页
-    function closeTab(tabId) {
-        layui.element.tabDelete('bodyTab', tabId);
-        event.stopPropagation();
-    }
+    // 一级菜单点击激活
+    $('.nav-list > li').click(function () {
+        $('.nav-list > li').removeClass('active');
+        $(this).addClass('active');
+    });
+
+    // 二级菜单点击：关闭下拉 + 激活父级
+    $('.sub-nav li a').click(function (e) {
+        e.stopPropagation();
+        $('.sub-nav').hide();
+        var parentLi = $(this).closest('.nav-list > li');
+        $('.nav-list > li').removeClass('active');
+        parentLi.addClass('active');
+    });
+
+    // 鼠标离开导航条隐藏下拉
+    $(".gov-nav-box").mouseleave(function () {
+        $(".sub-nav").hide();
+    });
+
+    // 鼠标移入显示下拉
+    $(".nav-list > li").mouseenter(function () {
+        $(this).find(".sub-nav").show();
+    });
 
     // 退出登录
     function logout() {

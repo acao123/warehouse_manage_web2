@@ -31,6 +31,9 @@ urlpatterns = [
     
     # 首页
     path('index/', views.index_view, name='index'),
+
+    # 关于本站
+    path('about/', views.about_view, name='about'),
     
     # 用户管理
     path('system/user/list/', views.user_list_view, name='user_list'),
