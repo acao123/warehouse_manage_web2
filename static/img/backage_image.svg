@@ -1,73 +1,77 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
-  <defs>
-    <!-- 全局主渐变背景 -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#e8f2fb"/>
-      <stop offset="100%" stop-color="#d0e4f5"/>
-    </linearGradient>
-    <!-- 地震中心暖光提亮 -->
-<!--    <radialGradient id="quakeCore" cx="50%" cy="45%" r="40%">-->
-<!--      <stop offset="0%" stop-color="#ff7a59" stop-opacity="0.3"/>-->
-<!--      <stop offset="100%" stop-color="#ff7a59" stop-opacity="0"/>-->
-<!--    </radialGradient>-->
-  </defs>
+    <defs>
+        <!-- 全局主渐变背景 -->
+        <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#e8f2fb"/>
+            <stop offset="100%" stop-color="#d0e4f5"/>
+        </linearGradient>
+        <!-- 地震中心暖光提亮 -->
+        <!--    <radialGradient id="quakeCore" cx="50%" cy="45%" r="40%">-->
+        <!--      <stop offset="0%" stop-color="#ff7a59" stop-opacity="0.3"/>-->
+        <!--      <stop offset="100%" stop-color="#ff7a59" stop-opacity="0"/>-->
+        <!--    </radialGradient>-->
+    </defs>
 
-  <!-- 浅色主背景 -->
-  <rect width="1920" height="1080" fill="url(#bgGrad)"/>
+    <!-- 浅色主背景 -->
+    <rect width="1920" height="1080" fill="url(#bgGrad)"/>
 
-  <!-- 地震震源光晕 -->
-  <circle cx="960" cy="480" r="380" fill="url(#quakeCore)"/>
+    <!-- 地震震源光晕 -->
+    <circle cx="960" cy="480" r="380" fill="url(#quakeCore)"/>
 
-  <!-- 多层地震烈度圈（浅色系） -->
-  <circle cx="960" cy="480" r="120" stroke="#ff9470" stroke-width="1.5" fill="none" opacity="0.6"/>
-  <circle cx="960" cy="480" r="220" stroke="#ffb390" stroke-width="1.2" fill="none" opacity="0.5"/>
-  <circle cx="960" cy="480" r="330" stroke="#ffd2b0" stroke-width="1" fill="none" opacity="0.4"/>
+    <!-- 多层地震烈度圈（浅色系） -->
+    <circle cx="960" cy="480" r="120" stroke="#ff9470" stroke-width="1.5" fill="none" opacity="0.6"/>
+    <circle cx="960" cy="480" r="220" stroke="#ffb390" stroke-width="1.2" fill="none" opacity="0.5"/>
+    <circle cx="960" cy="480" r="330" stroke="#ffd2b0" stroke-width="1" fill="none" opacity="0.4"/>
 
-  <!-- 高程地形等高线（提亮浅蓝） -->
-  <path d="M0,720 Q240,680 480,730 T960,710 T1440,740 T1920,700" stroke="#73a8e0" stroke-width="1.2" fill="none" opacity="0.5"/>
-  <path d="M0,780 Q320,750 640,790 T1280,770 T1920,800" stroke="#87b6e8" stroke-width="1" fill="none" opacity="0.45"/>
-  <path d="M0,840 Q400,820 800,850 T1600,830 T1920,860" stroke="#9bc4f0" stroke-width="0.9" fill="none" opacity="0.4"/>
+    <!-- 高程地形等高线（提亮浅蓝） -->
+    <path d="M0,720 Q240,680 480,730 T960,710 T1440,740 T1920,700" stroke="#73a8e0" stroke-width="1.2" fill="none"
+          opacity="0.5"/>
+    <path d="M0,780 Q320,750 640,790 T1280,770 T1920,800" stroke="#87b6e8" stroke-width="1" fill="none" opacity="0.45"/>
+    <path d="M0,840 Q400,820 800,850 T1600,830 T1920,860" stroke="#9bc4f0" stroke-width="0.9" fill="none"
+          opacity="0.4"/>
 
-  <!-- 滑坡轮廓标识 -->
-  <path d="M720,550 Q850,620 980,560 T1200,630" stroke="#e26a38" stroke-width="1.6" fill="none" opacity="0.55"/>
+    <!-- 滑坡轮廓标识 -->
+    <path d="M720,550 Q850,620 980,560 T1200,630" stroke="#e26a38" stroke-width="1.6" fill="none" opacity="0.55"/>
 
-  <!-- 浅色地理科技网格 -->
-  <g stroke="#b0c8e2" stroke-width="0.6" opacity="0.35">
-    <line x1="0" y1="300" x2="1920" y2="300"/>
-    <line x1="0" y1="400" x2="1920" y2="400"/>
-    <line x1="0" y1="500" x2="1920" y2="500"/>
-    <line x1="0" y1="600" x2="1920" y2="600"/>
-    <line x1="0" y1="900" x2="1920" y2="900"/>
-    <line x1="320" y1="0" x2="320" y2="1080"/>
-    <line x1="640" y1="0" x2="640" y2="1080"/>
-    <line x1="960" y1="0" x2="960" y2="1080"/>
-    <line x1="1280" y1="0" x2="1280" y2="1080"/>
-    <line x1="1600" y1="0" x2="1600" y2="1600"/>
-  </g>
+    <!-- 浅色地理科技网格 -->
+    <g stroke="#b0c8e2" stroke-width="0.6" opacity="0.35">
+        <line x1="0" y1="300" x2="1920" y2="300"/>
+        <line x1="0" y1="400" x2="1920" y2="400"/>
+        <line x1="0" y1="500" x2="1920" y2="500"/>
+        <line x1="0" y1="600" x2="1920" y2="600"/>
+        <line x1="0" y1="900" x2="1920" y2="900"/>
+        <line x1="320" y1="0" x2="320" y2="1080"/>
+        <line x1="640" y1="0" x2="640" y2="1080"/>
+        <line x1="960" y1="0" x2="960" y2="1080"/>
+        <line x1="1280" y1="0" x2="1280" y2="1080"/>
+        <line x1="1600" y1="0" x2="1600" y2="1600"/>
+    </g>
 
-  <!-- 右侧：醒目专业公式区 -->
-  <g fill="#204068" font-family="Arial,SimHei,sans-serif"  opacity="0.2">
-    <text x="1380" y="100" font-size="30">a_c = (Fs - 1) × g × sin(α)</text>
-  </g>
+    <!-- 右侧：醒目专业公式区 -->
+    <g fill="#1a3d66" font-family="Arial,SimHei" font-size="28" opacity="0.1">
+        <text x="1160" y="50">Fs = (c'/(γ·t·sinα)) + tanφ'/tanα − (m·γw·tanφ')/(γ·tanα)</text>
+        <text x="1160" y="100">ac = (Fs − 1)g · sinα</text>
+        <text x="1160" y="150">logDn = 1.299 + 1.076logIa − 12.197ac + 5.434ac·logIa</text>
+        <circle cx="150" cy="195" r="5" fill="#f07040"/>
+        <text x="170" y="200" fill="#204068" font-size="16">最大位移</text>
+        <circle cx="1340" cy="595" r="5" fill="#f07040"/>
+        <text x="1360" y="600" fill="#204068" font-size="16">低度危险区面积</text>
+    </g>
 
-  <!-- 高程/地震烈度 折线统计图（已删除背景） -->
-  <g transform="translate(100,410)" opacity="0.2">
-    <!-- X/Y轴线保留淡淡辅助线，不突兀 -->
-    <line x1="30" y1="230" x2="390" y2="230" stroke="#608ab8" stroke-width="1.2" opacity="0.6"/>
-    <line x1="30" y1="20" x2="30" y2="230" stroke="#608ab8" stroke-width="1.2" opacity="0.6"/>
-    <!-- 高程折线（蓝线） -->
-    <path d="M30,200 L80,170 L130,190 L180,140 L230,160 L280,110 L330,130 L380,90"
-          stroke="#2774c2" stroke-width="2.5" fill="none" opacity="0.85"/>
-    <!-- 地震烈度折线（橙线） -->
-    <path d="M30,180 L80,150 L130,130 L180,90 L230,70 L280,50 L330,40 L380,30"
-          stroke="#f07040" stroke-width="2.5" fill="none" opacity="0.85"/>
-    <!-- 图例保留，清晰不抢视觉 -->
-    <circle cx="60" cy="35" r="5" fill="#2774c2"/>
-    <text x="80" y="40" fill="#204068" font-size="16">高程变化</text>
-    <circle cx="180" cy="35" r="5" fill="#f07040"/>
-    <text x="200" y="40" fill="#204068" font-size="16">地震烈度</text>
-  </g>
+    <!-- 高程/地震烈度 折线统计图（已删除背景） -->
+    <g transform="translate(100,410)" opacity="0.1">
+        <!-- X/Y轴线保留淡淡辅助线，不突兀 -->
+        <!-- 高程折线（蓝线） -->
+        <path d="M30,200 L80,170 L130,190 L180,140 L230,160 L280,110 L330,130 L380,90"
+              stroke="#2774c2" stroke-width="2.5" fill="none" opacity="0.85"/>
+        <!-- 地震烈度折线（橙线） -->
+        <path d="M30,180 L80,150 L130,130 L180,90 L230,70 L280,50 L330,40 L380,30"
+              stroke="#f07040" stroke-width="2.5" fill="none" opacity="0.85"/>
+        <!-- 图例保留，清晰不抢视觉 -->
+        <circle cx="180" cy="35" r="5" fill="#f07040"/>
+        <text x="200" y="40" fill="#204068" font-size="16">地震烈度</text>
+    </g>
 
-  <!-- 底部海洋浅纹（浅色通透） -->
-  <path d="M0,920 C480,900 960,930 1440,910 1920,890 1920,1080 0,1080 Z" fill="#b8d4ee" opacity="0.35"/>
+    <!-- 底部海洋浅纹（浅色通透） -->
+    <path d="M0,920 C480,900 960,930 1440,910 1920,890 1920,1080 0,1080 Z" fill="#b8d4ee" opacity="0.35"/>
 </svg>
