@@ -1,6 +1,6 @@
-# 地震滑坡灾害评估系统后台
+# 地震滑坡灾害评估系统后
 
-> Warehouse Management System Backend
+> landslide_evaluation
 
 基于 Django + MySQL + LayUI + JavaScript + HTML + GDAL 的地震滑坡灾害评估系统后台
 

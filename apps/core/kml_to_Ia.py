@@ -27,7 +27,7 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.2）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: Copilot (重构版 v3.2)
+作者: acao (重构版 v3.2)
 日期: 2026-03-31
 版本: 3.2
 QGIS版本: 3.40.15
