@@ -236,7 +236,7 @@
             padding: 10px 20px;
             background: #fff;
             border-radius: 4px;
-            margin: 10px 15px;
+            margin: 12px 30px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.03);
             flex-shrink: 0;
             font-size: 13px;
@@ -247,6 +247,7 @@
             flex: 1;
             display: flex;
             flex-direction: column;
+            padding: 0 30px;
         }
 
         .content-area {
@@ -256,7 +257,7 @@
 
         /* 首页欢迎面板 */
         .home-panel {
-            padding: 20px;
+            padding: 20px 10px;
             background: #f0f2f5;
             display: none;
         }
@@ -284,6 +285,16 @@
 
         /* ===== 翻页右对齐 ===== */
         .layui-laypage { text-align: right; }
+
+        /* ===== layer 弹窗按钮区域始终可见 ===== */
+        .layui-layer-btn {
+            position: sticky !important;
+            bottom: 0;
+            background: #fff;
+            z-index: 1;
+            padding: 10px 15px;
+            border-top: 1px solid #eee;
+        }
 
         /* ===== 页脚 ===== */
         .gov-footer {
