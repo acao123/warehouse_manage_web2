@@ -46,12 +46,12 @@
   </g>
 
   <!-- 右侧：醒目专业公式区 -->
-  <g fill="#204068" font-family="Arial,SimHei,sans-serif" font-weight="bold" opacity="0.8">
+  <g fill="#204068" font-family="Arial,SimHei,sans-serif"  opacity="0.2">
     <text x="1380" y="100" font-size="30">a_c = (Fs - 1) × g × sin(α)</text>
   </g>
 
   <!-- 高程/地震烈度 折线统计图（已删除背景） -->
-  <g transform="translate(1350,110)">
+  <g transform="translate(100,410)" opacity="0.2">
     <!-- X/Y轴线保留淡淡辅助线，不突兀 -->
     <line x1="30" y1="230" x2="390" y2="230" stroke="#608ab8" stroke-width="1.2" opacity="0.6"/>
     <line x1="30" y1="20" x2="30" y2="230" stroke="#608ab8" stroke-width="1.2" opacity="0.6"/>
