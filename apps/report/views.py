@@ -717,6 +717,7 @@ def _record_to_dict(record: ReportTaskRecord) -> dict:
         'img10_path': record.img10_path or '',
         'ia_tif_path': getattr(record, 'ia_tif_path', None) or '',
         'dn_tif_path': getattr(record, 'dn_tif_path', None) or '',
+        'dn_max_value': record.dn_max_value,
         'img11_info': record.img11_info or '',
         'img11_path': record.img11_path or '',
         'img12_info': record.img12_info or '',

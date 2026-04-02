@@ -1,0 +1,23 @@
+<svg width="1200" height="800" viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="mountainGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#4a6fe3;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#86e3ce;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- 地震波形 -->
+  <path d="M 30 220 Q 180 220, 190 220 T 200 220 T 210 180 T 220 120 T 230 180 T 240 220 T 250 180 T 260 120 T 270 180 T 280 220 T 290 180 T 300 80 T 310 180 T 320 220 T 330 180 T 340 100 T 350 180 T 360 220 T 370 180 T 380 140 T 390 180 T 400 220 T 410 180 T 420 200 T 430 180 T 440 140 T 450 180 T 460 220 T 470  "
+        stroke="#4a6fe3" stroke-width="8" fill="none" stroke-linecap="round"/>
+
+  <!-- 波形起点小黑点 -->
+  <circle cx="30" cy="220" r="4" fill="#2c3e50"/>
+
+  <!-- 山体 -->
+  <path d="M 30 800 L 150 680 L 320 470 L 420 510 L 480 310 L 600 350 L 650 310 L 700 430 L 850 330 L 1170 200 L 1170 800 Z"
+        fill="url(#mountainGradient)"/>
+
+  <!-- 山间白色路径 -->
+  <path d="M 190 800 L 350 660 L 480 700 L 550 430 L 700 420 L 850 230"
+        stroke="white" stroke-width="12" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
