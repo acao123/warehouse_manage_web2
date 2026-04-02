@@ -49,7 +49,7 @@
         
         .logo-img2 {
             width: 30%;
-            margin-right: 12px;
+            margin-right: 3px;
         }
 
         .title-box h1 {
@@ -308,15 +308,26 @@
 
         #head-title {
             font-family: "Microsoft YaHei UI", "Microsoft YaHei", "微软雅黑", sans-serif;
-            font-weight: 700; /* 加粗，匹配图片的粗体效果 */
-            font-size: 19px; /* 可根据实际布局调整 */
-            color: #00438c; /* 匹配图片的蓝色主色调 */
-            margin-top: 16px;
-            text-shadow: 0 0.26px #b1d2f6;
-            filter: blur(0.3px);
-            {#0 0 1px #00438c,#}
-            {#0 0 1px #00438c,#}
-            {#0 0 1px #00438c;#}
+            font-weight: 700;
+            color: #003A7A;
+            text-shadow: 0 0.25px #b1d2f6;
+            filter: blur(0.28px);
+            line-height: 1;
+        }
+
+        .cn-text {
+            font-size: 26px; /* 中文大小 */
+            display: block;
+            /*  margin-top: 8px; */
+            letter-spacing: 3px;
+        }
+
+        .en-text {
+            font-size: 8px; /* 英文大小 */
+             /* 英文距离中文的高度（上下间距） */
+            display: block;
+              margin-top: 4px;
+            letter-spacing: 1px;
         }
     </style>
 </head>
@@ -328,7 +339,10 @@
         <img src="/static/img/logo_new.png" class="logo-img1" alt="系统Logo">
         <img src="/static/img/logo_new3.png" class="logo-img2" alt="系统Logo">
         <div class="title-box" id="head-title">
-            地震滑坡评估系统
+            <div class="title-box" id="head-title">
+                <span class="cn-text">地震滑坡评估系统</span>
+                <span class="en-text">LANDSLIDE EVALUATION SYSTEM</span>
+            </div>
         </div>
     </div>
     <div class="user-info-box">
