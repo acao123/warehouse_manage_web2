@@ -226,6 +226,7 @@ def _gen_img1(task: ReportTask, output_dir: str, basemap_path=None, annotation_p
             output_path=out,
             basemap_path=basemap_path,
             annotation_path=annotation_path,
+            earthquake_time = task.ori_time
         )
         logger.info('[任务 %s] 图一生成完成: %s', task.id, out)
         return out, str(info) if info else None
@@ -519,8 +520,8 @@ def _gen_img11(task: ReportTask, output_dir: str, dn_tif_path: str):
         )
         img_info = statistics_summary
         logger.info('[任务 %s] 图十一生成完成: %s, 最大Dn=%s cm, 说明=%s',
-                    task.id, img_path, max_dn_value, img_info)
-        return img_path, str(img_info) if img_info else None, max_dn_value
+                    task.id, out, max_dn_value, img_info)
+        return out, str(img_info) if img_info else None, max_dn_value
     except Exception as exc:
         logger.error('[任务 %s] 图十一生成失败: %s', task.id, exc, exc_info=True)
         return None, None, None
@@ -548,8 +549,8 @@ def _gen_img12(task: ReportTask, output_dir: str, basemap_path=None, annotation_
         if result:
             img_path = result.get('image_path')
             img_info = result.get('stats_message')
-            logger.info('[任务 %s] 图十二生成完成: %s, 说明=%s', task.id, img_path, img_info)
-            return img_path, str(img_info) if img_info else None
+            logger.info('[任务 %s] 图十二生成完成: %s, 说明=%s', task.id, out, img_info)
+            return out, str(img_info) if img_info else None
         else:
             logger.warning('[任务 %s] 图十二生成返回空结果', task.id)
             return None, None
