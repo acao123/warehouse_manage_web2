@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice">
+    <defs>
+        <!-- Light background gradient -->
+        <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%"   stop-color="#e8f2fb"/>
+            <stop offset="100%" stop-color="#d0e4f5"/>
+        </linearGradient>
+        <filter id="glow-blue">
+            <feGaussianBlur stdDeviation="2.5" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+    </defs>
+
+    <!-- Base background -->
+    <rect width="1440" height="900" fill="url(#bgGrad)"/>
+
+    <!-- ── Latitude / Longitude grid ── -->
+    <g stroke="#b0c8e2" stroke-width="0.5" opacity="0.55">
+        <!-- Vertical lines (longitude) -->
+        <line x1="120" y1="0" x2="120" y2="900"/>
+        <line x1="240" y1="0" x2="240" y2="900"/>
+        <line x1="360" y1="0" x2="360" y2="900"/>
+        <line x1="480" y1="0" x2="480" y2="900"/>
+        <line x1="600" y1="0" x2="600" y2="900"/>
+        <line x1="720" y1="0" x2="720" y2="900"/>
+        <line x1="840" y1="0" x2="840" y2="900"/>
+        <line x1="960" y1="0" x2="960" y2="900"/>
+        <line x1="1080" y1="0" x2="1080" y2="900"/>
+        <line x1="1200" y1="0" x2="1200" y2="900"/>
+        <line x1="1320" y1="0" x2="1320" y2="900"/>
+        <!-- Horizontal lines (latitude) -->
+        <line x1="0" y1="90"  x2="1440" y2="90"/>
+        <line x1="0" y1="180" x2="1440" y2="180"/>
+        <line x1="0" y1="270" x2="1440" y2="270"/>
+        <line x1="0" y1="360" x2="1440" y2="360"/>
+        <line x1="0" y1="450" x2="1440" y2="450"/>
+        <line x1="0" y1="540" x2="1440" y2="540"/>
+        <line x1="0" y1="630" x2="1440" y2="630"/>
+        <line x1="0" y1="720" x2="1440" y2="720"/>
+        <line x1="0" y1="810" x2="1440" y2="810"/>
+    </g>
+
+    <!-- ── Grid labels (lon/lat ticks) ── -->
+    <g fill="#5a8ab5" font-size="10" font-family="Courier New" opacity="0.7">
+        <text x="112" y="14">100°E</text>
+        <text x="232" y="14">102°E</text>
+        <text x="352" y="14">104°E</text>
+        <text x="472" y="14">106°E</text>
+        <text x="592" y="14">108°E</text>
+        <text x="712" y="14">110°E</text>
+        <text x="5"   y="94">36°N</text>
+        <text x="5"   y="184">34°N</text>
+        <text x="5"   y="274">32°N</text>
+        <text x="5"   y="364">30°N</text>
+        <text x="5"   y="454">28°N</text>
+    </g>
+
+    <!-- ── Topographic contour lines (stylised, irregular) ── -->
+    <g fill="none" stroke="#7aabb5" stroke-width="0.7" opacity="0.5">
+        <path d="M 0 620 Q 180 590 350 610 Q 520 630 680 605 Q 850 580 1050 600 Q 1200 615 1440 590"/>
+        <path d="M 0 560 Q 200 530 420 545 Q 600 560 780 540 Q 950 520 1150 535 Q 1300 545 1440 530"/>
+        <path d="M 0 490 Q 160 465 340 480 Q 510 495 700 472 Q 880 450 1060 468 Q 1250 485 1440 465"/>
+        <path d="M 0 720 Q 240 695 460 710 Q 660 725 880 700 Q 1080 678 1280 695 Q 1380 703 1440 690"/>
+        <path d="M 0 780 Q 300 755 560 770 Q 760 782 980 758 Q 1160 738 1360 755 Q 1410 759 1440 754"/>
+        <path d="M 100 180 Q 320 155 520 172 Q 720 188 900 165 Q 1100 142 1300 158 Q 1400 166 1440 160"/>
+        <path d="M 0 250 Q 180 228 380 245 Q 580 262 780 238 Q 960 216 1140 232 Q 1320 248 1440 238"/>
+        <path d="M 0 340 Q 200 318 430 335 Q 640 352 860 328 Q 1040 305 1240 322 Q 1380 334 1440 326"/>
+    </g>
+    <!-- Contour labels -->
+    <g fill="#4a7ab5" font-size="9" font-family="Courier New" opacity="0.6">
+        <text x="20"   y="618">1200m</text>
+        <text x="20"   y="558">1500m</text>
+        <text x="20"   y="488">1800m</text>
+        <text x="20"   y="718">900m</text>
+        <text x="20"   y="778">600m</text>
+    </g>
+
+</svg>
