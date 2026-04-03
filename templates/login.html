@@ -13,7 +13,7 @@
         html, body { height: 100%; }
 
         body {
-            background-color: #0a1628;
+            background-color: #f0f2f5;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
@@ -35,7 +35,8 @@
             width: 100%; height: 100%;
             z-index: 1;
             pointer-events: none;
-            opacity: 0.85;
+            opacity: 0.9;
+            object-fit: cover;
         }
 
         /* ─── Page layout ─── */
@@ -57,17 +58,15 @@
             gap: 0;
             border-radius: 20px;
             overflow: hidden;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(43,114,239,0.25);
+            box-shadow: 0 8px 40px rgba(43,114,239,0.12), 0 0 0 1px rgba(43,114,239,0.12);
             max-width: 960px;
             width: 100%;
         }
 
         /* ─── Left info panel ─── */
         .info-panel {
-            background: linear-gradient(160deg, rgba(13,33,55,0.92) 0%, rgba(10,22,40,0.97) 100%);
-            backdrop-filter: blur(18px);
-            -webkit-backdrop-filter: blur(18px);
-            border-right: 1px solid rgba(43,114,239,0.3);
+            background: #ffffff;
+            border-right: 1px solid #e8f0fe;
             padding: 44px 36px;
             width: 380px;
             flex-shrink: 0;
@@ -82,7 +81,7 @@
         .sys-icon {
             width: 64px; height: 64px;
             margin: 0 auto 14px;
-            background: radial-gradient(circle, #1a3a5c 0%, #0a1628 100%);
+            background: radial-gradient(circle, #e8f2fb 0%, #d0e4f5 100%);
             border: 2px solid #2b72ef;
             border-radius: 50%;
             display: flex; align-items: center; justify-content: center;
@@ -91,41 +90,41 @@
         .sys-title {
             font-size: 20px;
             font-weight: 700;
-            color: #e8f4ff;
+            color: #003A7A;
             letter-spacing: 3px;
             line-height: 1.4;
         }
         .sys-subtitle {
             font-size: 12px;
-            color: #5b92c8;
+            color: #666;
             margin-top: 6px;
             letter-spacing: 1px;
         }
 
         /* Formula box */
         .formula-box {
-            background: rgba(43,114,239,0.1);
-            border: 1px solid rgba(43,114,239,0.35);
+            background: #f5f8ff;
+            border: 1px solid #d0e0f8;
             border-radius: 10px;
             padding: 14px 16px;
         }
         .formula-label {
             font-size: 11px;
-            color: #5b92c8;
+            color: #5a8ab5;
             text-transform: uppercase;
             letter-spacing: 1px;
             margin-bottom: 8px;
         }
         .formula-main {
             font-size: 15px;
-            color: #7ec8e3;
+            color: #2b72ef;
             font-family: 'Courier New', monospace;
             letter-spacing: 0.5px;
         }
         .formula-vars {
             margin-top: 8px;
             font-size: 11px;
-            color: #4a7ab5;
+            color: #666;
             line-height: 1.7;
         }
 
@@ -133,7 +132,7 @@
         .hazard-section {}
         .section-title {
             font-size: 11px;
-            color: #5b92c8;
+            color: #5a8ab5;
             text-transform: uppercase;
             letter-spacing: 1px;
             margin-bottom: 10px;
@@ -154,7 +153,7 @@
         }
         .hazard-label {
             font-size: 10px;
-            color: #4a7ab5;
+            color: #666;
             text-align: center;
             flex: 1;
             line-height: 1.3;
@@ -167,12 +166,12 @@
             gap: 8px;
         }
         .tag {
-            background: rgba(43,114,239,0.12);
-            border: 1px solid rgba(43,114,239,0.3);
+            background: #f0f5ff;
+            border: 1px solid #c8dcf8;
             border-radius: 20px;
             padding: 5px 12px;
             font-size: 12px;
-            color: #7ec8e3;
+            color: #2b72ef;
             display: flex;
             align-items: center;
             gap: 5px;
@@ -190,7 +189,7 @@
             align-items: center;
             gap: 5px;
             font-size: 11px;
-            color: #5b92c8;
+            color: #5a8ab5;
         }
         .intensity-dot {
             width: 10px; height: 10px;
@@ -200,9 +199,7 @@
 
         /* ─── Right login panel ─── */
         .login-panel {
-            background: rgba(10,22,40,0.88);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
+            background: #ffffff;
             padding: 50px 48px;
             flex: 1;
             display: flex;
@@ -217,25 +214,25 @@
         .login-heading h2 {
             font-size: 22px;
             font-weight: 700;
-            color: #e8f4ff;
+            color: #003A7A;
             letter-spacing: 2px;
         }
         .login-heading p {
             font-size: 12px;
-            color: #4a7ab5;
+            color: #666;
             margin-top: 6px;
         }
         .login-divider {
             width: 50px; height: 3px;
-            background: linear-gradient(90deg, #2b72ef, #00d4ff);
+            background: linear-gradient(90deg, #2b72ef, #6aaeff);
             border-radius: 2px;
             margin: 10px auto 0;
         }
 
         .error-msg {
-            background: rgba(255, 87, 34, 0.15);
-            border: 1px solid rgba(255, 87, 34, 0.4);
-            color: #ff7043;
+            background: rgba(255, 87, 34, 0.08);
+            border: 1px solid rgba(255, 87, 34, 0.35);
+            color: #d84315;
             font-size: 13px;
             margin-bottom: 18px;
             text-align: center;
@@ -243,7 +240,7 @@
             padding: 8px 12px;
         }
 
-        /* Override layui form styles for dark theme */
+        /* Override layui form styles for light theme */
         .layui-form-label {
             position: relative;
             float: left;
@@ -254,7 +251,7 @@
             line-height: 20px;
             text-align: right;
             font-size: 14px;
-            color: #7ec8e3;
+            color: #333;
         }
         .layui-form-item {
             margin-bottom: 18px;
@@ -262,19 +259,19 @@
         .layui-input-block .layui-input,
         .layui-input {
             height: 44px;
-            background: rgba(43,114,239,0.08) !important;
-            border: 1px solid rgba(43,114,239,0.35) !important;
+            background: #ffffff !important;
+            border: 1px solid #c8dcf8 !important;
             border-radius: 8px !important;
-            color: #c8dff5 !important;
+            color: #333 !important;
             font-size: 14px;
             padding-left: 14px;
         }
-        .layui-input::placeholder { color: #3a5a80 !important; }
+        .layui-input::placeholder { color: #aaa !important; }
         .layui-input:focus {
             border-color: #2b72ef !important;
-            box-shadow: 0 0 0 3px rgba(43,114,239,0.2) !important;
+            box-shadow: 0 0 0 3px rgba(43,114,239,0.12) !important;
             outline: none;
-            background: rgba(43,114,239,0.14) !important;
+            background: #f5f8ff !important;
         }
         .captcha-row {
             display: flex;
@@ -290,7 +287,7 @@
             cursor: pointer;
             height: 44px;
             min-width: 110px;
-            border: 1px solid rgba(43,114,239,0.35);
+            border: 1px solid #c8dcf8;
             border-radius: 8px;
             vertical-align: middle;
             transition: opacity 0.2s;
@@ -304,7 +301,7 @@
             line-height: 44px;
             border: none;
             padding: 0 18px;
-            background: linear-gradient(90deg, #1a56e8, #2b72ef, #00a8cc) !important;
+            background: linear-gradient(90deg, #1a56e8, #2b72ef, #4a9aef) !important;
             color: #fff !important;
             white-space: nowrap;
             text-align: center;
@@ -320,7 +317,7 @@
         }
         .layui-btn:hover {
             opacity: 0.9;
-            box-shadow: 0 4px 20px rgba(43,114,239,0.5);
+            box-shadow: 0 4px 20px rgba(43,114,239,0.35);
         }
 
         /* ─── Footer ─── */
@@ -328,10 +325,7 @@
             position: fixed;
             bottom: 0; left: 0;
             width: 100%;
-            background: rgba(5,12,25,0.82);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border-top: 1px solid rgba(43,114,239,0.18);
+            background: #2a2a2a;
             padding: 8px 20px;
             z-index: 20;
         }
@@ -343,25 +337,12 @@
             max-width: 960px;
             margin: 0 auto;
         }
-        .footer-logo  { width: 4.6%; height: auto; flex-shrink: 0; }
-        .footer-logo2 { width: 22%;  height: auto; flex-shrink: 0; }
+        .footer-logo  { width: 4.6%; height: auto; flex-shrink: 0; background: #ffffff; border-radius: 6px; padding: 4px; }
+        .footer-logo2 { width: 22%;  height: auto; flex-shrink: 0; background: #ffffff; border-radius: 6px; padding: 4px; }
         .footer-text  { font-size: 12px; line-height: 1.7; }
         .footer-text p { margin: 0; text-align: center; }
-        .footer-text .authors   { font-size: 12px; color: #4a7ab5; letter-spacing: 1px; }
-        .footer-text .copyright { font-size: 12px; color: #3a5570; }
-
-        /* ─── Seismic wave animation ─── */
-        @keyframes seismic-ring {
-            0%   { r: 4;  opacity: 0.9; stroke-width: 2.5; }
-            100% { r: 55; opacity: 0;   stroke-width: 0.3; }
-        }
-        .seismic-ring {
-            animation: seismic-ring 3.2s ease-out infinite;
-            fill: none;
-            stroke: #ff2200;
-        }
-        .seismic-ring:nth-child(2) { animation-delay: 1.05s; }
-        .seismic-ring:nth-child(3) { animation-delay: 2.1s; }
+        .footer-text .authors   { font-size: 12px; color: #ccc; letter-spacing: 1px; }
+        .footer-text .copyright { font-size: 12px; color: #aaa; }
 
         /* ─── Particle glow for canvas ─── */
         @keyframes glow-pulse {
@@ -385,231 +366,9 @@
 <canvas id="bg-canvas"></canvas>
 
 <!-- ═══════════════════════════════════════════════════════════════
-     SVG Map overlay: grid, contours, faults, intensity rings, epicenter
+     SVG Map background (external file, light theme)
 ═══════════════════════════════════════════════════════════════ -->
-<svg id="map-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice">
-    <defs>
-        <radialGradient id="bgGrad" cx="50%" cy="50%" r="70%">
-            <stop offset="0%"   stop-color="#0d2137" stop-opacity="1"/>
-            <stop offset="100%" stop-color="#050c19" stop-opacity="1"/>
-        </radialGradient>
-        <!-- Fault line dash pattern -->
-        <pattern id="fault-dash" x="0" y="0" width="16" height="1" patternUnits="userSpaceOnUse">
-            <rect x="0" y="0" width="10" height="1" fill="#c87020" opacity="0.7"/>
-        </pattern>
-        <filter id="glow-red">
-            <feGaussianBlur stdDeviation="3" result="blur"/>
-            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
-        <filter id="glow-blue">
-            <feGaussianBlur stdDeviation="2.5" result="blur"/>
-            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
-    </defs>
-
-    <!-- Base background -->
-    <rect width="1440" height="900" fill="url(#bgGrad)"/>
-
-    <!-- ── Latitude / Longitude grid ── -->
-    <g stroke="#1a4060" stroke-width="0.5" opacity="0.55">
-        <!-- Vertical lines (longitude) -->
-        <line x1="120" y1="0" x2="120" y2="900"/>
-        <line x1="240" y1="0" x2="240" y2="900"/>
-        <line x1="360" y1="0" x2="360" y2="900"/>
-        <line x1="480" y1="0" x2="480" y2="900"/>
-        <line x1="600" y1="0" x2="600" y2="900"/>
-        <line x1="720" y1="0" x2="720" y2="900"/>
-        <line x1="840" y1="0" x2="840" y2="900"/>
-        <line x1="960" y1="0" x2="960" y2="900"/>
-        <line x1="1080" y1="0" x2="1080" y2="900"/>
-        <line x1="1200" y1="0" x2="1200" y2="900"/>
-        <line x1="1320" y1="0" x2="1320" y2="900"/>
-        <!-- Horizontal lines (latitude) -->
-        <line x1="0" y1="90"  x2="1440" y2="90"/>
-        <line x1="0" y1="180" x2="1440" y2="180"/>
-        <line x1="0" y1="270" x2="1440" y2="270"/>
-        <line x1="0" y1="360" x2="1440" y2="360"/>
-        <line x1="0" y1="450" x2="1440" y2="450"/>
-        <line x1="0" y1="540" x2="1440" y2="540"/>
-        <line x1="0" y1="630" x2="1440" y2="630"/>
-        <line x1="0" y1="720" x2="1440" y2="720"/>
-        <line x1="0" y1="810" x2="1440" y2="810"/>
-    </g>
-
-    <!-- ── Grid labels (lon/lat ticks) ── -->
-    <g fill="#1e5575" font-size="10" font-family="Courier New" opacity="0.7">
-        <text x="112" y="14">100°E</text>
-        <text x="232" y="14">102°E</text>
-        <text x="352" y="14">104°E</text>
-        <text x="472" y="14">106°E</text>
-        <text x="592" y="14">108°E</text>
-        <text x="712" y="14">110°E</text>
-        <text x="5"   y="94">36°N</text>
-        <text x="5"   y="184">34°N</text>
-        <text x="5"   y="274">32°N</text>
-        <text x="5"   y="364">30°N</text>
-        <text x="5"   y="454">28°N</text>
-    </g>
-
-    <!-- ── Topographic contour lines (stylised, irregular) ── -->
-    <g fill="none" stroke="#1e5070" stroke-width="0.7" opacity="0.5">
-        <path d="M 0 620 Q 180 590 350 610 Q 520 630 680 605 Q 850 580 1050 600 Q 1200 615 1440 590"/>
-        <path d="M 0 560 Q 200 530 420 545 Q 600 560 780 540 Q 950 520 1150 535 Q 1300 545 1440 530"/>
-        <path d="M 0 490 Q 160 465 340 480 Q 510 495 700 472 Q 880 450 1060 468 Q 1250 485 1440 465"/>
-        <path d="M 0 720 Q 240 695 460 710 Q 660 725 880 700 Q 1080 678 1280 695 Q 1380 703 1440 690"/>
-        <path d="M 0 780 Q 300 755 560 770 Q 760 782 980 758 Q 1160 738 1360 755 Q 1410 759 1440 754"/>
-        <path d="M 100 180 Q 320 155 520 172 Q 720 188 900 165 Q 1100 142 1300 158 Q 1400 166 1440 160"/>
-        <path d="M 0 250 Q 180 228 380 245 Q 580 262 780 238 Q 960 216 1140 232 Q 1320 248 1440 238"/>
-        <path d="M 0 340 Q 200 318 430 335 Q 640 352 860 328 Q 1040 305 1240 322 Q 1380 334 1440 326"/>
-    </g>
-    <!-- Contour labels -->
-    <g fill="#225a70" font-size="9" font-family="Courier New" opacity="0.6">
-        <text x="20"   y="618">1200m</text>
-        <text x="20"   y="558">1500m</text>
-        <text x="20"   y="488">1800m</text>
-        <text x="20"   y="718">900m</text>
-        <text x="20"   y="778">600m</text>
-    </g>
-
-    <!-- ── Fault lines (new Cenozoic faults) ── -->
-    <!-- Fault 1 – Longmenshan Fault (NE–SW, dashed orange) -->
-    <line x1="280" y1="120" x2="820" y2="700"
-          stroke="#d47a18" stroke-width="2.2" stroke-dasharray="14,6,4,6"
-          opacity="0.75" filter="url(#glow-blue)"/>
-    <text x="340" y="108" fill="#c87020" font-size="11" font-family="Microsoft YaHei"
-          opacity="0.8" transform="rotate(-42,340,108)">龙门山断裂带</text>
-
-    <!-- Fault 2 – NW–SE secondary fault -->
-    <line x1="900" y1="80" x2="450" y2="620"
-          stroke="#b86010" stroke-width="1.5" stroke-dasharray="10,5,3,5"
-          opacity="0.55"/>
-
-    <!-- Fault 3 – Xianshuihe fault (roughly E–W) -->
-    <line x1="60" y1="310" x2="750" y2="280"
-          stroke="#c07018" stroke-width="1.8" stroke-dasharray="12,5,4,5"
-          opacity="0.6"/>
-    <text x="68" y="302" fill="#c07018" font-size="10" font-family="Microsoft YaHei" opacity="0.75">鲜水河断裂</text>
-
-    <!-- Fault 4 – minor NE thrust -->
-    <line x1="1050" y1="200" x2="1350" y2="580"
-          stroke="#a05010" stroke-width="1.2" stroke-dasharray="8,4"
-          opacity="0.45"/>
-
-    <!-- Fault label marker legend -->
-    <line x1="1260" y1="830" x2="1340" y2="830"
-          stroke="#d47a18" stroke-width="2" stroke-dasharray="10,4,3,4" opacity="0.7"/>
-    <text x="1345" y="834" fill="#c07018" font-size="10" font-family="Microsoft YaHei" opacity="0.7">断裂带</text>
-
-    <!-- ── Province / admin boundary (simplified) ── -->
-    <g fill="none" stroke="#1e6080" stroke-width="1.2" opacity="0.45">
-        <path d="M 200 80 L 220 200 L 160 280 L 200 380 L 280 440 L 260 560 L 320 640 L 420 680 L 500 820"/>
-        <path d="M 600 60 L 620 180 L 700 260 L 680 380 L 740 460 L 700 600 L 760 720 L 820 840"/>
-        <path d="M 100 420 L 250 400 L 400 430 L 580 410 L 720 440 L 900 415 L 1060 435 L 1220 410 L 1380 430"/>
-    </g>
-
-    <!-- ── Intensity circles (concentric ellipses, epicenter right-side visible) ── -->
-    <!-- Epicenter at (1295, 390) – visible in the right margin outside the page card -->
-    <!-- Ⅵ  – outermost, large arc bleeds off screen to the right -->
-    <ellipse cx="1295" cy="390" rx="210" ry="162"
-             fill="none" stroke="#00c8ff" stroke-width="1.3"
-             stroke-dasharray="8,3" opacity="0.5"/>
-    <text x="1180" y="395" fill="#00c8ff" font-size="13"
-          font-family="Times New Roman,serif" opacity="0.8">Ⅵ</text>
-
-    <!-- Ⅶ -->
-    <ellipse cx="1295" cy="390" rx="160" ry="122"
-             fill="none" stroke="#38d8a0" stroke-width="1.4"
-             stroke-dasharray="8,3" opacity="0.55"/>
-    <text x="1222" y="396" fill="#38d8a0" font-size="13"
-          font-family="Times New Roman,serif" opacity="0.85">Ⅶ</text>
-
-    <!-- Ⅷ -->
-    <ellipse cx="1295" cy="390" rx="116" ry="88"
-             fill="none" stroke="#ffe033" stroke-width="1.6"
-             stroke-dasharray="7,3" opacity="0.6"/>
-    <text x="1262" y="396" fill="#ffe033" font-size="13"
-          font-family="Times New Roman,serif" opacity="0.88">Ⅷ</text>
-
-    <!-- Ⅸ -->
-    <ellipse cx="1295" cy="390" rx="74" ry="56"
-             fill="none" stroke="#ff8c00" stroke-width="1.8"
-             stroke-dasharray="6,3" opacity="0.7"/>
-    <text x="1304" y="450" fill="#ff8c00" font-size="13" text-anchor="middle"
-          font-family="Times New Roman,serif" opacity="0.92">Ⅸ</text>
-
-    <!-- Ⅹ -->
-    <ellipse cx="1295" cy="390" rx="42" ry="32"
-             fill="none" stroke="#ff4400" stroke-width="2"
-             stroke-dasharray="5,2.5" opacity="0.78"/>
-    <text x="1304" y="426" fill="#ff4400" font-size="13" text-anchor="middle"
-          font-family="Times New Roman,serif" opacity="0.94">Ⅹ</text>
-
-    <!-- Ⅺ -->
-    <ellipse cx="1295" cy="390" rx="20" ry="15"
-             fill="none" stroke="#ff2200" stroke-width="2.2"
-             stroke-dasharray="4,2" opacity="0.88"/>
-
-    <!-- ── Seismic wave expanding rings (animated) ── -->
-    <circle cx="1295" cy="390" class="seismic-ring" r="4" stroke="#ff2200" stroke-width="2.5"/>
-    <circle cx="1295" cy="390" class="seismic-ring" r="4" stroke="#ff4400" stroke-width="2.5"/>
-    <circle cx="1295" cy="390" class="seismic-ring" r="4" stroke="#ff6600" stroke-width="2.5"/>
-
-    <!-- ── Epicenter five-pointed star ── -->
-    <g filter="url(#glow-red)" transform="translate(1295,390)">
-        <!-- Red 5-point star, size ~18px -->
-        <polygon
-            points="0,-18 4.2,-5.8 17.1,-5.6 6.9,2.2 10.5,15.3 0,8 -10.5,15.3 -6.9,2.2 -17.1,-5.6 -4.2,-5.8"
-            fill="#ff1100" stroke="#ffffff" stroke-width="1.2" opacity="0.95"/>
-    </g>
-    <!-- Epicenter label -->
-    <text x="1295" y="368" fill="#ff9980" font-size="11" text-anchor="middle"
-          font-family="Microsoft YaHei" opacity="0.88">震中</text>
-
-    <!-- ── Ghost intensity circles visible behind the card (large background rings) ── -->
-    <!-- These faint rings span the full map and show depth even through the card -->
-    <ellipse cx="720" cy="450" rx="380" ry="290"
-             fill="none" stroke="#00c8ff" stroke-width="0.6"
-             stroke-dasharray="10,5" opacity="0.12"/>
-    <ellipse cx="720" cy="450" rx="280" ry="215"
-             fill="none" stroke="#38d8a0" stroke-width="0.6"
-             stroke-dasharray="9,5" opacity="0.12"/>
-    <ellipse cx="720" cy="450" rx="190" ry="145"
-             fill="none" stroke="#ffe033" stroke-width="0.6"
-             stroke-dasharray="8,4" opacity="0.12"/>
-
-    <!-- ── North arrow ── -->
-    <g transform="translate(1380,60)">
-        <circle r="22" fill="rgba(10,22,40,0.7)" stroke="#1e5070" stroke-width="1"/>
-        <polygon points="0,-16 5,6 0,2 -5,6" fill="#e8f4ff" opacity="0.9"/>
-        <polygon points="0,16 5,-6 0,-2 -5,-6" fill="#3a5a80" opacity="0.6"/>
-        <text y="-22" text-anchor="middle" fill="#7ec8e3" font-size="12" font-family="serif">N</text>
-    </g>
-
-    <!-- ── Scale bar ── -->
-    <g transform="translate(1220,856)">
-        <rect x="0" y="0" width="160" height="8" fill="none" stroke="#1e5070" stroke-width="1"/>
-        <rect x="0" y="0" width="40"  height="8" fill="#1e5070" opacity="0.7"/>
-        <rect x="80" y="0" width="40" height="8" fill="#1e5070" opacity="0.7"/>
-        <text x="0"   y="20" fill="#2a6080" font-size="9" text-anchor="middle" font-family="Courier New">0</text>
-        <text x="80"  y="20" fill="#2a6080" font-size="9" text-anchor="middle" font-family="Courier New">50</text>
-        <text x="160" y="20" fill="#2a6080" font-size="9" text-anchor="middle" font-family="Courier New">100km</text>
-    </g>
-
-    <!-- ── DEM / elevation colour hint strip (top-left) ── -->
-    <defs>
-        <linearGradient id="demGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%"   stop-color="#0d4f2a"/>
-            <stop offset="25%"  stop-color="#3a7a20"/>
-            <stop offset="50%"  stop-color="#b0a030"/>
-            <stop offset="75%"  stop-color="#8b5a20"/>
-            <stop offset="100%" stop-color="#c8c8c8"/>
-        </linearGradient>
-    </defs>
-    <text x="20" y="34" fill="#3a7ab0" font-size="10" font-family="Microsoft YaHei" opacity="0.6">DEM高程</text>
-    <rect x="20" y="40" width="140" height="10" fill="url(#demGrad)" rx="3" opacity="0.5"/>
-    <text x="20"  y="62" fill="#2a5070" font-size="9" font-family="Courier New" opacity="0.6">0m</text>
-    <text x="150" y="62" fill="#2a5070" font-size="9" font-family="Courier New" opacity="0.6">5000m</text>
-</svg>
+<img id="map-svg" src="/static/img/login_bg_map.svg" alt="Geographic map background with coordinate grid">
 
 <!-- ═══════════════════════════════════════════════════════════════
      Main content
@@ -712,7 +471,9 @@
                     </div>
                 </div>
                 <div class="layui-form-item" style="margin-top:28px;">
-                    <button class="layui-btn" lay-submit lay-filter="loginSubmit">登 录</button>
+                    <div class="layui-input-block">
+                        <button class="layui-btn" lay-submit lay-filter="loginSubmit">登 录</button>
+                    </div>
                 </div>
             </form>
         </div>
@@ -765,7 +526,7 @@
                 r:  Math.random() * 1.4 + 0.3,
                 vx: (Math.random() - 0.5) * 0.25,
                 vy: (Math.random() - 0.5) * 0.25,
-                alpha: Math.random() * 0.5 + 0.1
+                alpha: Math.random() * 0.25 + 0.05
             };
         }
         for (var i = 0; i < PARTICLE_COUNT; i++) { particles.push(randomParticle()); }
@@ -775,7 +536,7 @@
             particles.forEach(function (p) {
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(43,180,239,' + p.alpha + ')';
+                ctx.fillStyle = 'rgba(43,114,239,' + p.alpha + ')';
                 ctx.fill();
 
                 p.x += p.vx;
@@ -796,7 +557,7 @@
                         ctx.beginPath();
                         ctx.moveTo(particles[a].x, particles[a].y);
                         ctx.lineTo(particles[b].x, particles[b].y);
-                        ctx.strokeStyle = 'rgba(43,114,239,' + (0.12 * (1 - dist / 100)) + ')';
+                        ctx.strokeStyle = 'rgba(43,114,239,' + (0.06 * (1 - dist / 100)) + ')';
                         ctx.lineWidth = 0.5;
                         ctx.stroke();
                     }
