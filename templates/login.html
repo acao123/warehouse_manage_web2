@@ -337,8 +337,8 @@
             max-width: 960px;
             margin: 0 auto;
         }
-        .footer-logo  { width: 4.6%; height: auto; flex-shrink: 0; }
-        .footer-logo2 { width: 22%;  height: auto; flex-shrink: 0; }
+        .footer-logo  { width: 4.6%; height: auto; flex-shrink: 0; background: #ffffff; border-radius: 6px; padding: 4px; }
+        .footer-logo2 { width: 22%;  height: auto; flex-shrink: 0; background: #ffffff; border-radius: 6px; padding: 4px; }
         .footer-text  { font-size: 12px; line-height: 1.7; }
         .footer-text p { margin: 0; text-align: center; }
         .footer-text .authors   { font-size: 12px; color: #ccc; letter-spacing: 1px; }
@@ -471,7 +471,9 @@
                     </div>
                 </div>
                 <div class="layui-form-item" style="margin-top:28px;">
-                    <button class="layui-btn" lay-submit lay-filter="loginSubmit">登 录</button>
+                    <div class="layui-input-block">
+                        <button class="layui-btn" lay-submit lay-filter="loginSubmit">登 录</button>
+                    </div>
                 </div>
             </form>
         </div>
