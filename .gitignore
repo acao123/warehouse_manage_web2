@@ -52,3 +52,4 @@ htmlcov/
 .env
 .venv
 test_system.py
+logs/
