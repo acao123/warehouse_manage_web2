@@ -309,25 +309,25 @@
         #head-title {
             font-family: "Microsoft YaHei UI", "Microsoft YaHei", "微软雅黑", sans-serif;
             font-weight: 700;
-            color: #1a4fa0;
-            text-shadow: 1px 1px 2px rgba(0, 58, 122, 0.08);
-            line-height: 1.15;
-            margin-left: 8px;
+            color: #003A7A;
+            text-shadow: 0 0.25px #b1d2f6;
+            filter: blur(0.28px);
+            line-height: 1;
         }
 
         .cn-text {
-            font-size: 28px;
+            font-size: 26px; /* 中文大小 */
             display: block;
-            letter-spacing: 5px;
+            /*  margin-top: 8px; */
+            letter-spacing: 3px;
         }
 
         .en-text {
-            font-size: 11px;
+            font-size: 8px; /* 英文大小 */
+             /* 英文距离中文的高度（上下间距） */
             display: block;
-            margin-top: 5px;
-            letter-spacing: 2px;
-            color: #3d7bd9;
-            font-weight: 400;
+              margin-top: 4px;
+            letter-spacing: 1px;
         }
     </style>
 </head>
@@ -339,8 +339,10 @@
         <img src="/static/img/logo_new.png" class="logo-img1" alt="系统Logo">
         <img src="/static/img/logo_new3.png" class="logo-img2" alt="系统Logo">
         <div class="title-box" id="head-title">
-            <span class="cn-text">地震滑坡评估</span>
-            <span class="en-text">LANDSLIDE EVALUATION SYSTEM</span>
+            <div class="title-box" id="head-title">
+                <span class="cn-text">地震滑坡评估</span>
+                <span class="en-text">LANDSLIDE EVALUATION SYSTEM</span>
+            </div>
         </div>
     </div>
     <div class="user-info-box">
