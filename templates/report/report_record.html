@@ -42,7 +42,7 @@
                 <div class="layui-input-inline" style="width:130px;">
                     <input type="text" id="startDate" class="layui-input" placeholder="开始日期" readonly>
                 </div>
-                <div class="layui-form-mid">至</div>
+                <span style="line-height:38px;margin:0 4px;">至</span>
                 <div class="layui-input-inline" style="width:130px;">
                     <input type="text" id="endDate" class="layui-input" placeholder="结束日期" readonly>
                 </div>
@@ -84,7 +84,6 @@
             limit: 10,
             limits: [10, 20, 50],
             cols: [[
-                { field: 'id', title: 'ID', width: 60, fixed: 'left' },
                 { field: 'task_id', title: '任务ID', width: 80 },
                 {
                     field: 'img1_path', title: '图一', width: 80,

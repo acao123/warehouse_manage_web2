@@ -13,7 +13,7 @@ from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 
-from apps.system.models import User
+from system.models import User
 from .models import ReportTask, ReportTaskRecord
 
 # 获取日志记录器
