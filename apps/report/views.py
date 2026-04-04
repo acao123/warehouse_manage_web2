@@ -13,6 +13,7 @@ from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 
+from apps.system.models import User
 from .models import ReportTask, ReportTaskRecord
 
 # 获取日志记录器
@@ -560,7 +561,9 @@ def all_report_list_view(request):
     end = start + limit
     task_list = queryset[start:end]
 
-    data = [_task_to_dict(t) for t in task_list]
+    user_ids = [t.user_id for t in task_list]
+    user_map = {u.id: u.nickname for u in User.objects.filter(id__in=user_ids)}
+    data = [_task_to_dict(t, user_map) for t in task_list]
     logger.debug('查询所有任务列表，共 %s 条', total)
 
     return JsonResponse({'code': 0, 'msg': '成功', 'count': total, 'data': data})
@@ -661,15 +664,25 @@ def _apply_common_filters(queryset, address_keyword: str, start_date: str, end_d
     return queryset
 
 
-def _task_to_dict(task: ReportTask) -> dict:
+def _task_to_dict(task: ReportTask, user_map: dict = None) -> dict:
     """
     将 ReportTask 对象转换为字典（用于 JSON 序列化）
     :param task: ReportTask 模型实例
+    :param user_map: 可选的用户ID到昵称映射字典，用于批量查询场景
     :return: 字典格式的任务数据
     """
+    if user_map is not None:
+        nickname = user_map.get(task.user_id, '未知用户')
+    else:
+        try:
+            user = User.objects.get(id=task.user_id)
+            nickname = user.nickname
+        except User.DoesNotExist:
+            nickname = '未知用户'
     return {
         'id': task.id,
         'user_id': task.user_id,
+        'nickname': nickname,
         'longitude': str(task.longitude),
         'latitude': str(task.latitude),
         'magnitude': task.magnitude,
