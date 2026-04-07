@@ -1498,6 +1498,12 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     """
     创建QGIS打印布局
 
+    布局约束：
+        - 主图区高度 = 图例区高度 = MAP_HEIGHT_MM = 100mm，两者上下边框对齐
+        - 输出总高度 = BORDER_TOP_MM(8) + map_height_mm(100) + BORDER_BOTTOM_MM(2) = 110mm
+        - 输出总宽度 = BORDER_LEFT_MM(4) + map_width_mm + LEGEND_WIDTH_MM(50) + BORDER_RIGHT_MM(1)
+          ，不超过 MAP_TOTAL_MAX_WIDTH_MM = 170mm
+
     参数:
         project (QgsProject): QGIS项目实例
         extent (QgsRectangle): 地图范围
@@ -1513,6 +1519,8 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     """
     if map_width_mm is None:
         map_width_mm = MAP_MAX_WIDTH_MM
+    # 确保地图宽度不超过最大限制，以保证输出总宽度不超过 MAP_TOTAL_MAX_WIDTH_MM（170mm）
+    map_width_mm = min(map_width_mm, MAP_MAX_WIDTH_MM)
 
     layout = QgsPrintLayout(project)
     layout.initializeDefaults()
@@ -1521,7 +1529,7 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
 
     # 计算输出总高度：上边距 + 地图高度 + 下边距
     output_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
-    # 计算输出总宽度：左边距 + 地图宽度 + 图例宽度 + 右边距
+    # 计算输出总宽度：左边距 + 地图宽度 + 图例宽度 + 右边距（不超过 MAP_TOTAL_MAX_WIDTH_MM）
     output_width_mm = BORDER_LEFT_MM + map_width_mm + LEGEND_WIDTH_MM + BORDER_RIGHT_MM
 
     page = layout.pageCollection().page(0)
@@ -1633,18 +1641,21 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     """
     添加图例（位于右侧独立区域，与地图等高）
     - 图例左边框紧接底图右边框
-    - 图例上下与底图对齐
-    - 包含：基本项两列、断裂线单列（可选）、烈度标题、烈度三列、底部比例尺
+    - 图例上下与底图对齐（top = BORDER_TOP_MM，高度 = map_height_mm = MAP_HEIGHT_MM = 100mm）
+    - 包含：说明文字区（上部，高度受限）、分隔线、图例标题、基本项两列、
+      断裂线单列（可选）、烈度标题、烈度四列、底部比例尺
+    - 所有内容（说明文字区 + 分隔线 + 图例标题 + 图例项 + 比例尺）严格布局在
+      legend_height（= map_height_mm = 100mm）范围内
 
     参数:
         layout (QgsPrintLayout): 打印布局
-        map_height_mm (float): 底图高度（毫米）
+        map_height_mm (float): 底图高度（毫米），即图例区高度 = MAP_HEIGHT_MM = 100mm
         has_faults (bool): 是否包含断裂线图例
         scale (int): 比例尺分母（用于绘制比例尺）
         extent (QgsRectangle): 地图范围（用于计算比例尺）
         center_lat (float): 地图中心纬度（用于计算比例尺）
         intensity_data (dict): 烈度圈数据 {烈度值: [(lon, lat), ...]}
-        description_text (str): 说明文字，显示在比例尺上方
+        description_text (str): 说明文字，显示在图例区上部
         map_width_mm (float): 地图内容区宽度（毫米），用于定位图例和计算比例尺
     """
     if map_width_mm is None:
@@ -1678,6 +1689,27 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     # 说明文字区高度（默认25mm，有说明文字时按实际行数动态计算）
     INFO_TEXT_AREA_HEIGHT_MM = 25.0
 
+    # ── 预计算图例项（不含说明文字区）所需的最小高度，用于限制说明文字区高度 ──
+    # 布局结构：说明文字区 → 分隔线 → 图例标题(7mm) → 基本项 → 断裂线(可选) →
+    #           烈度标题(5mm，若有烈度数据) → 烈度项 → 比例尺(从底部向上留13mm，若有)
+    _basic_rows = 2  # 4个基本项，2列布局
+    _fault_rows = 3 if has_faults else 0
+    _n_intensity = min(len(intensity_data), MAX_INTENSITY_LEGEND_ITEMS) if intensity_data else 0
+    _int_rows = (_n_intensity + 3) // 4 if _n_intensity > 0 else 0
+    _intensity_title_h = 5.0 if _n_intensity > 0 else 0.0
+    _scale_bar_reserved = (9.0 + 4.0) if (scale is not None and extent is not None and center_lat is not None) else 0.0
+    _legend_items_min_height = (
+        BORDER_WIDTH_MM                              # 分隔线
+        + 7.0                                        # 图例标题区（1mm上边距+5mm标题+1mm间距）
+        + _basic_rows * LEGEND_ROW_HEIGHT_MM         # 基本项
+        + _fault_rows * LEGEND_ROW_HEIGHT_MM         # 断裂线项
+        + _intensity_title_h                         # 烈度标题
+        + _int_rows * LEGEND_ROW_HEIGHT_MM           # 烈度项
+        + _scale_bar_reserved                        # 比例尺（从底部向上保留）
+    )
+    # 说明文字区高度上限：确保剩余空间足够放置图例项和比例尺
+    _max_info_text_height = legend_height - _legend_items_min_height
+
     # 图例背景矩形（白色实心，与地图等高）
     legend_bg = QgsLayoutItemShape(layout)
     legend_bg.setShapeType(QgsLayoutItemShape.Rectangle)
@@ -1694,7 +1726,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
     layout.addLayoutItem(legend_bg)
 
-    # ── 上部：说明文字区（固定65mm高，位于图例区顶部）──
+    # ── 上部：说明文字区（位于图例区顶部，高度受 _max_info_text_height 限制）──
     if description_text:
         # 计算可用宽度（减去左右边距各2mm，再减去右边框1mm间距）
         available_width_mm = legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2
@@ -1708,6 +1740,8 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.4
         num_lines = len(indented_text.split('\n'))
         INFO_TEXT_AREA_HEIGHT_MM = DESCRIPTION_TOP_MARGIN_MM + num_lines * line_height_mm + 3.0  # 3mm 底部内边距
+        # 限制说明文字区高度，确保图例项和比例尺能在 legend_height 范围内完整显示
+        INFO_TEXT_AREA_HEIGHT_MM = min(INFO_TEXT_AREA_HEIGHT_MM, _max_info_text_height)
 
         # 创建说明文字格式（SimSun字体）
         desc_format = QgsTextFormat()
@@ -1723,7 +1757,8 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         desc_label.attemptMove(QgsLayoutPoint(legend_x + DESCRIPTION_HORIZONTAL_MARGIN_MM,
                                               legend_y + DESCRIPTION_TOP_MARGIN_MM,
                                               QgsUnitTypes.LayoutMillimeters))
-        desc_label.attemptResize(QgsLayoutSize(legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2,  # -1.0mm 右侧安全间距
+        # 说明文字标签高度随 INFO_TEXT_AREA_HEIGHT_MM 调整（截断时也不超出分配区域）
+        desc_label.attemptResize(QgsLayoutSize(legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2,
                                                INFO_TEXT_AREA_HEIGHT_MM - DESCRIPTION_TOP_MARGIN_MM + 2.0,  # +2.0mm 确保最后一行完整显示
                                                QgsUnitTypes.LayoutMillimeters))
         desc_label.setHAlign(Qt.AlignLeft)
