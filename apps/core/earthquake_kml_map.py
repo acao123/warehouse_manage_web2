@@ -97,7 +97,7 @@ TIANDITU_TK = (
 # 布局尺寸常量（参考 earthquake_map.py）
 # ============================================================
 # 输出图总宽度上限（毫米）
-MAP_TOTAL_MAX_WIDTH_MM = 220.0
+MAP_TOTAL_MAX_WIDTH_MM = 170.0
 # 左边距（毫米）
 BORDER_LEFT_MM = 4.0
 # 上边距（毫米）
