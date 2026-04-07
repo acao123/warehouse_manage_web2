@@ -1804,22 +1804,22 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     int_title_label.setText("地震烈度")
     int_title_label.setTextFormat(int_title_format)
     int_title_label.attemptMove(QgsLayoutPoint(legend_x, current_y, QgsUnitTypes.LayoutMillimeters))
-    int_title_label.attemptResize(QgsLayoutSize(legend_width, LEGEND_ROW_HEIGHT_MM,
+    int_title_label.attemptResize(QgsLayoutSize(legend_width, 5,
                                                 QgsUnitTypes.LayoutMillimeters))
     int_title_label.setHAlign(Qt.AlignHCenter)
     int_title_label.setVAlign(Qt.AlignVCenter)
     int_title_label.setFrameEnabled(False)
     int_title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(int_title_label)
-    current_y += LEGEND_ROW_HEIGHT_MM
+    current_y += 5
 
-    # ── 4. 烈度图例项（三列布局，罗马数字+度，最多 MAX_INTENSITY_LEGEND_ITEMS 个）──
+    # ── 4. 烈度图例项（三列布局，罗马数字，最多 MAX_INTENSITY_LEGEND_ITEMS 个）──
     if intensity_data:
         sorted_intensities = sorted(intensity_data.keys(), reverse=True)
         if len(sorted_intensities) > MAX_INTENSITY_LEGEND_ITEMS:
             sorted_intensities = sorted_intensities[:MAX_INTENSITY_LEGEND_ITEMS]
 
-        int_col_count = 3
+        int_col_count = 4
         int_col_width = (legend_width - 2 * LEGEND_PADDING_MM) / int_col_count
         int_icon_width = 4.0
         int_icon_text_gap = 1.0
@@ -1857,18 +1857,18 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
             layout.addLayoutItem(num_lbl)
 
             # "度"字（SimSun）
-            cn_lbl = QgsLayoutItemLabel(layout)
-            cn_lbl.setText("度")
-            cn_lbl.setTextFormat(item_format_cn)
-            cn_lbl.attemptMove(QgsLayoutPoint(text_start_x + roman_width, item_y,
-                                              QgsUnitTypes.LayoutMillimeters))
-            cn_lbl.attemptResize(QgsLayoutSize(max(du_width, 4.0), LEGEND_ROW_HEIGHT_MM,
-                                               QgsUnitTypes.LayoutMillimeters))
-            cn_lbl.setHAlign(Qt.AlignLeft)
-            cn_lbl.setVAlign(Qt.AlignVCenter)
-            cn_lbl.setFrameEnabled(False)
-            cn_lbl.setBackgroundEnabled(False)
-            layout.addLayoutItem(cn_lbl)
+            # cn_lbl = QgsLayoutItemLabel(layout)
+            # cn_lbl.setText("度")
+            # cn_lbl.setTextFormat(item_format_cn)
+            # cn_lbl.attemptMove(QgsLayoutPoint(text_start_x + roman_width, item_y,
+            #                                   QgsUnitTypes.LayoutMillimeters))
+            # cn_lbl.attemptResize(QgsLayoutSize(max(du_width, 4.0), LEGEND_ROW_HEIGHT_MM,
+            #                                    QgsUnitTypes.LayoutMillimeters))
+            # cn_lbl.setHAlign(Qt.AlignLeft)
+            # cn_lbl.setVAlign(Qt.AlignVCenter)
+            # cn_lbl.setFrameEnabled(False)
+            # cn_lbl.setBackgroundEnabled(False)
+            # layout.addLayoutItem(cn_lbl)
 
         current_y += int_rows * LEGEND_ROW_HEIGHT_MM
 
@@ -1892,7 +1892,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         num_segments = 4
 
         std_bar_width = bar_length_mm + 16.0
-        std_bar_height = 14.0
+        std_bar_height = 9.0
 
         # 图例区可用宽度（左右各留 2mm）
         avail_width = legend_width - 4.0
