@@ -1521,6 +1521,8 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
         map_width_mm = MAP_MAX_WIDTH_MM
     # 确保地图宽度不超过最大限制，以保证输出总宽度不超过 MAP_TOTAL_MAX_WIDTH_MM（170mm）
     map_width_mm = min(map_width_mm, MAP_MAX_WIDTH_MM)
+    # 强制地图高度始终等于 MAP_HEIGHT_MM（100mm），确保与图例区高度对齐
+    map_height_mm = MAP_HEIGHT_MM
 
     layout = QgsPrintLayout(project)
     layout.initializeDefaults()
@@ -2309,7 +2311,9 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
     scale_denom = get_scale_by_magnitude(magnitude)
     print(f"  震级: M{magnitude}, 比例尺(震级估算): 1:{scale_denom:,}")
 
-    map_width_mm, map_height_mm = calculate_map_dimensions_from_extent(extent)
+    map_width_mm, _ = calculate_map_dimensions_from_extent(extent)
+    # 强制地图高度始终等于 MAP_HEIGHT_MM（100mm），与图例区高度保持一致
+    map_height_mm = MAP_HEIGHT_MM
     # 调整 extent 使其宽高比与 map_item 的 mm 尺寸严格一致，
     # 避免 QGIS 自动扩展 extent 导致实际渲染高度偏离 map_height_mm
     extent = adjust_extent_to_match_aspect_ratio(extent, map_width_mm, map_height_mm)
