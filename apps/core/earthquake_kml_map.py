@@ -1453,7 +1453,6 @@ def adjust_extent_to_match_aspect_ratio(extent, map_width_mm, map_height_mm):
     current_aspect = (lon_range * cos_lat) / lat_range if lat_range > 0 else target_aspect
 
     center_lon = (extent.xMaximum() + extent.xMinimum()) / 2.0
-    center_lat_val = (extent.yMaximum() + extent.yMinimum()) / 2.0
 
     if current_aspect < target_aspect:
         # 经度范围不够宽，需要扩展经度
@@ -1466,15 +1465,15 @@ def adjust_extent_to_match_aspect_ratio(extent, map_width_mm, map_height_mm):
 
     return QgsRectangle(
         center_lon - new_lon_range / 2.0,
-        center_lat_val - new_lat_range / 2.0,
+        center_lat - new_lat_range / 2.0,
         center_lon + new_lon_range / 2.0,
-        center_lat_val + new_lat_range / 2.0
+        center_lat + new_lat_range / 2.0
     )
 
 
 def round_scale_denominator(raw_scale):
     """
-    将比例尺分母圆整为前两位有效数字，其余补0。
+    将比例尺分母圆整为前两位有效数字，其余补0（标准四舍五入）。
     例如：
         1234567 -> 1200000
         987654  -> 990000
@@ -1484,11 +1483,12 @@ def round_scale_denominator(raw_scale):
     """
     if raw_scale <= 0:
         return 1
-    digits = len(str(int(raw_scale)))
+    int_scale = int(raw_scale)
+    digits = len(str(int_scale))
     if digits <= 2:
-        return int(raw_scale)
+        return int_scale
     factor = 10 ** (digits - 2)
-    return int(round(raw_scale / factor) * factor)
+    return (int_scale + factor // 2) // factor * factor
 
 
 def create_print_layout(project, extent, scale, map_height_mm, description_text,
