@@ -1722,8 +1722,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         'outline_width_unit': 'MM',
     })
     legend_bg.setSymbol(legend_bg_symbol)
-    legend_bg.setFrameEnabled(True)
-    legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+    legend_bg.setFrameEnabled(False)
     layout.addLayoutItem(legend_bg)
 
     # ── 上部：说明文字区（位于图例区顶部，高度受 _max_info_text_height 限制）──
