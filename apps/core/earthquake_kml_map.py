@@ -96,8 +96,8 @@ TIANDITU_TK = (
 # ============================================================
 # 布局尺寸常量（参考 earthquake_map.py）
 # ============================================================
-# 输出图总宽度（毫米）
-MAP_TOTAL_WIDTH_MM = 220.0
+# 输出图总宽度上限（毫米）
+MAP_TOTAL_MAX_WIDTH_MM = 220.0
 # 左边距（毫米）
 BORDER_LEFT_MM = 4.0
 # 上边距（毫米）
@@ -108,8 +108,10 @@ BORDER_BOTTOM_MM = 2.0
 BORDER_RIGHT_MM = 1.0
 # 图例区宽度（毫米），图例位于右侧独立区域
 LEGEND_WIDTH_MM = 50.0
-# 地图内容宽度（右侧为独立图例区域，不与底图重叠）
-MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
+# 固定地图内容区高度（毫米）
+MAP_HEIGHT_MM = 100.0
+# 地图内容区最大宽度（总宽上限减去左右边距和图例区）
+MAP_MAX_WIDTH_MM = MAP_TOTAL_MAX_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
 # 行间距倍数（保留供其他模块参考，说明文字不使用）
 LINE_SPACING_FACTOR = 1.5
 
@@ -459,6 +461,7 @@ def _find_name_field(layer, candidates):
 def calculate_polygon_area(coords):
     """
     使用鞋带公式计算多边形面积（平方千米）
+    基于WGS84椭球体参数，对每个顶点使用本地纬度修正
 
     参数:
         coords (list): 坐标列表 [(lon, lat), ...]
@@ -467,12 +470,29 @@ def calculate_polygon_area(coords):
     """
     if len(coords) < 3:
         return 0.0
-    center_lat = sum(c[1] for c in coords) / len(coords)
+
+    # WGS84椭球体参数
+    a = 6378.137   # 赤道半径（千米）
+    b = 6356.7523  # 极半径（千米）
+    e2 = 1 - (b / a) ** 2  # 第一偏心率的平方
+
+    # 参考点取第一个点，避免绝对坐标的数值问题
+    ref_lon, ref_lat = coords[0]
+
     km_coords = []
     for lon, lat in coords:
-        x = lon * 111.32 * math.cos(math.radians(center_lat))
-        y = lat * 110.574
+        lat_rad = math.radians(lat)
+        sin_lat = math.sin(lat_rad)
+        # 子午圈曲率半径 M
+        M = a * (1 - e2) / (1 - e2 * sin_lat ** 2) ** 1.5
+        # 卯酉圈曲率半径 N
+        N = a / math.sqrt(1 - e2 * sin_lat ** 2)
+        # 经度差转千米（使用本地纬度的卯酉圈半径）
+        x = math.radians(lon - ref_lon) * N * math.cos(lat_rad)
+        # 纬度差转千米（使用本地纬度的子午圈半径）
+        y = math.radians(lat - ref_lat) * M
         km_coords.append((x, y))
+
     n = len(km_coords)
     area = 0.0
     for i in range(n):
@@ -1009,7 +1029,7 @@ def _setup_province_labels(layer):
     print(f"[信息] 省界标注已配置，字段: {field_name}")
 
 
-def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, extent):
+def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, extent, map_width_mm=None):
     """
     创建省份标注点图层，支持震中附近省份标注自动偏移。
 
@@ -1020,6 +1040,7 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         epicenter_lon (float): 震中经度（度）
         epicenter_lat (float): 震中纬度（度）
         extent (QgsRectangle 或 None): 地图范围，用于计算偏移量（mm转度）
+        map_width_mm (float): 地图内容区宽度（毫米），用于经度偏移计算
 
     返回:
         QgsVectorLayer 或 None: 配置好标注的内存点图层，失败返回None
@@ -1038,8 +1059,10 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         map_height_deg = 10.0
 
     offset_mm = 3.0
-    lon_offset_deg = offset_mm / MAP_WIDTH_MM * map_width_deg   # 向右偏移（经度增大）
-    lat_offset_deg = offset_mm / MAP_WIDTH_MM * map_height_deg  # 向下偏移（纬度减小）
+    if map_width_mm is None:
+        map_width_mm = MAP_MAX_WIDTH_MM
+    lon_offset_deg = offset_mm / map_width_mm * map_width_deg   # 向右偏移（经度增大）
+    lat_offset_deg = offset_mm / MAP_HEIGHT_MM * map_height_deg  # 向下偏移（纬度减小）
 
     # 创建内存点图层
     label_layer = QgsVectorLayer("Point?crs=EPSG:4326", "省份标注", "memory")
@@ -1383,25 +1406,37 @@ def calculate_intensity_areas(intensity_data):
 # 【布局创建函数】
 # ============================================================
 
-def calculate_map_height_from_extent(extent, map_width_mm):
+def calculate_map_dimensions_from_extent(extent):
     """
-    根据地图范围和宽度计算地图高度
+    根据地图范围计算地图宽度和高度
+
+    高度固定为 MAP_HEIGHT_MM（100mm），宽度根据经纬度范围的实际纵横比
+    （含纬度余弦修正）动态计算，但不超过 MAP_MAX_WIDTH_MM。
 
     参数:
         extent (QgsRectangle): 地图范围
-        map_width_mm (float): 地图宽度（毫米）
     返回:
-        float: 地图高度（毫米）
+        tuple: (map_width_mm, map_height_mm)
     """
-    lon_range = extent.xMaximum() - extent.xMinimum()
-    lat_range = extent.yMaximum() - extent.yMinimum()
-    if lon_range <= 0:
-        return map_width_mm
-    return map_width_mm * lat_range / lon_range
+    lon_range = extent.width()
+    lat_range = extent.height()
+    center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
+    # 考虑纬度修正：经度方向的实际距离比纬度方向短
+    lon_km = lon_range * 111.32 * math.cos(math.radians(center_lat))
+    lat_km = lat_range * 111.32
+    aspect_ratio = lon_km / lat_km if lat_km > 0 else 1.0
+
+    map_height_mm = MAP_HEIGHT_MM  # 固定100mm
+    map_width_mm = map_height_mm * aspect_ratio
+
+    if map_width_mm > MAP_MAX_WIDTH_MM:
+        map_width_mm = MAP_MAX_WIDTH_MM
+
+    return map_width_mm, map_height_mm
 
 
 def create_print_layout(project, extent, scale, map_height_mm, description_text,
-                        intensity_data, ordered_layers=None, has_faults=True):
+                        intensity_data, map_width_mm=None, ordered_layers=None, has_faults=True):
     """
     创建QGIS打印布局
 
@@ -1412,11 +1447,15 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
         map_height_mm (float): 地图高度（毫米）
         description_text (str): 说明文字
         intensity_data (dict): 烈度圈数据
+        map_width_mm (float): 地图宽度（毫米），默认使用 MAP_MAX_WIDTH_MM
         ordered_layers (list): 按渲染顺序排列的图层列表
         has_faults (bool): 是否包含断裂线
     返回:
         QgsPrintLayout: 打印布局对象
     """
+    if map_width_mm is None:
+        map_width_mm = MAP_MAX_WIDTH_MM
+
     layout = QgsPrintLayout(project)
     layout.initializeDefaults()
     layout.setName("地震烈度分布图")
@@ -1424,9 +1463,11 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
 
     # 计算输出总高度：上边距 + 地图高度 + 下边距
     output_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
+    # 计算输出总宽度：左边距 + 地图宽度 + 图例宽度 + 右边距
+    output_width_mm = BORDER_LEFT_MM + map_width_mm + LEGEND_WIDTH_MM + BORDER_RIGHT_MM
 
     page = layout.pageCollection().page(0)
-    page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm, QgsUnitTypes.LayoutMillimeters))
+    page.setPageSize(QgsLayoutSize(output_width_mm, output_height_mm, QgsUnitTypes.LayoutMillimeters))
 
     map_left = BORDER_LEFT_MM
     map_top = BORDER_TOP_MM
@@ -1434,7 +1475,7 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     # 添加地图项
     map_item = QgsLayoutItemMap(layout)
     map_item.attemptMove(QgsLayoutPoint(map_left, map_top, QgsUnitTypes.LayoutMillimeters))
-    map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, map_height_mm, QgsUnitTypes.LayoutMillimeters))
+    map_item.attemptResize(QgsLayoutSize(map_width_mm, map_height_mm, QgsUnitTypes.LayoutMillimeters))
     map_item.setExtent(extent)
     map_item.setCrs(CRS_WGS84)
     map_item.setFrameEnabled(True)
@@ -1453,13 +1494,13 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     _setup_map_grid(map_item, extent)
 
     # 指北针（地图右上角）
-    _add_north_arrow(layout, map_left, map_top, MAP_WIDTH_MM)
+    _add_north_arrow(layout, map_left, map_top, map_width_mm)
 
     # 右侧独立图例区（与地图等高，含比例尺）
     center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
     _add_legend(layout, map_height_mm, has_faults, scale=scale, extent=extent,
                 center_lat=center_lat, intensity_data=intensity_data,
-                description_text=description_text)
+                description_text=description_text, map_width_mm=map_width_mm)
 
     return layout
 
@@ -1530,7 +1571,7 @@ def _add_north_arrow(layout, map_left, map_top, map_width):
 
 
 def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
-                center_lat=None, intensity_data=None, description_text=None):
+                center_lat=None, intensity_data=None, description_text=None, map_width_mm=None):
     """
     添加图例（位于右侧独立区域，与地图等高）
     - 图例左边框紧接底图右边框
@@ -1546,8 +1587,11 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         center_lat (float): 地图中心纬度（用于计算比例尺）
         intensity_data (dict): 烈度圈数据 {烈度值: [(lon, lat), ...]}
         description_text (str): 说明文字，显示在比例尺上方
+        map_width_mm (float): 地图内容区宽度（毫米），用于定位图例和计算比例尺
     """
-    legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
+    if map_width_mm is None:
+        map_width_mm = MAP_MAX_WIDTH_MM
+    legend_x = BORDER_LEFT_MM + map_width_mm
     legend_y = BORDER_TOP_MM
     legend_width = LEGEND_WIDTH_MM
     legend_height = map_height_mm
@@ -1832,8 +1876,8 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     if scale is not None and extent is not None and center_lat is not None:
         lon_range_deg = extent.xMaximum() - extent.xMinimum()
         map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
-        km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
-        target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
+        km_per_mm = map_total_km / map_width_mm if map_width_mm > 0 else 1.0
+        target_bar_km = map_width_mm * 0.18 * km_per_mm
 
         nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
         bar_km = nice_values[0]
@@ -2171,10 +2215,15 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
     print(f"  震中: {center_lon:.4f}°E, {center_lat:.4f}°N")
 
     scale_denom = get_scale_by_magnitude(magnitude)
-    print(f"  震级: M{magnitude}, 比例尺: 1:{scale_denom:,}")
+    print(f"  震级: M{magnitude}, 比例尺(震级估算): 1:{scale_denom:,}")
 
-    map_height_mm = calculate_map_height_from_extent(extent, MAP_WIDTH_MM)
-    print(f"  地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
+    map_width_mm, map_height_mm = calculate_map_dimensions_from_extent(extent)
+    # 动态计算比例尺：基于纬度方向（高度固定）
+    lat_range_deg = extent.yMaximum() - extent.yMinimum()
+    if lat_range_deg > 0:
+        scale_denom = int((lat_range_deg * 111320.0) / (MAP_HEIGHT_MM / 1000.0))
+    print(f"  地图尺寸: {map_width_mm:.1f}mm x {map_height_mm:.1f}mm")
+    print(f"  动态比例尺: 1:{scale_denom:,}")
 
     # [3/9] 计算烈度面积
     print("\n[3/9] 计算烈度面积...")
@@ -2198,7 +2247,7 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
     try:
         # [4/9] 下载天地图底图
         print("\n[4/9] 下载天地图矢量底图...")
-        width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
+        width_px = int(map_width_mm / 25.4 * OUTPUT_DPI)
         height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
         if basemap_path:
             basemap_raster = QgsRasterLayer(basemap_path, "天地图底图", "gdal")
@@ -2235,7 +2284,7 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
         if province_layer:
             try:
                 province_label_layer = create_province_label_layer(
-                    province_layer, center_lon, center_lat, extent)
+                    province_layer, center_lon, center_lat, extent, map_width_mm=map_width_mm)
                 if province_label_layer:
                     # False: 不自动将图层添加到图层树，由 ordered_layers 手动控制渲染顺序
                     project.addMapLayer(province_label_layer, False)
@@ -2312,7 +2361,8 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
         print("\n[9/9] 创建布局并导出PNG...")
         layout = create_print_layout(
             project, extent, scale_denom, map_height_mm, full_description,
-            intensity_data, ordered_layers=ordered_layers, has_faults=has_faults
+            intensity_data, map_width_mm=map_width_mm,
+            ordered_layers=ordered_layers, has_faults=has_faults
         )
         result_path = export_layout_to_png(layout, output_path, OUTPUT_DPI)
 
