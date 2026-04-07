@@ -1435,6 +1435,62 @@ def calculate_map_dimensions_from_extent(extent):
     return map_width_mm, map_height_mm
 
 
+def adjust_extent_to_match_aspect_ratio(extent, map_width_mm, map_height_mm):
+    """
+    调整地理范围使其宽高比与地图项的mm宽高比一致。
+    这样QGIS的map_item.setExtent()不会自动扩展范围，
+    确保主图区高度精确等于 map_height_mm。
+    """
+    center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
+    cos_lat = math.cos(math.radians(center_lat))
+
+    lon_range = extent.width()
+    lat_range = extent.height()
+
+    # 地图项的目标宽高比（mm）
+    target_aspect = map_width_mm / map_height_mm
+    # 当前地理范围的实际宽高比（经纬度余弦修正后）
+    current_aspect = (lon_range * cos_lat) / lat_range if lat_range > 0 else target_aspect
+
+    center_lon = (extent.xMaximum() + extent.xMinimum()) / 2.0
+
+    if current_aspect < target_aspect:
+        # 经度范围不够宽，需要扩展经度
+        new_lon_range = target_aspect * lat_range / cos_lat
+        new_lat_range = lat_range
+    else:
+        # 纬度范围不够高，需要扩展纬度
+        new_lat_range = lon_range * cos_lat / target_aspect
+        new_lon_range = lon_range
+
+    return QgsRectangle(
+        center_lon - new_lon_range / 2.0,
+        center_lat - new_lat_range / 2.0,
+        center_lon + new_lon_range / 2.0,
+        center_lat + new_lat_range / 2.0
+    )
+
+
+def round_scale_denominator(raw_scale):
+    """
+    将比例尺分母圆整为前两位有效数字，其余补0（标准四舍五入）。
+    例如：
+        1234567 -> 1200000
+        987654  -> 990000
+        56789   -> 57000
+        1500    -> 1500
+        350     -> 350
+    """
+    if raw_scale <= 0:
+        return 1
+    int_scale = int(raw_scale)
+    digits = len(str(int_scale))
+    if digits <= 2:
+        return int_scale
+    factor = 10 ** (digits - 2)
+    return (int_scale + factor // 2) // factor * factor
+
+
 def create_print_layout(project, extent, scale, map_height_mm, description_text,
                         intensity_data, map_width_mm=None, ordered_layers=None, has_faults=True):
     """
@@ -2218,10 +2274,14 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
     print(f"  震级: M{magnitude}, 比例尺(震级估算): 1:{scale_denom:,}")
 
     map_width_mm, map_height_mm = calculate_map_dimensions_from_extent(extent)
-    # 动态计算比例尺：基于纬度方向（高度固定）
+    # 调整 extent 使其宽高比与 map_item 的 mm 尺寸严格一致，
+    # 避免 QGIS 自动扩展 extent 导致实际渲染高度偏离 map_height_mm
+    extent = adjust_extent_to_match_aspect_ratio(extent, map_width_mm, map_height_mm)
+    # 动态计算比例尺：基于调整后 extent 的纬度方向（高度固定）
     lat_range_deg = extent.yMaximum() - extent.yMinimum()
     if lat_range_deg > 0:
         scale_denom = int((lat_range_deg * 111320.0) / (MAP_HEIGHT_MM / 1000.0))
+    scale_denom = round_scale_denominator(scale_denom)
     print(f"  地图尺寸: {map_width_mm:.1f}mm x {map_height_mm:.1f}mm")
     print(f"  动态比例尺: 1:{scale_denom:,}")
 
