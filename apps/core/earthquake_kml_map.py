@@ -101,7 +101,9 @@ MAP_TOTAL_MAX_WIDTH_MM = 170.0
 # 左边距（毫米）
 BORDER_LEFT_MM = 4.0
 # 上边距（毫米）
-BORDER_TOP_MM = 4.0
+# 设为 8.0mm，为地图框上方的经纬度标注（10pt字体约3.5mm + QGIS默认间距约2-3mm）留出足够空间，
+# 防止 QGIS 在空间不足时将地图框向下偏移，导致图例区底部留白。
+BORDER_TOP_MM = 8.0
 # 下边距（毫米）
 BORDER_BOTTOM_MM = 2.0
 # 右边距（毫米）
