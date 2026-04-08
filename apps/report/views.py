@@ -440,7 +440,9 @@ def download_report_view(request):
     if task.task_status != ReportTask.STATUS_SUCCESS:
         return JsonResponse({'code': 1, 'msg': '报告尚未生成，请先执行任务'})
 
-    record = ReportTaskRecord.objects.filter(task_id=task_id).first()
+    record = ReportTaskRecord.objects.filter(task_id=task_id,
+                                             report_path__isnull=False,
+                                             ).order_by('-id').first()
     if not record or not record.report_path:
         return JsonResponse({'code': 1, 'msg': '报告文件不存在'})
 
