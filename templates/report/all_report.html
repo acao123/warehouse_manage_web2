@@ -109,16 +109,21 @@
 
 <!-- 操作列按钮模板 -->
 <script type="text/html" id="allToolbar">
-       {{#
+    {{#
         if(d.task_status == null || d.task_status == ''){
             return '';
         }
         var s = String(d.task_status);
-         if (s === '1') {
-            return '<a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="stop">终止任务</a>';
+        var btns = '';
+        if (s === '1') {
+            btns += '<a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="stop">终止任务</a>';
+            btns += '<a class="layui-btn layui-btn-warm layui-btn-xs" lay-event="forceStop">结束任务</a>';
         }
+        if (s === '4') {
+            btns += '<a class="layui-btn layui-btn-warm layui-btn-xs" lay-event="forceStop">结束任务</a>';
+        }
+        return btns;
     }}
-
 </script>
 
 <script src="/static/layui/layui/layui.js"></script>
@@ -173,11 +178,11 @@
                 {field: 'interp_method',     title: '插值算法',          width: 160, templet: '#interpMethodTpl'},
                 {field: 'sample_interval',   title: '等值线采样间隔',     width: 130},
                 {field: 'max_sample_points', title: '最大采样点数',       width: 120},
-                {fixed: 'right', title: '操作', toolbar: '#allToolbar', width: 100}
+                {fixed: 'right', title: '操作', toolbar: '#allToolbar', width: 180}
             ]]
         });
 
-        // 监听工具条（终止任务）
+        // 监听工具条（终止任务 / 结束任务）
         table.on('tool(allReportTable)', function(obj){
             var data = obj.data;
             if(obj.event === 'stop'){
@@ -185,6 +190,18 @@
                     $.post('/report/task/stop/', {task_id: data.id}, function(res){
                         if(res.code === 0){
                             layer.msg('任务已终止中');
+                            allReportTable.reload();
+                        } else {
+                            layer.msg(res.msg || '操作失败');
+                        }
+                    });
+                    layer.close(index);
+                });
+            } else if(obj.event === 'forceStop'){
+                layer.confirm('确定要强制结束该任务吗？任务将直接标记为失败。', {icon: 3, title: '结束确认'}, function(index){
+                    $.post('/report/task/force_stop/', {task_id: data.id}, function(res){
+                        if(res.code === 0){
+                            layer.msg('任务已强制结束');
                             allReportTable.reload();
                         } else {
                             layer.msg(res.msg || '操作失败');
