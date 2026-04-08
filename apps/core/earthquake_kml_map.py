@@ -1438,10 +1438,8 @@ def calculate_layout_dimensions(extent):
     返回:
         tuple: (map_width_mm, map_height_mm, total_width_mm, total_height_mm)
     """
-    # 固定高度
-    total_height_mm = MAP_TOTAL_HEIGHT_MM  # 100mm
-    # 地图高度 = 总高度（无边距）
-    map_height_mm = total_height_mm
+    # 地图内容高度 = 固定总高度 - 上边距 - 下边距
+    map_height_mm = MAP_TOTAL_HEIGHT_MM - BORDER_TOP_MM - BORDER_BOTTOM_MM
 
     # 根据地理范围计算宽高比
     lon_range = extent.xMaximum() - extent.xMinimum()
@@ -1455,13 +1453,15 @@ def calculate_layout_dimensions(extent):
     # 根据高度和宽高比计算地图宽度
     map_width_mm = map_height_mm * aspect_ratio
 
-    # 总宽度 = 地图宽度 + 图例宽度
-    total_width_mm = map_width_mm + LEGEND_WIDTH_MM
+    # 总页面宽度 = 左边距 + 地图宽度 + 图例宽度 + 右边距
+    total_width_mm = BORDER_LEFT_MM + map_width_mm + LEGEND_WIDTH_MM + BORDER_RIGHT_MM
+    # 总页面高度 = 上边距 + 地图内容高度 + 下边距
+    total_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
 
     # 如果总宽度超过最大值，需要缩放
     if total_width_mm > MAP_TOTAL_WIDTH_MAX_MM:
-        # 可用于地图的最大宽度
-        max_map_width_mm = MAP_TOTAL_WIDTH_MAX_MM - LEGEND_WIDTH_MM
+        # 可用于地图的最大宽度（减去左右边距和图例宽度）
+        max_map_width_mm = MAP_TOTAL_WIDTH_MAX_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
         map_width_mm = max_map_width_mm
         total_width_mm = MAP_TOTAL_WIDTH_MAX_MM
 
@@ -1576,9 +1576,9 @@ def create_print_layout(project, extent, scale, map_width_mm, map_height_mm,
     page = layout.pageCollection().page(0)
     page.setPageSize(QgsLayoutSize(total_width_mm, total_height_mm, QgsUnitTypes.LayoutMillimeters))
 
-    # 地图位置（无边距，从左上角开始）
-    map_left = 0.0
-    map_top = 0.0
+    # 地图位置（按边距偏移）
+    map_left = BORDER_LEFT_MM
+    map_top = BORDER_TOP_MM
 
     # 添加地图项
     map_item = QgsLayoutItemMap(layout)
@@ -1694,9 +1694,9 @@ def _add_legend(layout, map_width_mm, map_height_mm, has_faults=True, scale=None
         intensity_data (dict): 烈度圈数据 {烈度值: [(lon, lat), ...]}
         description_text (str): 说明文字，显示在比例尺上方
     """
-    # 图例紧贴地图右侧，与地图等高
-    legend_x = map_width_mm
-    legend_y = 0.0
+    # 图例紧贴地图右侧，上边距与地图对齐
+    legend_x = BORDER_LEFT_MM + map_width_mm
+    legend_y = BORDER_TOP_MM
     legend_width = LEGEND_WIDTH_MM
     legend_height = map_height_mm  # 与地图等高，确保下边框对齐
 
