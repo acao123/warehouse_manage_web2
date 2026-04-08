@@ -91,6 +91,20 @@
     
 </script>
 
+<!-- 插值算法列渲染模板 -->
+<script type="text/html" id="interpMethodTpl">
+    {{#
+        var methodMap = {
+            'scipy_tin': '不规则三角网(scipy)',
+            'qgis_idw':  '反距离加权(qgis)',
+            'kriging':   '克里金',
+            'scipy_idw': '反距离加权(scipy)'
+        };
+        var v = d.interp_method;
+        return '<span>' + (methodMap[v] || v || '') + '</span>';
+    }}
+</script>
+
 <script src="/static/layui/layui/layui.js"></script>
 <script src="/static/js/jquery-3.6.0.min.js"></script>
 <script>
@@ -113,7 +127,7 @@
                 {field: 'created_at',        title: '创建时间',        width: 160},
                 {field: 'success_time',      title: '任务完成时间',    width: 160},
                 {field: 'task_status',       title: '任务状态',        width: 100, templet: '#statusTpl'},
-                {field: 'interp_method',     title: '插值算法',        width: 120},
+                {field: 'interp_method',     title: '插值算法',        width: 120, templet: '#interpMethodTpl'},
                 {field: 'sample_interval',   title: '等值线采样间隔',   width: 130},
                 {field: 'max_sample_points', title: '最大采样点数',    width: 120}
             ]]

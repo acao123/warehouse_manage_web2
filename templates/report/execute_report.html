@@ -276,6 +276,20 @@
 
 </div>
 
+<!-- 插值算法列渲染模板 -->
+<script type="text/html" id="interpMethodTpl">
+    {{#
+        var methodMap = {
+            'scipy_tin': '不规则三角网(scipy)',
+            'qgis_idw':  '反距离加权(qgis)',
+            'kriging':   '克里金',
+            'scipy_idw': '反距离加权(scipy)'
+        };
+        var v = d.interp_method;
+        return '<span>' + (methodMap[v] || v || '') + '</span>';
+    }}
+</script>
+
 <!-- 操作列按钮模板 -->
 <script type="text/html" id="runningToolbar">
     <a class="layui-btn layui-btn-normal  layui-btn-xs" lay-event="execute">执行任务</a>
@@ -330,7 +344,7 @@
                 {field: 'created_at',        title: '创建时间',        width: 160},
                 {field: 'task_status_label', title: '状态',            width: 100},
                 {field: 'progress',          title: '进度(%)',         width: 80},
-                {field: 'interp_method',     title: '插值算法',        width: 120},
+                {field: 'interp_method',     title: '插值算法',        width: 120, templet: '#interpMethodTpl'},
                 {field: 'sample_interval',   title: '等值线采样间隔',   width: 130},
                 {field: 'max_sample_points', title: '最大采样点数',    width: 120},
                 {fixed: 'right', title: '操作', toolbar: '#runningToolbar', width: 238}
