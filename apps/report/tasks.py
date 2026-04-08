@@ -36,9 +36,10 @@ _TASK_EXECUTOR = _cf.ThreadPoolExecutor(
 )
 
 # ============================================================
-# 任务取消事件字典（task_id → threading.Event，线程安全）
+# 任务取消事件字典（task_id → threading.Event）及保护锁
 # ============================================================
 _task_cancel_events: dict = {}
+_task_cancel_events_lock = threading.Lock()
 
 
 def cancel_task(task_id: int) -> None:
@@ -51,10 +52,17 @@ def cancel_task(task_id: int) -> None:
     参数:
         task_id: report_task 表的 id
     """
-    event = _task_cancel_events.get(task_id)
+    with _task_cancel_events_lock:
+        event = _task_cancel_events.get(task_id)
     if event is not None:
         event.set()
         logger.info('[任务 %s] 取消信号已发送（cancel_event.set()）', task_id)
+
+
+def _cleanup_cancel_event(task_id: int) -> None:
+    """清理指定任务的取消事件（线程安全）。"""
+    with _task_cancel_events_lock:
+        _task_cancel_events.pop(task_id, None)
 
 # ============================================================
 # 进度常量（对应每个执行步骤的 progress 值）
@@ -628,7 +636,8 @@ def execute_report_task(task_id: int) -> None:
 
     # ---- 创建并注册取消事件（在任何耗时操作开始前）----
     cancel_event = threading.Event()
-    _task_cancel_events[task_id] = cancel_event
+    with _task_cancel_events_lock:
+        _task_cancel_events[task_id] = cancel_event
 
     # ---- 2. 创建输出目录 ----
     output_dir = _build_output_dir(task_id)
@@ -638,7 +647,7 @@ def execute_report_task(task_id: int) -> None:
     except Exception as exc:
         logger.error('[任务 %s] 创建输出目录失败: %s', task_id, exc, exc_info=True)
         _mark_failed(task, error_message=f'创建输出目录失败: {exc}')
-        _task_cancel_events.pop(task_id, None)
+        _cleanup_cancel_event(task_id)
         return
 
     # ---- 3. 冗余初始化进度（保险） ----
@@ -655,7 +664,7 @@ def execute_report_task(task_id: int) -> None:
         if _is_cancelled(task_id):
             logger.info('[任务 %s] 任务已取消，跳过天地图下载', task_id)
             _mark_failed(task)
-            _task_cancel_events.pop(task_id, None)
+            _cleanup_cancel_event(task_id)
             return
 
         _update_task_progress(task_id, PROGRESS_STEPS['tianditu_start'],
@@ -692,7 +701,7 @@ def execute_report_task(task_id: int) -> None:
             if _err:
                 logger.error('[任务 %s] 缓存底图下载失败: %s', task_id, _err)
                 _mark_failed(task, error_message=f'天地图下载失败: {_err}')
-                _task_cancel_events.pop(task_id, None)
+                _cleanup_cancel_event(task_id)
                 return
             cached_basemap_path = _basemap_path
             cached_annotation_path = _annotation_path
@@ -701,7 +710,7 @@ def execute_report_task(task_id: int) -> None:
         except Exception as exc:
             logger.error('[任务 %s] 天地图下载异常: %s', task_id, exc, exc_info=True)
             _mark_failed(task, error_message=f'天地图下载异常: {exc}')
-            _task_cancel_events.pop(task_id, None)
+            _cleanup_cancel_event(task_id)
             return
 
         _update_task_progress(task_id, PROGRESS_STEPS['tianditu_done'],
@@ -901,7 +910,7 @@ def execute_report_task(task_id: int) -> None:
         except Exception as cleanup_exc:
             logger.warning('[任务 %s] 最终资源清理异常: %s', task_id, cleanup_exc)
         # ---- 清理取消事件，防止内存泄漏 ----
-        _task_cancel_events.pop(task_id, None)
+        _cleanup_cancel_event(task_id)
         gc.collect()
 
 

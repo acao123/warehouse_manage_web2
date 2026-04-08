@@ -298,7 +298,7 @@ class KmlToIaConverter:
     # ==================== KML 解析 ====================
 
     def _check_cancelled(self) -> None:
-        """检查取消信号，若已设置则抛出 TaskCancelledException（线程安全，零开销）。"""
+        """检查取消信号，若已设置则抛出 TaskCancelledException（线程安全，极低开销）。"""
         if self._cancel_event is not None and self._cancel_event.is_set():
             raise TaskCancelledException("任务已被取消")
 
