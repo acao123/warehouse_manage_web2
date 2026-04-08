@@ -102,13 +102,13 @@ MAP_TOTAL_WIDTH_MAX_MM = 170.0
 # 输出图固定高度（毫米）
 MAP_TOTAL_HEIGHT_MM = 100.0
 # 左边距（毫米）
-BORDER_LEFT_MM = 0.0
+BORDER_LEFT_MM = 4.0
 # 上边距（毫米）
-BORDER_TOP_MM = 0.0
+BORDER_TOP_MM = 4.0
 # 下边距（毫米）- 设为0确保下边框对齐无留白
-BORDER_BOTTOM_MM = 0.0
+BORDER_BOTTOM_MM = 2.0
 # 右边距（毫米）
-BORDER_RIGHT_MM = 0.0
+BORDER_RIGHT_MM = 1.0
 # 图例区宽度（毫米），图例位于右侧独立区域
 LEGEND_WIDTH_MM = 50.0
 # 行间距倍数（保留供其他模块参考，说明文字不使用）
