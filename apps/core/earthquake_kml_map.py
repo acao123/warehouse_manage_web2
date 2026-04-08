@@ -190,7 +190,7 @@ SCALE_FONT_SIZE_PT = 10
 # 【图例布局常量】（参考 earthquake_map.py）
 # ============================================================
 # 图例项行高（毫米）
-LEGEND_ROW_HEIGHT_MM = 6.0
+LEGEND_ROW_HEIGHT_MM = 4.5
 # 图例内边距（毫米）
 LEGEND_PADDING_MM = 2.0
 # 图例图标宽度（毫米）
@@ -1994,7 +1994,7 @@ def _add_legend(layout, map_width_mm, map_height_mm, has_faults=True, scale=None
         num_segments = 4
 
         std_bar_width = bar_length_mm + 12.0
-        std_bar_height = 12.0
+        std_bar_height = 9.0
 
         # 图例区可用宽度
         avail_width = legend_width - 4.0
