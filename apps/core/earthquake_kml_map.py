@@ -96,24 +96,20 @@ TIANDITU_TK = (
 # ============================================================
 # 布局尺寸常量（参考 earthquake_map.py）
 # ============================================================
-# 输出图总宽度上限（毫米）
-MAP_TOTAL_MAX_WIDTH_MM = 170.0
+# 输出图总宽度（毫米）
+MAP_TOTAL_WIDTH_MM = 220.0
 # 左边距（毫米）
 BORDER_LEFT_MM = 4.0
 # 上边距（毫米）
-# 网格标注使用 InsideMapFrame，标注文字绘制在地图框内侧，
-# 无需在地图框外部预留标注空间，上边距仅作视觉留白。
-BORDER_TOP_MM = 8.0
+BORDER_TOP_MM = 4.0
 # 下边距（毫米）
 BORDER_BOTTOM_MM = 2.0
 # 右边距（毫米）
 BORDER_RIGHT_MM = 1.0
 # 图例区宽度（毫米），图例位于右侧独立区域
 LEGEND_WIDTH_MM = 50.0
-# 固定地图内容区高度（毫米）
-MAP_HEIGHT_MM = 100.0
-# 地图内容区最大宽度（总宽上限减去左右边距和图例区）
-MAP_MAX_WIDTH_MM = MAP_TOTAL_MAX_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
+# 地图内容宽度（右侧为独立图例区域，不与底图重叠）
+MAP_WIDTH_MM = MAP_TOTAL_WIDTH_MM - BORDER_LEFT_MM - LEGEND_WIDTH_MM - BORDER_RIGHT_MM
 # 行间距倍数（保留供其他模块参考，说明文字不使用）
 LINE_SPACING_FACTOR = 1.5
 
@@ -463,7 +459,6 @@ def _find_name_field(layer, candidates):
 def calculate_polygon_area(coords):
     """
     使用鞋带公式计算多边形面积（平方千米）
-    基于WGS84椭球体参数，对每个顶点使用本地纬度修正
 
     参数:
         coords (list): 坐标列表 [(lon, lat), ...]
@@ -472,29 +467,12 @@ def calculate_polygon_area(coords):
     """
     if len(coords) < 3:
         return 0.0
-
-    # WGS84椭球体参数
-    a = 6378.137   # 赤道半径（千米）
-    b = 6356.7523  # 极半径（千米）
-    e2 = 1 - (b / a) ** 2  # 第一偏心率的平方
-
-    # 参考点取第一个点，避免绝对坐标的数值问题
-    ref_lon, ref_lat = coords[0]
-
+    center_lat = sum(c[1] for c in coords) / len(coords)
     km_coords = []
     for lon, lat in coords:
-        lat_rad = math.radians(lat)
-        sin_lat = math.sin(lat_rad)
-        # 子午圈曲率半径 M
-        M = a * (1 - e2) / (1 - e2 * sin_lat ** 2) ** 1.5
-        # 卯酉圈曲率半径 N
-        N = a / math.sqrt(1 - e2 * sin_lat ** 2)
-        # 经度差转千米（使用本地纬度的卯酉圈半径）
-        x = math.radians(lon - ref_lon) * N * math.cos(lat_rad)
-        # 纬度差转千米（使用本地纬度的子午圈半径）
-        y = math.radians(lat - ref_lat) * M
+        x = lon * 111.32 * math.cos(math.radians(center_lat))
+        y = lat * 110.574
         km_coords.append((x, y))
-
     n = len(km_coords)
     area = 0.0
     for i in range(n):
@@ -1031,7 +1009,7 @@ def _setup_province_labels(layer):
     print(f"[信息] 省界标注已配置，字段: {field_name}")
 
 
-def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, extent, map_width_mm=None):
+def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, extent):
     """
     创建省份标注点图层，支持震中附近省份标注自动偏移。
 
@@ -1042,7 +1020,6 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         epicenter_lon (float): 震中经度（度）
         epicenter_lat (float): 震中纬度（度）
         extent (QgsRectangle 或 None): 地图范围，用于计算偏移量（mm转度）
-        map_width_mm (float): 地图内容区宽度（毫米），用于经度偏移计算
 
     返回:
         QgsVectorLayer 或 None: 配置好标注的内存点图层，失败返回None
@@ -1061,10 +1038,8 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
         map_height_deg = 10.0
 
     offset_mm = 3.0
-    if map_width_mm is None:
-        map_width_mm = MAP_MAX_WIDTH_MM
-    lon_offset_deg = offset_mm / map_width_mm * map_width_deg   # 向右偏移（经度增大）
-    lat_offset_deg = offset_mm / MAP_HEIGHT_MM * map_height_deg  # 向下偏移（纬度减小）
+    lon_offset_deg = offset_mm / MAP_WIDTH_MM * map_width_deg   # 向右偏移（经度增大）
+    lat_offset_deg = offset_mm / MAP_WIDTH_MM * map_height_deg  # 向下偏移（纬度减小）
 
     # 创建内存点图层
     label_layer = QgsVectorLayer("Point?crs=EPSG:4326", "省份标注", "memory")
@@ -1408,101 +1383,27 @@ def calculate_intensity_areas(intensity_data):
 # 【布局创建函数】
 # ============================================================
 
-def calculate_map_dimensions_from_extent(extent):
+def calculate_map_height_from_extent(extent, map_width_mm):
     """
-    根据地图范围计算地图宽度和高度
-
-    高度固定为 MAP_HEIGHT_MM（100mm），宽度根据经纬度范围的实际纵横比
-    （含纬度余弦修正）动态计算，但不超过 MAP_MAX_WIDTH_MM。
+    根据地图范围和宽度计算地图高度
 
     参数:
         extent (QgsRectangle): 地图范围
+        map_width_mm (float): 地图宽度（毫米）
     返回:
-        tuple: (map_width_mm, map_height_mm)
+        float: 地图高度（毫米）
     """
-    lon_range = extent.width()
-    lat_range = extent.height()
-    center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
-    # 考虑纬度修正：经度方向的实际距离比纬度方向短
-    lon_km = lon_range * 111.32 * math.cos(math.radians(center_lat))
-    lat_km = lat_range * 111.32
-    aspect_ratio = lon_km / lat_km if lat_km > 0 else 1.0
-
-    map_height_mm = MAP_HEIGHT_MM  # 固定100mm
-    map_width_mm = map_height_mm * aspect_ratio
-
-    if map_width_mm > MAP_MAX_WIDTH_MM:
-        map_width_mm = MAP_MAX_WIDTH_MM
-
-    return map_width_mm, map_height_mm
-
-
-def adjust_extent_to_match_aspect_ratio(extent, map_width_mm, map_height_mm):
-    """
-    调整地理范围使其宽高比与地图项的mm宽高比一致。
-    这样QGIS的map_item.setExtent()不会自动扩展范围，
-    确保主图区高度精确等于 map_height_mm。
-    """
-    center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
-    cos_lat = math.cos(math.radians(center_lat))
-
-    lon_range = extent.width()
-    lat_range = extent.height()
-
-    # 地图项的目标宽高比（mm）
-    target_aspect = map_width_mm / map_height_mm
-    # 当前地理范围的实际宽高比（经纬度余弦修正后）
-    current_aspect = (lon_range * cos_lat) / lat_range if lat_range > 0 else target_aspect
-
-    center_lon = (extent.xMaximum() + extent.xMinimum()) / 2.0
-
-    if current_aspect < target_aspect:
-        # 经度范围不够宽，需要扩展经度
-        new_lon_range = target_aspect * lat_range / cos_lat
-        new_lat_range = lat_range
-    else:
-        # 纬度范围不够高，需要扩展纬度
-        new_lat_range = lon_range * cos_lat / target_aspect
-        new_lon_range = lon_range
-
-    return QgsRectangle(
-        center_lon - new_lon_range / 2.0,
-        center_lat - new_lat_range / 2.0,
-        center_lon + new_lon_range / 2.0,
-        center_lat + new_lat_range / 2.0
-    )
-
-
-def round_scale_denominator(raw_scale):
-    """
-    将比例尺分母圆整为前两位有效数字，其余补0（标准四舍五入）。
-    例如：
-        1234567 -> 1200000
-        987654  -> 990000
-        56789   -> 57000
-        1500    -> 1500
-        350     -> 350
-    """
-    if raw_scale <= 0:
-        return 1
-    int_scale = int(raw_scale)
-    digits = len(str(int_scale))
-    if digits <= 2:
-        return int_scale
-    factor = 10 ** (digits - 2)
-    return (int_scale + factor // 2) // factor * factor
+    lon_range = extent.xMaximum() - extent.xMinimum()
+    lat_range = extent.yMaximum() - extent.yMinimum()
+    if lon_range <= 0:
+        return map_width_mm
+    return map_width_mm * lat_range / lon_range
 
 
 def create_print_layout(project, extent, scale, map_height_mm, description_text,
-                        intensity_data, map_width_mm=None, ordered_layers=None, has_faults=True):
+                        intensity_data, ordered_layers=None, has_faults=True):
     """
     创建QGIS打印布局
-
-    布局约束：
-        - 主图区高度 = 图例区高度 = MAP_HEIGHT_MM = 100mm，两者上下边框对齐
-        - 输出总高度 = BORDER_TOP_MM(8) + map_height_mm(100) + BORDER_BOTTOM_MM(2) = 110mm
-        - 输出总宽度 = BORDER_LEFT_MM(4) + map_width_mm + LEGEND_WIDTH_MM(50) + BORDER_RIGHT_MM(1)
-          ，不超过 MAP_TOTAL_MAX_WIDTH_MM = 170mm
 
     参数:
         project (QgsProject): QGIS项目实例
@@ -1511,19 +1412,11 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
         map_height_mm (float): 地图高度（毫米）
         description_text (str): 说明文字
         intensity_data (dict): 烈度圈数据
-        map_width_mm (float): 地图宽度（毫米），默认使用 MAP_MAX_WIDTH_MM
         ordered_layers (list): 按渲染顺序排列的图层列表
         has_faults (bool): 是否包含断裂线
     返回:
         QgsPrintLayout: 打印布局对象
     """
-    if map_width_mm is None:
-        map_width_mm = MAP_MAX_WIDTH_MM
-    # 确保地图宽度不超过最大限制，以保证输出总宽度不超过 MAP_TOTAL_MAX_WIDTH_MM（170mm）
-    map_width_mm = min(map_width_mm, MAP_MAX_WIDTH_MM)
-    # 强制地图高度始终等于 MAP_HEIGHT_MM（100mm），确保与图例区高度对齐
-    map_height_mm = MAP_HEIGHT_MM
-
     layout = QgsPrintLayout(project)
     layout.initializeDefaults()
     layout.setName("地震烈度分布图")
@@ -1531,11 +1424,9 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
 
     # 计算输出总高度：上边距 + 地图高度 + 下边距
     output_height_mm = BORDER_TOP_MM + map_height_mm + BORDER_BOTTOM_MM
-    # 计算输出总宽度：左边距 + 地图宽度 + 图例宽度 + 右边距（不超过 MAP_TOTAL_MAX_WIDTH_MM）
-    output_width_mm = BORDER_LEFT_MM + map_width_mm + LEGEND_WIDTH_MM + BORDER_RIGHT_MM
 
     page = layout.pageCollection().page(0)
-    page.setPageSize(QgsLayoutSize(output_width_mm, output_height_mm, QgsUnitTypes.LayoutMillimeters))
+    page.setPageSize(QgsLayoutSize(MAP_TOTAL_WIDTH_MM, output_height_mm, QgsUnitTypes.LayoutMillimeters))
 
     map_left = BORDER_LEFT_MM
     map_top = BORDER_TOP_MM
@@ -1543,7 +1434,7 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     # 添加地图项
     map_item = QgsLayoutItemMap(layout)
     map_item.attemptMove(QgsLayoutPoint(map_left, map_top, QgsUnitTypes.LayoutMillimeters))
-    map_item.attemptResize(QgsLayoutSize(map_width_mm, map_height_mm, QgsUnitTypes.LayoutMillimeters))
+    map_item.attemptResize(QgsLayoutSize(MAP_WIDTH_MM, map_height_mm, QgsUnitTypes.LayoutMillimeters))
     map_item.setExtent(extent)
     map_item.setCrs(CRS_WGS84)
     map_item.setFrameEnabled(True)
@@ -1562,13 +1453,13 @@ def create_print_layout(project, extent, scale, map_height_mm, description_text,
     _setup_map_grid(map_item, extent)
 
     # 指北针（地图右上角）
-    _add_north_arrow(layout, map_left, map_top, map_width_mm)
+    _add_north_arrow(layout, map_left, map_top, MAP_WIDTH_MM)
 
     # 右侧独立图例区（与地图等高，含比例尺）
     center_lat = (extent.yMaximum() + extent.yMinimum()) / 2.0
     _add_legend(layout, map_height_mm, has_faults, scale=scale, extent=extent,
                 center_lat=center_lat, intensity_data=intensity_data,
-                description_text=description_text, map_width_mm=map_width_mm)
+                description_text=description_text)
 
     return layout
 
@@ -1594,8 +1485,8 @@ def _setup_map_grid(map_item, extent):
     grid.setAnnotationDisplay(QgsLayoutItemMapGrid.HideAll, QgsLayoutItemMapGrid.Bottom)
     grid.setAnnotationDisplay(QgsLayoutItemMapGrid.HideAll, QgsLayoutItemMapGrid.Right)
 
-    grid.setAnnotationPosition(QgsLayoutItemMapGrid.InsideMapFrame, QgsLayoutItemMapGrid.Top)
-    grid.setAnnotationPosition(QgsLayoutItemMapGrid.InsideMapFrame, QgsLayoutItemMapGrid.Left)
+    grid.setAnnotationPosition(QgsLayoutItemMapGrid.OutsideMapFrame, QgsLayoutItemMapGrid.Top)
+    grid.setAnnotationPosition(QgsLayoutItemMapGrid.OutsideMapFrame, QgsLayoutItemMapGrid.Left)
     grid.setAnnotationDirection(QgsLayoutItemMapGrid.Horizontal, QgsLayoutItemMapGrid.Top)
     grid.setAnnotationDirection(QgsLayoutItemMapGrid.Vertical, QgsLayoutItemMapGrid.Left)
 
@@ -1639,30 +1530,24 @@ def _add_north_arrow(layout, map_left, map_top, map_width):
 
 
 def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
-                center_lat=None, intensity_data=None, description_text=None, map_width_mm=None):
+                center_lat=None, intensity_data=None, description_text=None):
     """
     添加图例（位于右侧独立区域，与地图等高）
     - 图例左边框紧接底图右边框
-    - 图例上下与底图对齐（top = BORDER_TOP_MM，高度 = map_height_mm = MAP_HEIGHT_MM = 100mm）
-    - 包含：说明文字区（上部，高度受限）、分隔线、图例标题、基本项两列、
-      断裂线单列（可选）、烈度标题、烈度四列、底部比例尺
-    - 所有内容（说明文字区 + 分隔线 + 图例标题 + 图例项 + 比例尺）严格布局在
-      legend_height（= map_height_mm = 100mm）范围内
+    - 图例上下与底图对齐
+    - 包含：基本项两列、断裂线单列（可选）、烈度标题、烈度三列、底部比例尺
 
     参数:
         layout (QgsPrintLayout): 打印布局
-        map_height_mm (float): 底图高度（毫米），即图例区高度 = MAP_HEIGHT_MM = 100mm
+        map_height_mm (float): 底图高度（毫米）
         has_faults (bool): 是否包含断裂线图例
         scale (int): 比例尺分母（用于绘制比例尺）
         extent (QgsRectangle): 地图范围（用于计算比例尺）
         center_lat (float): 地图中心纬度（用于计算比例尺）
         intensity_data (dict): 烈度圈数据 {烈度值: [(lon, lat), ...]}
-        description_text (str): 说明文字，显示在图例区上部
-        map_width_mm (float): 地图内容区宽度（毫米），用于定位图例和计算比例尺
+        description_text (str): 说明文字，显示在比例尺上方
     """
-    if map_width_mm is None:
-        map_width_mm = MAP_MAX_WIDTH_MM
-    legend_x = BORDER_LEFT_MM + map_width_mm
+    legend_x = BORDER_LEFT_MM + MAP_WIDTH_MM
     legend_y = BORDER_TOP_MM
     legend_width = LEGEND_WIDTH_MM
     legend_height = map_height_mm
@@ -1691,27 +1576,6 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     # 说明文字区高度（默认25mm，有说明文字时按实际行数动态计算）
     INFO_TEXT_AREA_HEIGHT_MM = 25.0
 
-    # ── 预计算图例项（不含说明文字区）所需的最小高度，用于限制说明文字区高度 ──
-    # 布局结构：说明文字区 → 分隔线 → 图例标题(7mm) → 基本项 → 断裂线(可选) →
-    #           烈度标题(5mm，若有烈度数据) → 烈度项 → 比例尺(从底部向上留13mm，若有)
-    _basic_rows = 2  # 4个基本项，2列布局
-    _fault_rows = 3 if has_faults else 0
-    _n_intensity = min(len(intensity_data), MAX_INTENSITY_LEGEND_ITEMS) if intensity_data else 0
-    _int_rows = (_n_intensity + 3) // 4 if _n_intensity > 0 else 0
-    _intensity_title_h = 5.0 if _n_intensity > 0 else 0.0
-    _scale_bar_reserved = (9.0 + 4.0) if (scale is not None and extent is not None and center_lat is not None) else 0.0
-    _legend_items_min_height = (
-        BORDER_WIDTH_MM                              # 分隔线
-        + 7.0                                        # 图例标题区（1mm上边距+5mm标题+1mm间距）
-        + _basic_rows * LEGEND_ROW_HEIGHT_MM         # 基本项
-        + _fault_rows * LEGEND_ROW_HEIGHT_MM         # 断裂线项
-        + _intensity_title_h                         # 烈度标题
-        + _int_rows * LEGEND_ROW_HEIGHT_MM           # 烈度项
-        + _scale_bar_reserved                        # 比例尺（从底部向上保留）
-    )
-    # 说明文字区高度上限：确保剩余空间足够放置图例项和比例尺
-    _max_info_text_height = legend_height - _legend_items_min_height
-
     # 图例背景矩形（白色实心，与地图等高）
     legend_bg = QgsLayoutItemShape(layout)
     legend_bg.setShapeType(QgsLayoutItemShape.Rectangle)
@@ -1724,10 +1588,11 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         'outline_width_unit': 'MM',
     })
     legend_bg.setSymbol(legend_bg_symbol)
-    legend_bg.setFrameEnabled(False)
+    legend_bg.setFrameEnabled(True)
+    legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
     layout.addLayoutItem(legend_bg)
 
-    # ── 上部：说明文字区（位于图例区顶部，高度受 _max_info_text_height 限制）──
+    # ── 上部：说明文字区（固定65mm高，位于图例区顶部）──
     if description_text:
         # 计算可用宽度（减去左右边距各2mm，再减去右边框1mm间距）
         available_width_mm = legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2
@@ -1741,8 +1606,6 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         line_height_mm = DESCRIPTION_FONT_SIZE_PT * 0.4
         num_lines = len(indented_text.split('\n'))
         INFO_TEXT_AREA_HEIGHT_MM = DESCRIPTION_TOP_MARGIN_MM + num_lines * line_height_mm + 3.0  # 3mm 底部内边距
-        # 限制说明文字区高度，确保图例项和比例尺能在 legend_height 范围内完整显示
-        INFO_TEXT_AREA_HEIGHT_MM = min(INFO_TEXT_AREA_HEIGHT_MM, _max_info_text_height)
 
         # 创建说明文字格式（SimSun字体）
         desc_format = QgsTextFormat()
@@ -1758,8 +1621,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         desc_label.attemptMove(QgsLayoutPoint(legend_x + DESCRIPTION_HORIZONTAL_MARGIN_MM,
                                               legend_y + DESCRIPTION_TOP_MARGIN_MM,
                                               QgsUnitTypes.LayoutMillimeters))
-        # 说明文字标签高度随 INFO_TEXT_AREA_HEIGHT_MM 调整（截断时也不超出分配区域）
-        desc_label.attemptResize(QgsLayoutSize(legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2,
+        desc_label.attemptResize(QgsLayoutSize(legend_width - DESCRIPTION_HORIZONTAL_MARGIN_MM * 2,  # -1.0mm 右侧安全间距
                                                INFO_TEXT_AREA_HEIGHT_MM - DESCRIPTION_TOP_MARGIN_MM + 2.0,  # +2.0mm 确保最后一行完整显示
                                                QgsUnitTypes.LayoutMillimeters))
         desc_label.setHAlign(Qt.AlignLeft)
@@ -1898,22 +1760,22 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     int_title_label.setText("地震烈度")
     int_title_label.setTextFormat(int_title_format)
     int_title_label.attemptMove(QgsLayoutPoint(legend_x, current_y, QgsUnitTypes.LayoutMillimeters))
-    int_title_label.attemptResize(QgsLayoutSize(legend_width, 5,
+    int_title_label.attemptResize(QgsLayoutSize(legend_width, LEGEND_ROW_HEIGHT_MM,
                                                 QgsUnitTypes.LayoutMillimeters))
     int_title_label.setHAlign(Qt.AlignHCenter)
     int_title_label.setVAlign(Qt.AlignVCenter)
     int_title_label.setFrameEnabled(False)
     int_title_label.setBackgroundEnabled(False)
     layout.addLayoutItem(int_title_label)
-    current_y += 5
+    current_y += LEGEND_ROW_HEIGHT_MM
 
-    # ── 4. 烈度图例项（三列布局，罗马数字，最多 MAX_INTENSITY_LEGEND_ITEMS 个）──
+    # ── 4. 烈度图例项（三列布局，罗马数字+度，最多 MAX_INTENSITY_LEGEND_ITEMS 个）──
     if intensity_data:
         sorted_intensities = sorted(intensity_data.keys(), reverse=True)
         if len(sorted_intensities) > MAX_INTENSITY_LEGEND_ITEMS:
             sorted_intensities = sorted_intensities[:MAX_INTENSITY_LEGEND_ITEMS]
 
-        int_col_count = 4
+        int_col_count = 3
         int_col_width = (legend_width - 2 * LEGEND_PADDING_MM) / int_col_count
         int_icon_width = 4.0
         int_icon_text_gap = 1.0
@@ -1951,18 +1813,18 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
             layout.addLayoutItem(num_lbl)
 
             # "度"字（SimSun）
-            # cn_lbl = QgsLayoutItemLabel(layout)
-            # cn_lbl.setText("度")
-            # cn_lbl.setTextFormat(item_format_cn)
-            # cn_lbl.attemptMove(QgsLayoutPoint(text_start_x + roman_width, item_y,
-            #                                   QgsUnitTypes.LayoutMillimeters))
-            # cn_lbl.attemptResize(QgsLayoutSize(max(du_width, 4.0), LEGEND_ROW_HEIGHT_MM,
-            #                                    QgsUnitTypes.LayoutMillimeters))
-            # cn_lbl.setHAlign(Qt.AlignLeft)
-            # cn_lbl.setVAlign(Qt.AlignVCenter)
-            # cn_lbl.setFrameEnabled(False)
-            # cn_lbl.setBackgroundEnabled(False)
-            # layout.addLayoutItem(cn_lbl)
+            cn_lbl = QgsLayoutItemLabel(layout)
+            cn_lbl.setText("度")
+            cn_lbl.setTextFormat(item_format_cn)
+            cn_lbl.attemptMove(QgsLayoutPoint(text_start_x + roman_width, item_y,
+                                              QgsUnitTypes.LayoutMillimeters))
+            cn_lbl.attemptResize(QgsLayoutSize(max(du_width, 4.0), LEGEND_ROW_HEIGHT_MM,
+                                               QgsUnitTypes.LayoutMillimeters))
+            cn_lbl.setHAlign(Qt.AlignLeft)
+            cn_lbl.setVAlign(Qt.AlignVCenter)
+            cn_lbl.setFrameEnabled(False)
+            cn_lbl.setBackgroundEnabled(False)
+            layout.addLayoutItem(cn_lbl)
 
         current_y += int_rows * LEGEND_ROW_HEIGHT_MM
 
@@ -1970,8 +1832,8 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
     if scale is not None and extent is not None and center_lat is not None:
         lon_range_deg = extent.xMaximum() - extent.xMinimum()
         map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
-        km_per_mm = map_total_km / map_width_mm if map_width_mm > 0 else 1.0
-        target_bar_km = map_width_mm * 0.18 * km_per_mm
+        km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
+        target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
 
         nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
         bar_km = nice_values[0]
@@ -1986,7 +1848,7 @@ def _add_legend(layout, map_height_mm, has_faults=True, scale=None, extent=None,
         num_segments = 4
 
         std_bar_width = bar_length_mm + 16.0
-        std_bar_height = 9.0
+        std_bar_height = 14.0
 
         # 图例区可用宽度（左右各留 2mm）
         avail_width = legend_width - 4.0
@@ -2309,21 +2171,10 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
     print(f"  震中: {center_lon:.4f}°E, {center_lat:.4f}°N")
 
     scale_denom = get_scale_by_magnitude(magnitude)
-    print(f"  震级: M{magnitude}, 比例尺(震级估算): 1:{scale_denom:,}")
+    print(f"  震级: M{magnitude}, 比例尺: 1:{scale_denom:,}")
 
-    map_width_mm, _ = calculate_map_dimensions_from_extent(extent)
-    # 强制地图高度始终等于 MAP_HEIGHT_MM（100mm），与图例区高度保持一致
-    map_height_mm = MAP_HEIGHT_MM
-    # 调整 extent 使其宽高比与 map_item 的 mm 尺寸严格一致，
-    # 避免 QGIS 自动扩展 extent 导致实际渲染高度偏离 map_height_mm
-    extent = adjust_extent_to_match_aspect_ratio(extent, map_width_mm, map_height_mm)
-    # 动态计算比例尺：基于调整后 extent 的纬度方向（高度固定）
-    lat_range_deg = extent.yMaximum() - extent.yMinimum()
-    if lat_range_deg > 0:
-        scale_denom = int((lat_range_deg * 111320.0) / (MAP_HEIGHT_MM / 1000.0))
-    scale_denom = round_scale_denominator(scale_denom)
-    print(f"  地图尺寸: {map_width_mm:.1f}mm x {map_height_mm:.1f}mm")
-    print(f"  动态比例尺: 1:{scale_denom:,}")
+    map_height_mm = calculate_map_height_from_extent(extent, MAP_WIDTH_MM)
+    print(f"  地图尺寸: {MAP_WIDTH_MM:.1f}mm x {map_height_mm:.1f}mm")
 
     # [3/9] 计算烈度面积
     print("\n[3/9] 计算烈度面积...")
@@ -2347,7 +2198,7 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
     try:
         # [4/9] 下载天地图底图
         print("\n[4/9] 下载天地图矢量底图...")
-        width_px = int(map_width_mm / 25.4 * OUTPUT_DPI)
+        width_px = int(MAP_WIDTH_MM / 25.4 * OUTPUT_DPI)
         height_px = int(map_height_mm / 25.4 * OUTPUT_DPI)
         if basemap_path:
             basemap_raster = QgsRasterLayer(basemap_path, "天地图底图", "gdal")
@@ -2384,7 +2235,7 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
         if province_layer:
             try:
                 province_label_layer = create_province_label_layer(
-                    province_layer, center_lon, center_lat, extent, map_width_mm=map_width_mm)
+                    province_layer, center_lon, center_lat, extent)
                 if province_label_layer:
                     # False: 不自动将图层添加到图层树，由 ordered_layers 手动控制渲染顺序
                     project.addMapLayer(province_label_layer, False)
@@ -2461,8 +2312,7 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
         print("\n[9/9] 创建布局并导出PNG...")
         layout = create_print_layout(
             project, extent, scale_denom, map_height_mm, full_description,
-            intensity_data, map_width_mm=map_width_mm,
-            ordered_layers=ordered_layers, has_faults=has_faults
+            intensity_data, ordered_layers=ordered_layers, has_faults=has_faults
         )
         result_path = export_layout_to_png(layout, output_path, OUTPUT_DPI)
 
@@ -2608,7 +2458,7 @@ def _create_test_kml(kml_path):
 # ============================================================
 
 if __name__ == "__main__":
-    INPUT_KML_PATH = r"../../data/geology/n0432881302350072.kml"
+    INPUT_KML_PATH = r"../../data/geology/abc.kml"
     INPUT_DESCRIPTION = (
         " 综合考虑震中附近地质构造背景、地震波衰减特性，"
         "估计了本次地震的地震动预测图。"
