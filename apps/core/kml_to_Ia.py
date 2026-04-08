@@ -66,6 +66,7 @@ import os
 import random
 import re
 import tempfile
+import threading
 import time
 import traceback
 import warnings
@@ -141,6 +142,11 @@ gdal.UseExceptions()
 # ==================== KML PGA值解析正则 ====================
 # 匹配格式如 "0.01g"、"0.05G"、"0.10 g" 等
 _PGA_NAME_PATTERN = re.compile(r'^([0-9]*\.?[0-9]+)\s*[gG]$')
+
+
+class TaskCancelledException(Exception):
+    """任务取消异常：由 KmlToIaConverter 检测到取消信号时抛出。"""
+    pass
 
 
 class KmlToIaConverter:
@@ -231,6 +237,9 @@ class KmlToIaConverter:
 
         # ---- 并行插值参数 ----
         max_interp_workers: int = 2,        # scipy插值并行线程数，推荐 1~4
+
+        # ---- 取消信号参数 ----
+        cancel_event: Optional[threading.Event] = None,  # 取消事件，set()后立即停止插值
     ):
         self.kml_path = kml_path
         self.ia_output_path = ia_output_path
@@ -269,6 +278,8 @@ class KmlToIaConverter:
         self.max_memory_gb = max_memory_gb
         # 并行插值参数
         self.max_interp_workers = max(1, max_interp_workers)
+        # 取消信号
+        self._cancel_event: Optional[threading.Event] = cancel_event
 
         # 运行时数据（由 run() 过程填充）
         self._contours: List[dict] = []
@@ -285,6 +296,11 @@ class KmlToIaConverter:
         self._res_lat: float = 0.0   # 纬度方向分辨率（度）
 
     # ==================== KML 解析 ====================
+
+    def _check_cancelled(self) -> None:
+        """检查取消信号，若已设置则抛出 TaskCancelledException（线程安全，零开销）。"""
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            raise TaskCancelledException("任务已被取消")
 
     def parse_kml(self) -> List[dict]:
         """
@@ -745,6 +761,9 @@ class KmlToIaConverter:
             report_interval = max(1, n_rows // 20)
 
             for row_idx in range(n_rows):
+                # 每 100 行检查一次取消信号（减少检查开销）
+                if row_idx % 100 == 0:
+                    self._check_cancelled()
                 y = self._y_max - (row_idx + 0.5) * self._res_lat
 
                 row_data = np.full(self._n_cols, -9999.0, dtype=np.float32)
@@ -769,6 +788,8 @@ class KmlToIaConverter:
             total_time = time.time() - start_time
             logger.info("QGIS插值完成，总耗时: %.1fs, 已保存: %s", total_time, output_tif_path)
 
+        except TaskCancelledException:
+            raise
         except Exception as exc:
             logger.error("QGIS插值失败: %s", exc, exc_info=True)
             raise
@@ -875,6 +896,10 @@ class KmlToIaConverter:
                     submit_ptr += 1
 
                 for chunk_idx, rs in enumerate(chunk_starts):
+                    # 检查取消信号；若已取消，立即取消未提交分块并退出
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise TaskCancelledException("任务已被取消")
                     # 等待当前分块的计算结果（一定在 pending 中）
                     try:
                         row_start_res, chunk_vals = pending.pop(rs).result()
@@ -905,6 +930,8 @@ class KmlToIaConverter:
             logger.info("scipy_idw 插值完成，总耗时: %.1fs, 已保存: %s",
                         total_time, output_tif_path)
 
+        except TaskCancelledException:
+            raise
         except Exception as exc:
             logger.error("scipy_idw 插值失败: %s", exc, exc_info=True)
             raise
@@ -1033,6 +1060,10 @@ class KmlToIaConverter:
                     submit_ptr += 1
 
                 for chunk_idx, rs in enumerate(chunk_starts):
+                    # 检查取消信号；若已取消，立即取消未提交分块并退出
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise TaskCancelledException("任务已被取消")
                     # 等待当前分块的计算结果（一定在 pending 中）
                     try:
                         row_start_res, chunk_vals = pending.pop(rs).result()
@@ -1063,6 +1094,8 @@ class KmlToIaConverter:
             logger.info("scipy_tin 插值完成，总耗时: %.1fs, 已保存: %s",
                         total_time, output_tif_path)
 
+        except TaskCancelledException:
+            raise
         except Exception as exc:
             logger.error("scipy_tin 插值失败: %s", exc, exc_info=True)
             raise
@@ -1178,6 +1211,7 @@ class KmlToIaConverter:
             start_time = time.time()
 
             for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
+                self._check_cancelled()
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
 
@@ -1213,6 +1247,8 @@ class KmlToIaConverter:
             logger.info("radial 插值完成，总耗时: %.1fs, 已保存: %s",
                         total_time, output_tif_path)
 
+        except TaskCancelledException:
+            raise
         except Exception as exc:
             logger.error("radial 插值失败: %s", exc, exc_info=True)
             raise
@@ -1285,6 +1321,7 @@ class KmlToIaConverter:
             start_time = time.time()
 
             for chunk_idx, row_start in enumerate(range(0, n_rows, chunk_rows)):
+                self._check_cancelled()
                 row_end = min(row_start + chunk_rows, n_rows)
 
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
@@ -1321,6 +1358,8 @@ class KmlToIaConverter:
             logger.info("kriging 插值完成，总耗时: %.1fs, 已保存: %s",
                         total_time, output_tif_path)
 
+        except TaskCancelledException:
+            raise
         except Exception as exc:
             logger.error("kriging 插值失败: %s", exc, exc_info=True)
             raise
@@ -1544,6 +1583,8 @@ class KmlToIaConverter:
             else:
                 logger.error('KmlToIaConverter.run() 返回 False')
             return result
+        except TaskCancelledException:
+            raise
         except Exception as exc:
             logger.error('KmlToIaConverter.run() 失败: %s', exc, exc_info=True)
             raise
@@ -1560,6 +1601,9 @@ class KmlToIaConverter:
         logger.info("=" * 60)
 
         try:
+            # 0. 检查取消信号（在任何耗时操作之前）
+            self._check_cancelled()
+
             # 1. 检查输入文件
             if not os.path.exists(self.kml_path):
                 logger.error("KML文件不存在: %s", self.kml_path)
@@ -1614,6 +1658,8 @@ class KmlToIaConverter:
 
             return True
 
+        except TaskCancelledException:
+            raise
         except Exception as e:
             logger.error("转换失败: %s", e, exc_info=True)
             raise

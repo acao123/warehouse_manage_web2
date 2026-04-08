@@ -353,6 +353,13 @@ def stop_task_view(request):
     task.save(update_fields=['task_status', 'updated_at'])
     logger.info('任务 %s 被用户 %s 请求取消（状态设为取消中）', task_id, user_id)
 
+    # 立即触发 cancel_event，通知 Ia 计算线程尽快停止
+    try:
+        from .tasks import cancel_task
+        cancel_task(int(task_id))
+    except Exception as exc:
+        logger.warning('任务 %s 发送取消信号失败: %s', task_id, exc)
+
     return JsonResponse({'code': 0, 'msg': '任务取消中，请稍后查看状态'})
 
 
