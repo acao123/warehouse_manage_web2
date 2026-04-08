@@ -14,6 +14,7 @@ import gc
 import logging
 import os
 import random
+import threading
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -33,6 +34,35 @@ _TASK_EXECUTOR = _cf.ThreadPoolExecutor(
     max_workers=3,
     thread_name_prefix='ReportMainTask',
 )
+
+# ============================================================
+# 任务取消事件字典（task_id → threading.Event）及保护锁
+# ============================================================
+_task_cancel_events: dict = {}
+_task_cancel_events_lock = threading.Lock()
+
+
+def cancel_task(task_id: int) -> None:
+    """
+    触发指定任务的取消信号（线程安全）。
+
+    若该任务的 cancel_event 存在，则调用 event.set()，
+    KmlToIaConverter 会在下一个检查点检测到信号并立即停止插值。
+
+    参数:
+        task_id: report_task 表的 id
+    """
+    with _task_cancel_events_lock:
+        event = _task_cancel_events.get(task_id)
+    if event is not None:
+        event.set()
+        logger.info('[任务 %s] 取消信号已发送（cancel_event.set()）', task_id)
+
+
+def _cleanup_cancel_event(task_id: int) -> None:
+    """清理指定任务的取消事件（线程安全）。"""
+    with _task_cancel_events_lock:
+        _task_cancel_events.pop(task_id, None)
 
 # ============================================================
 # 进度常量（对应每个执行步骤的 progress 值）
@@ -416,12 +446,17 @@ def _gen_img9(task: ReportTask, output_dir: str, basemap_path=None, annotation_p
         return None, None
 
 
-def _gen_ia_tif(task: ReportTask, output_dir: str) -> str | None:
+def _gen_ia_tif(task: ReportTask, output_dir: str, cancel_event=None) -> str | None:
     """
     生成 Ia.tif（PGA KML → Ia 栅格）。
 
+    参数:
+        task: ReportTask 实例
+        output_dir: 输出目录
+        cancel_event: threading.Event，设置后立即中止 Ia 计算（可为 None）
+
     返回:
-        Ia.tif 文件路径，或 None（失败时）
+        Ia.tif 文件路径，或 None（失败时）；若取消则抛出异常向上传播
     """
     try:
         from core.kml_to_Ia import KmlToIaConverter
@@ -432,6 +467,7 @@ def _gen_ia_tif(task: ReportTask, output_dir: str) -> str | None:
             interp_method=task.interp_method,
             sample_interval=task.sample_interval,
             max_sample_points=task.max_sample_points,
+            cancel_event=cancel_event,
         )
         success = converter.run()
         if success:
@@ -441,6 +477,9 @@ def _gen_ia_tif(task: ReportTask, output_dir: str) -> str | None:
             logger.error('[任务 %s] Ia.tif 生成失败（converter.run() 返回 False）', task.id)
             return None
     except Exception as exc:
+        # 若 cancel_event 已触发，说明是用户取消，向上传播让调用方处理
+        if cancel_event is not None and cancel_event.is_set():
+            raise
         logger.error('[任务 %s] Ia.tif 生成失败: %s', task.id, exc, exc_info=True)
         return None
 
@@ -595,6 +634,11 @@ def execute_report_task(task_id: int) -> None:
         logger.error('[任务 %s] 任务不存在，终止执行', task_id)
         return
 
+    # ---- 创建并注册取消事件（在任何耗时操作开始前）----
+    cancel_event = threading.Event()
+    with _task_cancel_events_lock:
+        _task_cancel_events[task_id] = cancel_event
+
     # ---- 2. 创建输出目录 ----
     output_dir = _build_output_dir(task_id)
     try:
@@ -603,6 +647,7 @@ def execute_report_task(task_id: int) -> None:
     except Exception as exc:
         logger.error('[任务 %s] 创建输出目录失败: %s', task_id, exc, exc_info=True)
         _mark_failed(task, error_message=f'创建输出目录失败: {exc}')
+        _cleanup_cancel_event(task_id)
         return
 
     # ---- 3. 冗余初始化进度（保险） ----
@@ -619,6 +664,7 @@ def execute_report_task(task_id: int) -> None:
         if _is_cancelled(task_id):
             logger.info('[任务 %s] 任务已取消，跳过天地图下载', task_id)
             _mark_failed(task)
+            _cleanup_cancel_event(task_id)
             return
 
         _update_task_progress(task_id, PROGRESS_STEPS['tianditu_start'],
@@ -655,6 +701,7 @@ def execute_report_task(task_id: int) -> None:
             if _err:
                 logger.error('[任务 %s] 缓存底图下载失败: %s', task_id, _err)
                 _mark_failed(task, error_message=f'天地图下载失败: {_err}')
+                _cleanup_cancel_event(task_id)
                 return
             cached_basemap_path = _basemap_path
             cached_annotation_path = _annotation_path
@@ -663,6 +710,7 @@ def execute_report_task(task_id: int) -> None:
         except Exception as exc:
             logger.error('[任务 %s] 天地图下载异常: %s', task_id, exc, exc_info=True)
             _mark_failed(task, error_message=f'天地图下载异常: {exc}')
+            _cleanup_cancel_event(task_id)
             return
 
         _update_task_progress(task_id, PROGRESS_STEPS['tianditu_done'],
@@ -743,13 +791,17 @@ def execute_report_task(task_id: int) -> None:
 
         # ---- 8. 生成 Ia.tif ----
         try:
-            ia_tif_path = _gen_ia_tif(task, output_dir)
+            ia_tif_path = _gen_ia_tif(task, output_dir, cancel_event)
             record_kwargs['ia_tif_path'] = ia_tif_path
             _update_task_progress(task_id, PROGRESS_STEPS['ia_tif'],
                                   append_message='Ia.tif已完成，')
         except Exception as exc:
-            logger.error('[任务 %s] Ia.tif 生成失败: %s', task_id, exc, exc_info=True)
-            _mark_failed(task, error_message=f'Ia.tif生成失败: {exc}')
+            if cancel_event.is_set():
+                logger.info('[任务 %s] Ia计算被用户取消', task_id)
+                _mark_failed(task, error_message='任务已被用户取消')
+            else:
+                logger.error('[任务 %s] Ia.tif 生成失败: %s', task_id, exc, exc_info=True)
+                _mark_failed(task, error_message=f'Ia.tif生成失败: {exc}')
             return
         gc.collect()
 
@@ -857,6 +909,8 @@ def execute_report_task(task_id: int) -> None:
             get_qgis_manager().cleanup_session(task_id)
         except Exception as cleanup_exc:
             logger.warning('[任务 %s] 最终资源清理异常: %s', task_id, cleanup_exc)
+        # ---- 清理取消事件，防止内存泄漏 ----
+        _cleanup_cancel_event(task_id)
         gc.collect()
 
 
