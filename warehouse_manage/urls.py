@@ -80,6 +80,7 @@ urlpatterns = [
     path('report/task/create/', report_views.create_task_view, name='report_task_create'),
     path('report/task/running/', report_views.running_tasks_view, name='report_task_running'),
     path('report/task/stop/', report_views.stop_task_view, name='report_task_stop'),
+    path('report/task/force_stop/', report_views.force_stop_task_view, name='report_task_force_stop'),
     path('report/task/execute/', report_views.execute_task_view, name='report_task_execute'),
     path('report/task/download/', report_views.download_report_view, name='report_task_download'),
     path('report/task/progress/', report_views.task_progress_view, name='task_progress'),

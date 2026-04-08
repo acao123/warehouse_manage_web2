@@ -364,6 +364,46 @@ def stop_task_view(request):
 
 
 @csrf_exempt
+def force_stop_task_view(request):
+    """
+    强制结束任务接口（将 task_status 直接更新为 STATUS_FAILED=3，立即标记为失败）
+    :param request: HTTP 请求对象
+    :return: JSON 格式响应
+    """
+    if request.method != 'POST':
+        return JsonResponse({'code': 1, 'msg': '请求方法错误'})
+
+    user_id = request.session.get('user_id')
+    if not user_id:
+        return JsonResponse({'code': 1, 'msg': '用户未登录'})
+
+    task_id = request.POST.get('task_id', '').strip()
+    if not task_id:
+        return JsonResponse({'code': 1, 'msg': '缺少任务ID'})
+
+    try:
+        task = ReportTask.objects.get(id=task_id)
+    except ReportTask.DoesNotExist:
+        return JsonResponse({'code': 1, 'msg': '任务不存在'})
+
+    if task.task_status not in (ReportTask.STATUS_RUNNING, ReportTask.STATUS_CANCELLING):
+        return JsonResponse({'code': 1, 'msg': '只能结束正在执行或取消中的任务'})
+
+    task.task_status = ReportTask.STATUS_FAILED
+    task.save(update_fields=['task_status', 'updated_at'])
+    logger.info('任务 %s 被用户 %s 强制结束（状态设为失败）', task_id, user_id)
+
+    # 立即触发 cancel_event，通知后台计算线程尽快停止
+    try:
+        from .tasks import cancel_task
+        cancel_task(int(task_id))
+    except Exception as exc:
+        logger.warning('任务 %s 发送取消信号失败: %s', task_id, exc)
+
+    return JsonResponse({'code': 0, 'msg': '任务已强制结束'})
+
+
+@csrf_exempt
 def execute_task_view(request):
     """
     执行任务接口：原子重置任务进度字段，然后在后台线程池中执行任务
