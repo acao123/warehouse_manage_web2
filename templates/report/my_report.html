@@ -81,6 +81,9 @@
         else if (s === '3') { statusText = '执行失败'; color = '#FF5722';
              return  '<span style="color:#FF5722">' + statusText + '</span>';
         }
+       else if (s === '4') { statusText = '任务终止中'; color = '#999';
+             return  '<span style="color:#070606">' + statusText + '</span>';
+        }
         else                { statusText = s;          color = '';      
             return  '<span>' + statusText + '</span>';
         }

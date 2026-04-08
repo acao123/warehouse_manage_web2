@@ -84,6 +84,9 @@
         else if (s === '3') { statusText = '执行失败'; color = '#FF5722';
              return  '<span style="color:#FF5722">' + statusText + '</span>';
         }
+       else if (s === '4') { statusText = '任务终止中'; color = '#999';
+             return  '<span style="color:#070606">' + statusText + '</span>';
+        }
         else                { statusText = s;          color = '';      
             return  '<span>' + statusText + '</span>';
         }
@@ -98,7 +101,7 @@
         }
         var s = String(d.task_status);
          if (s === '1') {
-            return '<a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="stop">结束任务</a>';
+            return '<a class="layui-btn layui-btn-danger layui-btn-xs" lay-event="stop">终止任务</a>';
         }
     }}
 
@@ -160,14 +163,14 @@
             ]]
         });
 
-        // 监听工具条（结束任务）
+        // 监听工具条（终止任务）
         table.on('tool(allReportTable)', function(obj){
             var data = obj.data;
             if(obj.event === 'stop'){
-                layer.confirm('确定要结束该任务吗？', {icon: 3, title: '结束确认'}, function(index){
+                layer.confirm('确定要终止该任务吗？', {icon: 3, title: '终止确认'}, function(index){
                     $.post('/report/task/stop/', {task_id: data.id}, function(res){
                         if(res.code === 0){
-                            layer.msg('任务已结束');
+                            layer.msg('任务已终止中');
                             allReportTable.reload();
                         } else {
                             layer.msg(res.msg || '操作失败');
