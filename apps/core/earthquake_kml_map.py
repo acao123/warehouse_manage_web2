@@ -639,7 +639,7 @@ def _extract_linestring_coords(pm, nsmap, ns):
                 coord_text = ce.text.strip()
                 break
         if coord_text:
-            coords = _parse_coordinates(coord_text)
+            coords.extend(_parse_coordinates(coord_text))
     return coords
 
 
@@ -1383,9 +1383,9 @@ def generate_analysis_text(intensity_data, areas):
     参数:
         intensity_data (dict): 烈度圈数据
         areas (dict): 烈度面积统
-        返回:
-            str: 分析文字
-        """
+    返回:
+        str: 分析文字
+    """
     if not intensity_data:
         return ""
     max_intensity = max(intensity_data.keys())
@@ -2241,6 +2241,7 @@ def export_layout_to_png(layout, output_path, dpi=150):
 # ============================================================
 
 def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_path,
+                                longitude=None, latitude=None,
                                 basemap_path=None, annotation_path=None):
     """
     生成地震烈度分布图（基于QGIS 3.40.15）
@@ -2250,6 +2251,8 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
         description_text (str): 说明文字（不超过450字）
         magnitude (float): 震级（用于确定比例尺）
         output_path (str): 输出PNG文件路径
+        longitude (float, optional): 震中经度；需与 latitude 同时提供，否则自动计算
+        latitude (float, optional): 震中纬度；需与 longitude 同时提供，否则自动计算
     返回:
         dict: 包含分析结果的字典
     """
@@ -2258,6 +2261,7 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
     try:
         return _generate_earthquake_kml_map_impl(
             kml_path, description_text, magnitude, output_path,
+            longitude=longitude, latitude=latitude,
             basemap_path=basemap_path, annotation_path=annotation_path
         )
     except Exception as exc:
@@ -2266,6 +2270,7 @@ def generate_earthquake_kml_map(kml_path, description_text, magnitude, output_pa
 
 
 def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, output_path,
+                                      longitude=None, latitude=None,
                                       basemap_path=None, annotation_path=None):
     """generate_earthquake_kml_map 的实际实现。"""
     print("=" * 65)
@@ -2282,8 +2287,17 @@ def _generate_earthquake_kml_map_impl(kml_path, description_text, magnitude, out
     # [2/9] 计算地理范围和震中
     print("\n[2/9] 计算地理范围...")
     extent = calculate_geo_extent_from_intensity(intensity_data)
-    center_lon, center_lat = calculate_epicenter(intensity_data)
-    print(f"  震中: {center_lon:.4f}°E, {center_lat:.4f}°N")
+    if longitude is not None and latitude is not None:
+        center_lon, center_lat = longitude, latitude
+        print(f"  震中（入参指定）: {center_lon:.4f}°E, {center_lat:.4f}°N")
+    else:
+        if (longitude is None) != (latitude is None):
+            print("  *** 警告：longitude 和 latitude 需同时提供，缺少其一将自动计算震中 ***")
+        center_lon, center_lat = calculate_epicenter(intensity_data)
+        if center_lon is None or center_lat is None:
+            print("  *** 无法计算震中位置（烈度数据为空）***")
+            return None
+        print(f"  震中（自动计算）: {center_lon:.4f}°E, {center_lat:.4f}°N")
 
     # 计算布局尺寸（固定高度100mm，最大宽度170mm）
     map_width_mm, map_height_mm, total_width_mm, total_height_mm = calculate_layout_dimensions(extent)
@@ -2507,7 +2521,9 @@ def test_generate_earthquake_kml_map():
         kml_path=test_kml_path,
         description_text=test_description,
         magnitude=test_magnitude,
-        output_path=test_output_path
+        output_path=test_output_path,
+        longitude=103.25,
+        latitude=34.06
     )
 
     if result:
@@ -2594,5 +2610,7 @@ if __name__ == "__main__":
             kml_path=INPUT_KML_PATH,
             description_text=INPUT_DESCRIPTION,
             magnitude=INPUT_MAGNITUDE,
-            output_path=OUTPUT_PATH
+            output_path=OUTPUT_PATH,
+            longitude=118.18,
+            latitude=39.63
         )
