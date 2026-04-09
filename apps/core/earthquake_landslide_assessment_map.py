@@ -836,17 +836,19 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
     """
     统计指定范围内各危险等级的面积和占比
 
-    使用GDAL读取裁剪后（或原始）的TIF数据，统计范围内数值1~5各像素数量，
+    使用GDAL读取原始TIF数据，统计范围内数值1~5各像素数量，
     根据像素分辨率计算每个等级的面积（平方千米）和占比（%）。
 
     自动检测TIF坐标系：
     - 若为投影坐标系（单位：米），直接用像素尺寸（米）计算面积
-    - 若为地理坐标系（单位：度），使用纬度修正公式计算面积
+    - 若为地理坐标系（单位：度），使用纬度修正公式计算面积；
+      当统计范围跨度超过1度时，按行逐行使用行中心纬度修正，精度更高
 
     参数:
-        tif_path (str): TIF文件路径（可以是裁剪后的临时文件或原始文件）
-        extent (QgsRectangle): 统计范围（WGS84坐标）
-        kml_path (str): 烈度圈KML文件路径（可选）；提供时，统计仅限于最小烈度圈范围内
+        tif_path (str): TIF文件路径（应传入原始文件，函数内部按统计范围裁剪读取）
+        extent (QgsRectangle): 统计范围（WGS84坐标），当未提供kml_path时使用此范围
+        kml_path (str): 烈度圈KML文件路径（可选）；提供时，以最外圈（最小烈度值的圈）
+                        的外包矩形作为数据读取范围，并用最外圈多边形作为掩膜进行统计
 
     返回:
         list: 统计结果列表，每项为字典 {"label": str, "area_km2": float, "percentage": float}
@@ -897,17 +899,18 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
         else:
             print("[警告] TIF文件无坐标系信息，假设为地理坐标系（度）")
 
-        # 预解析KML，获取最小烈度圈坐标（用于确定统计范围）
+        # 预解析KML，获取最外圈（最小烈度值对应的圈）坐标（用于确定统计范围）
         kml_coords_wgs84 = None
         kml_intensity = None
         if kml_path:
             try:
                 intensity_data = parse_intensity_kml(kml_path)
                 if intensity_data:
-                    min_item = min(intensity_data, key=lambda x: x["intensity"])
-                    kml_coords_wgs84 = min_item["coords"]
-                    kml_intensity = min_item["intensity"]
-                    print(f"[信息] KML最小烈度圈({kml_intensity}度)解析成功，将以其外包矩形为统计范围")
+                    # 烈度值越小，圈越大；取最小烈度值的圈即为最外圈/最大范围的烈度圈
+                    outermost_item = min(intensity_data, key=lambda x: x["intensity"])
+                    kml_coords_wgs84 = outermost_item["coords"]
+                    kml_intensity = outermost_item["intensity"]
+                    print(f"[信息] KML最外圈（最小烈度值{kml_intensity}度）解析成功，将以其外包矩形为统计范围")
             except Exception as kml_parse_err:
                 print(f"[警告] KML解析失败: {kml_parse_err}，将使用extent范围统计")
                 kml_coords_wgs84 = None
@@ -972,19 +975,43 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
         if is_projected:
             # 投影坐标系：像素尺寸单位为米，直接换算为平方千米
             pixel_area_km2 = (pixel_width * pixel_height) / M2_TO_KM2
+            # 投影坐标系下各行像素面积相同，使用统一值
+            pixel_area_km2_per_row = None
             print(f"[信息] 像素分辨率: {pixel_width:.2f}m x {pixel_height:.2f}m")
             print(f"[信息] 单像素面积: {pixel_area_km2:.8f} km²")
         else:
             # 地理坐标系：像素尺寸单位为度，需用纬度修正
-            # 使用统计范围在WGS84中的中心纬度（query_extent为WGS84坐标）
-            center_lat = (query_extent.yMinimum() + query_extent.yMaximum()) / 2.0
-            cos_lat = math.cos(math.radians(center_lat))
-            pixel_area_km2 = (pixel_width * KM_PER_DEGREE * cos_lat) * (pixel_height * KM_PER_DEGREE)
+            # 查询范围的纬度跨度
+            lat_range = query_extent.yMaximum() - query_extent.yMinimum()
             print(f"[信息] 像素分辨率: {pixel_width:.6f}° x {pixel_height:.6f}°")
-            print(f"[信息] 中心纬度: {center_lat:.4f}°, cos(lat)={cos_lat:.6f}")
-            print(f"[信息] 单像素面积: {pixel_area_km2:.6f} km²")
+            if lat_range > 1.0:
+                # 跨度超过1度时，逐行按行中心纬度计算像素面积，精度更高
+                # 读取窗口左上角的纬度（WGS84）：需将TIF坐标系下的行位置转回WGS84
+                # 由于读取窗口对应的WGS84坐标范围即为query_extent与TIF交集
+                # 这里用简单近似：WGS84纬度与TIF行线性对应（非投影TIF时完全正确）
+                row_y_top = query_extent.yMaximum()
+                # 各行中心纬度 = row_y_top - (i + 0.5) * pixel_height（度）
+                pixel_area_km2_per_row = np.array([
+                    (pixel_width * KM_PER_DEGREE * math.cos(math.radians(
+                        row_y_top - (i + 0.5) * pixel_height
+                    ))) * (pixel_height * KM_PER_DEGREE)
+                    for i in range(read_height)
+                ])
+                # 中心纬度用于日志
+                center_lat = (query_extent.yMinimum() + query_extent.yMaximum()) / 2.0
+                pixel_area_km2 = float(np.mean(pixel_area_km2_per_row))
+                print(f"[信息] 纬度跨度{lat_range:.2f}°>1°，采用逐行纬度修正计算面积")
+                print(f"[信息] 中心纬度: {center_lat:.4f}°，平均单像素面积: {pixel_area_km2:.6f} km²")
+            else:
+                # 跨度不超过1度，使用统一中心纬度（近似误差<0.5%）
+                center_lat = (query_extent.yMinimum() + query_extent.yMaximum()) / 2.0
+                cos_lat = math.cos(math.radians(center_lat))
+                pixel_area_km2 = (pixel_width * KM_PER_DEGREE * cos_lat) * (pixel_height * KM_PER_DEGREE)
+                pixel_area_km2_per_row = None
+                print(f"[信息] 中心纬度: {center_lat:.4f}°, cos(lat)={cos_lat:.6f}")
+                print(f"[信息] 单像素面积: {pixel_area_km2:.6f} km²")
 
-        # 若提供了KML文件，创建最小烈度圈掩膜限定统计区域
+        # 若提供了KML文件，创建最外圈（最小烈度值）掩膜限定统计区域
         kml_mask = None
         if kml_coords_wgs84 is not None:
             try:
@@ -1038,7 +1065,7 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
                 gdal.RasterizeLayer(mask_ds, [1], mem_layer, burn_values=[1])
                 kml_mask = mask_ds.GetRasterBand(1).ReadAsArray().astype(bool)
                 mask_ds = None
-                print(f"[信息] KML最小烈度圈({kml_intensity}度)掩膜创建成功")
+                print(f"[信息] KML最外圈（最小烈度值{kml_intensity}度）掩膜创建成功")
             except Exception as mask_err:
                 print(f"[警告] KML掩膜创建失败: {mask_err}，将使用完整范围统计")
                 kml_mask = None
@@ -1058,10 +1085,27 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
             total_valid_pixels += count
 
         # 计算面积和占比
+        # 若有逐行面积数组，则对每个等级按行累加面积
+        if pixel_area_km2_per_row is not None:
+            class_area_km2 = {}
+            for cls in LANDSLIDE_CLASSES:
+                value = cls["value"]
+                mask_val = (data == value)
+                if kml_mask is not None:
+                    mask_val = mask_val & kml_mask
+                # 每行中符合条件的像素数 × 该行单像素面积
+                row_counts = np.sum(mask_val, axis=1)  # shape: (read_height,)
+                class_area_km2[value] = float(np.dot(row_counts, pixel_area_km2_per_row))
+            total_area_km2 = sum(class_area_km2.values())
+        else:
+            class_area_km2 = {cls["value"]: class_pixel_counts[cls["value"]] * pixel_area_km2
+                              for cls in LANDSLIDE_CLASSES}
+            total_area_km2 = total_valid_pixels * pixel_area_km2
+
         for cls in LANDSLIDE_CLASSES:
             value = cls["value"]
             count = class_pixel_counts[value]
-            area_km2 = count * pixel_area_km2
+            area_km2 = class_area_km2[value]
             percentage = (count / total_valid_pixels * 100.0) if total_valid_pixels > 0 else 0.0
             stats_result.append({
                 "value": value,
@@ -1072,7 +1116,7 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
             })
             print(f"[统计] {cls['label']}: {count}像素, {area_km2:.2f}km², {percentage:.2f}%")
 
-        print(f"[信息] 统计完成，有效像素总数: {total_valid_pixels}, 总面积: {total_valid_pixels * pixel_area_km2:.2f}km²")
+        print(f"[信息] 统计完成，有效像素总数: {total_valid_pixels}, 总面积: {total_area_km2:.2f}km²")
         return stats_result
 
     except Exception as e:
@@ -2255,13 +2299,14 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     available_width = legend_width - left_pad - right_pad - (col_count - 1) * col_gap
     col_width = available_width / col_count
 
-    # 基本图例项列表（不含烈度）
+    # 基本图例项列表（3行2列，共6项）
     legend_items = [
         ("震中", "star"),
         ("地级市", "circle"),
         ("省界", "solid_line"),
         ("市界", "dash_line_city"),
         ("县界", "dash_line_county"),
+        ("烈度圈", "solid_line_black"),
     ]
 
     for idx, (display_name, draw_type) in enumerate(legend_items):
@@ -2882,12 +2927,11 @@ def _generate_earthquake_landslide_assessment_map_impl(longitude, latitude, magn
         if intensity_legend_layer:
             project.addMapLayer(intensity_legend_layer)
 
-        # 处理烈度圈KML
+        # 处理烈度圈KML（统一解析为绝对路径，供后续统计使用）
         intensity_layer = None
+        abs_kml = None
         if kml_path:
-            abs_kml = kml_path
-            if not os.path.isabs(kml_path):
-                abs_kml = resolve_path(kml_path)
+            abs_kml = kml_path if os.path.isabs(kml_path) else resolve_path(kml_path)
             intensity_data = parse_intensity_kml(abs_kml)
             if intensity_data:
                 intensity_layer = create_intensity_layer(intensity_data)
@@ -2927,15 +2971,19 @@ def _generate_earthquake_landslide_assessment_map_impl(longitude, latitude, magn
 
         # ============================================================
         # 统计各危险等级面积和占比
+        # 始终从原始TIF文件读取数据，避免使用已按地图显示范围裁剪的临时文件
         # ============================================================
-        if stats_tif_path:
-            stats_list = compute_landslide_area_statistics(stats_tif_path, extent, kml_path=kml_path)
+        abs_stats_tif = resolve_path(LANDSLIDE_ASSESSMENT_TIF_PATH) if not os.path.isabs(LANDSLIDE_ASSESSMENT_TIF_PATH) else LANDSLIDE_ASSESSMENT_TIF_PATH
+        if os.path.exists(abs_stats_tif):
+            # 统一使用绝对路径传入KML，避免相对路径在工作目录不同时找不到文件
+            stats_kml = abs_kml if kml_path else None
+            stats_list = compute_landslide_area_statistics(abs_stats_tif, extent, kml_path=stats_kml)
             result_dict["stats_detail"] = stats_list
             result_dict["stats_message"] = format_stats_message(stats_list)
             print(f"\n[统计结果] {result_dict['stats_message']}")
         else:
             result_dict["stats_message"] = "总的来看，无法获取地震诱发斜坡地质灾害危险性数据。"
-            print(f"[警告] 无法获取滑坡评估底图进行统计")
+            print(f"[警告] 无法获取滑坡评估底图进行统计: {abs_stats_tif}")
 
     finally:
         # 清理临时文件
@@ -3006,6 +3054,13 @@ def test_calculate_extent():
     print("  所有范围计算测试通过 ✓")
 
 
+def test_int_to_roman():
+    """测试罗马数字转换"""
+    print("\n--- 测试: int_to_roman ---")
+    assert int_to_roman(4) == "IV"
+    assert int_to_roman(5) == "V"
+    assert int_to_roman(6) == "VI"
+    assert int_to_roman(9) == "IX"
     assert int_to_roman(10) == "X"
     assert int_to_roman(12) == "XII"
     print("  IV=4, V=5, VI=6, IX=9, X=10, XII=12 ✓")
@@ -3351,14 +3406,14 @@ def test_legend_layout_config():
     print(f"  滑坡评估图例项字体大小: {ASSESSMENT_LEGEND_FONT_SIZE_PT}pt ✓")
     print(f"  滑坡评估图例项行高: {ASSESSMENT_LEGEND_ROW_HEIGHT_MM}mm ✓")
 
-    # 验证3行2列布局
+    # 验证3行2列布局（含烈度圈）
     legend_items = [
         ("震中", "star"),
         ("地级市", "circle"),
         ("省界", "solid_line"),
         ("市界", "dash_line_city"),
         ("县界", "dash_line_county"),
-        ("烈度", "solid_line_black"),
+        ("烈度圈", "solid_line_black"),
     ]
     assert len(legend_items) == 6  # 3行 x 2列 = 6项
     print(f"  基本图例项数量: {len(legend_items)} (3行x2列) ✓")
@@ -3668,6 +3723,7 @@ def run_all_tests():
 
     test_magnitude_config()
     test_calculate_extent()
+    test_int_to_roman()
     test_landslide_classes()
     test_build_landslide_legend_list()
     test_determine_overall_danger_level()
