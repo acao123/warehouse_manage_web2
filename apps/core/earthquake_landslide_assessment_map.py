@@ -2306,7 +2306,6 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         ("省界", "solid_line"),
         ("市界", "dash_line_city"),
         ("县界", "dash_line_county"),
-        ("烈度圈", "solid_line_black"),
     ]
 
     for idx, (display_name, draw_type) in enumerate(legend_items):
