@@ -287,16 +287,14 @@ LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"
 
 def _format_area(area_km2):
     """
-    格式化面积数值：面积>=1时取整，面积<1时保留2位小数
+    格式化面积数值：统一四舍五入保留两位小数
 
     参数:
         area_km2 (float): 面积（平方千米）
 
     返回:
-        int or float: 格式化后的面积值
+        float: 格式化后的面积值（保留两位小数）
     """
-    if area_km2 >= 1:
-        return round(area_km2)
     return round(area_km2, 2)
 
 def get_magnitude_config(magnitude):
@@ -899,8 +897,33 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
         else:
             print("[警告] TIF文件无坐标系信息，假设为地理坐标系（度）")
 
-        # 将WGS84 extent转换为TIF坐标系后计算像素范围
-        tif_xmin, tif_ymin, tif_xmax, tif_ymax = transform_extent_to_tif_crs(extent, abs_path)
+        # 预解析KML，获取最小烈度圈坐标（用于确定统计范围）
+        kml_coords_wgs84 = None
+        kml_intensity = None
+        if kml_path:
+            try:
+                intensity_data = parse_intensity_kml(kml_path)
+                if intensity_data:
+                    min_item = min(intensity_data, key=lambda x: x["intensity"])
+                    kml_coords_wgs84 = min_item["coords"]
+                    kml_intensity = min_item["intensity"]
+                    print(f"[信息] KML最小烈度圈({kml_intensity}度)解析成功，将以其外包矩形为统计范围")
+            except Exception as kml_parse_err:
+                print(f"[警告] KML解析失败: {kml_parse_err}，将使用extent范围统计")
+                kml_coords_wgs84 = None
+
+        # 确定统计范围：提供了KML时使用最外圈包围盒，否则使用extent参数
+        if kml_coords_wgs84 is not None:
+            lons = [c[0] for c in kml_coords_wgs84]
+            lats = [c[1] for c in kml_coords_wgs84]
+            query_extent = QgsRectangle(min(lons), min(lats), max(lons), max(lats))
+            print(f"[信息] 统计范围：KML最外圈包围盒 "
+                  f"({min(lons):.4f},{min(lats):.4f})-({max(lons):.4f},{max(lats):.4f})")
+        else:
+            query_extent = extent
+
+        # 将WGS84 query_extent转换为TIF坐标系后计算像素范围
+        tif_xmin, tif_ymin, tif_xmax, tif_ymax = transform_extent_to_tif_crs(query_extent, abs_path)
 
         # 计算与TIF范围的交集
         intersect_xmin = max(tif_xmin, raster_xmin)
@@ -953,8 +976,8 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
             print(f"[信息] 单像素面积: {pixel_area_km2:.8f} km²")
         else:
             # 地理坐标系：像素尺寸单位为度，需用纬度修正
-            # 使用统计范围在WGS84中的中心纬度（extent为WGS84坐标）
-            center_lat = (extent.yMinimum() + extent.yMaximum()) / 2.0
+            # 使用统计范围在WGS84中的中心纬度（query_extent为WGS84坐标）
+            center_lat = (query_extent.yMinimum() + query_extent.yMaximum()) / 2.0
             cos_lat = math.cos(math.radians(center_lat))
             pixel_area_km2 = (pixel_width * KM_PER_DEGREE * cos_lat) * (pixel_height * KM_PER_DEGREE)
             print(f"[信息] 像素分辨率: {pixel_width:.6f}° x {pixel_height:.6f}°")
@@ -963,64 +986,59 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
 
         # 若提供了KML文件，创建最小烈度圈掩膜限定统计区域
         kml_mask = None
-        if kml_path:
+        if kml_coords_wgs84 is not None:
             try:
-                intensity_data = parse_intensity_kml(kml_path)
-                if intensity_data:
-                    min_item = min(intensity_data, key=lambda x: x["intensity"])
-                    coords_wgs84 = min_item["coords"]
+                # 建立坐标转换（WGS84 -> TIF CRS）
+                wgs84_srs = osr.SpatialReference()
+                wgs84_srs.ImportFromEPSG(4326)
+                wgs84_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-                    # 建立坐标转换（WGS84 -> TIF CRS）
-                    wgs84_srs = osr.SpatialReference()
-                    wgs84_srs.ImportFromEPSG(4326)
-                    wgs84_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                tif_srs_obj = osr.SpatialReference()
+                need_transform = False
+                if tif_wkt:
+                    tif_srs_obj.ImportFromWkt(tif_wkt)
+                    tif_srs_obj.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                    need_transform = not tif_srs_obj.IsSame(wgs84_srs)
 
-                    tif_srs_obj = osr.SpatialReference()
-                    need_transform = False
-                    if tif_wkt:
-                        tif_srs_obj.ImportFromWkt(tif_wkt)
-                        tif_srs_obj.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-                        need_transform = not tif_srs_obj.IsSame(wgs84_srs)
+                transform_ct = (osr.CoordinateTransformation(wgs84_srs, tif_srs_obj)
+                                if need_transform else None)
 
-                    transform_ct = (osr.CoordinateTransformation(wgs84_srs, tif_srs_obj)
-                                    if need_transform else None)
+                # 构建OGR多边形
+                ring = ogr.Geometry(ogr.wkbLinearRing)
+                for lon, lat in kml_coords_wgs84:
+                    if transform_ct:
+                        x, y, _ = transform_ct.TransformPoint(lon, lat)
+                    else:
+                        x, y = lon, lat
+                    ring.AddPoint(x, y)
+                ring.CloseRings()
+                polygon = ogr.Geometry(ogr.wkbPolygon)
+                polygon.AddGeometry(ring)
 
-                    # 构建OGR多边形
-                    ring = ogr.Geometry(ogr.wkbLinearRing)
-                    for lon, lat in coords_wgs84:
-                        if transform_ct:
-                            x, y, _ = transform_ct.TransformPoint(lon, lat)
-                        else:
-                            x, y = lon, lat
-                        ring.AddPoint(x, y)
-                    ring.CloseRings()
-                    polygon = ogr.Geometry(ogr.wkbPolygon)
-                    polygon.AddGeometry(ring)
+                # 创建与数据窗口对齐的掩膜栅格
+                sub_x_origin = raster_xmin + col_start * pixel_width
+                sub_y_origin = raster_ymax - row_start * pixel_height
+                sub_gt = (sub_x_origin, pixel_width, 0.0,
+                          sub_y_origin, 0.0, -pixel_height)
 
-                    # 创建与数据窗口对齐的掩膜栅格
-                    sub_x_origin = raster_xmin + col_start * pixel_width
-                    sub_y_origin = raster_ymax - row_start * pixel_height
-                    sub_gt = (sub_x_origin, pixel_width, 0.0,
-                              sub_y_origin, 0.0, -pixel_height)
+                drv = gdal.GetDriverByName('MEM')
+                mask_ds = drv.Create('', read_width, read_height, 1, gdal.GDT_Byte)
+                mask_ds.SetGeoTransform(sub_gt)
+                if tif_wkt:
+                    mask_ds.SetProjection(tif_wkt)
 
-                    drv = gdal.GetDriverByName('MEM')
-                    mask_ds = drv.Create('', read_width, read_height, 1, gdal.GDT_Byte)
-                    mask_ds.SetGeoTransform(sub_gt)
-                    if tif_wkt:
-                        mask_ds.SetProjection(tif_wkt)
+                mem_drv = ogr.GetDriverByName('Memory')
+                mem_src = mem_drv.CreateDataSource('tmp_kml_mask')
+                mem_layer = mem_src.CreateLayer(
+                    'mask', srs=tif_srs_obj if tif_wkt else None)
+                feat = ogr.Feature(mem_layer.GetLayerDefn())
+                feat.SetGeometry(polygon)
+                mem_layer.CreateFeature(feat)
 
-                    mem_drv = ogr.GetDriverByName('Memory')
-                    mem_src = mem_drv.CreateDataSource('tmp_kml_mask')
-                    mem_layer = mem_src.CreateLayer(
-                        'mask', srs=tif_srs_obj if tif_wkt else None)
-                    feat = ogr.Feature(mem_layer.GetLayerDefn())
-                    feat.SetGeometry(polygon)
-                    mem_layer.CreateFeature(feat)
-
-                    gdal.RasterizeLayer(mask_ds, [1], mem_layer, burn_values=[1])
-                    kml_mask = mask_ds.GetRasterBand(1).ReadAsArray().astype(bool)
-                    mask_ds = None
-                    print(f"[信息] KML最小烈度圈({min_item['intensity']}度)掩膜创建成功")
+                gdal.RasterizeLayer(mask_ds, [1], mem_layer, burn_values=[1])
+                kml_mask = mask_ds.GetRasterBand(1).ReadAsArray().astype(bool)
+                mask_ds = None
+                print(f"[信息] KML最小烈度圈({kml_intensity}度)掩膜创建成功")
             except Exception as mask_err:
                 print(f"[警告] KML掩膜创建失败: {mask_err}，将使用完整范围统计")
                 kml_mask = None
@@ -3156,25 +3174,25 @@ def test_format_stats_message():
     print("\n--- 测试: format_stats_message ---")
 
     stats_list = [
-        {"value": 1, "label": "低度危险区", "pixel_count": 1000, "area_km2": 500, "percentage": 40.0},
-        {"value": 2, "label": "较低危险区", "pixel_count": 600, "area_km2": 300, "percentage": 24.0},
-        {"value": 3, "label": "中等危险区", "pixel_count": 400, "area_km2": 200, "percentage": 16.0},
-        {"value": 4, "label": "较高危险区", "pixel_count": 300, "area_km2": 150, "percentage": 12.0},
-        {"value": 5, "label": "高度危险区", "pixel_count": 200, "area_km2": 100, "percentage": 8.0},
+        {"value": 1, "label": "低度危险区", "pixel_count": 1000, "area_km2": 500.0, "percentage": 40.0},
+        {"value": 2, "label": "较低危险区", "pixel_count": 600, "area_km2": 300.0, "percentage": 24.0},
+        {"value": 3, "label": "中等危险区", "pixel_count": 400, "area_km2": 200.0, "percentage": 16.0},
+        {"value": 4, "label": "较高危险区", "pixel_count": 300, "area_km2": 150.0, "percentage": 12.0},
+        {"value": 5, "label": "高度危险区", "pixel_count": 200, "area_km2": 100.0, "percentage": 8.0},
     ]
 
     message = format_stats_message(stats_list)
     print(f"  生成消息: {message}")
 
-    # 验证消息包含关键信息（>=1面积取整）
+    # 验证消息包含关键信息（面积统一保留两位小数）
     assert "总的来看" in message
     assert "地震诱发斜坡地质灾害危险性" in message
-    assert "低度危险区面积为500平方千米" in message
+    assert "低度危险区面积为500.0平方千米" in message
     assert "占比40.0%" in message
-    assert "较低危险区面积为300平方千米" in message
-    assert "中等危险区面积为200平方千米" in message
-    assert "较高危险区面积为150平方千米" in message
-    assert "高度危险区面积为100平方千米" in message
+    assert "较低危险区面积为300.0平方千米" in message
+    assert "中等危险区面积为200.0平方千米" in message
+    assert "较高危险区面积为150.0平方千米" in message
+    assert "高度危险区面积为100.0平方千米" in message
     # 较高危险区12%>10%，高度危险区8%<=10% -> 整体"较高"
     assert "危险性较高" in message
     print("  消息内容验证 ✓")
@@ -3437,8 +3455,8 @@ def test_compute_landslide_area_statistics_mock():
         print(f"  总百分比: {total_pct:.2f}% ≈ 100% ✓")
 
         # 测试格式化消息
-        message = format_stats_message(150.0, stats)
-        assert "150千米" in message
+        message = format_stats_message(stats)
+        assert "总的来看" in message
         assert "低度危险区" in message
         assert "高度危险区" in message
         print(f"  消息生成正确 ✓")
