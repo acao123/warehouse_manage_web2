@@ -17,6 +17,8 @@
 import logging
 import os
 import math
+import re
+import xml.etree.ElementTree as ET
 
 from osgeo import gdal, osr
 import numpy as np
@@ -134,12 +136,152 @@ def _nodata_mask(data, nodata_value, rtol=1e-5):
     return np.isclose(data, nodata_value, rtol=rtol, atol=0)
 
 
+def parse_kml_outermost_bbox(kml_path):
+    """
+    解析烈度KML文件，找到烈度最小的Placemark（最外圈等值线），
+    返回其经纬度 bounding box (min_lon, max_lon, min_lat, max_lat)。
+
+    KML文件格式示例:
+        <Placemark><name>4度</name>...<LineString><coordinates>lon,lat,z ...</coordinates></LineString></Placemark>
+
+    参数:
+        kml_path: KML文件路径
+
+    返回:
+        (min_lon, max_lon, min_lat, max_lat) 或 None（解析失败时）
+    """
+    try:
+        tree = ET.parse(kml_path)
+    except ET.ParseError as e:
+        logger.error("KML文件解析失败: %s, 错误: %s", kml_path, e)
+        return None
+    except OSError as e:
+        logger.error("KML文件读取失败: %s, 错误: %s", kml_path, e)
+        return None
+
+    root = tree.getroot()
+
+    # 处理命名空间 (http://www.opengis.net/kml/2.2 等)
+    ns = ''
+    if root.tag.startswith('{'):
+        ns = root.tag.split('}')[0] + '}'
+
+    placemarks = root.findall(f'.//{ns}Placemark')
+    if not placemarks:
+        logger.warning("KML文件中未找到Placemark元素: %s", kml_path)
+        return None
+
+    # 提取每个Placemark的烈度值和coordinates文本
+    intensity_list = []
+    for pm in placemarks:
+        name_el = pm.find(f'{ns}name')
+        if name_el is None or not name_el.text:
+            continue
+        name_text = name_el.text.strip()
+        # 从名称中提取数字，如 "4度" → 4，"5.5度" → 5.5
+        match = re.search(r'\d+\.?\d*', name_text)
+        if not match:
+            logger.debug("Placemark名称中未找到数字: '%s'，跳过", name_text)
+            continue
+        try:
+            intensity_val = float(match.group())
+        except ValueError:
+            logger.debug("Placemark名称解析烈度失败: '%s'，跳过", name_text)
+            continue
+
+        coords_el = pm.find(f'.//{ns}coordinates')
+        if coords_el is None or not coords_el.text:
+            logger.debug("Placemark '%s' 中未找到coordinates，跳过", name_text)
+            continue
+
+        intensity_list.append((intensity_val, coords_el.text.strip()))
+
+    if not intensity_list:
+        logger.warning("KML文件中未找到有效的烈度Placemark: %s", kml_path)
+        return None
+
+    # 找到烈度最小的Placemark（最外圈）
+    intensity_list.sort(key=lambda x: x[0])
+    min_intensity, coords_text = intensity_list[0]
+    logger.info("KML最外圈烈度: %.0f度，共%d个Placemark", min_intensity, len(intensity_list))
+
+    # 解析坐标字符串，格式: "lon,lat,z lon,lat,z ..."
+    lons = []
+    lats = []
+    for token in coords_text.split():
+        token = token.strip()
+        if not token:
+            continue
+        parts = token.split(',')
+        if len(parts) < 2:
+            continue
+        try:
+            lons.append(float(parts[0]))
+            lats.append(float(parts[1]))
+        except ValueError:
+            logger.debug("坐标点解析失败: '%s'，跳过", token)
+            continue
+
+    if not lons or not lats:
+        logger.warning("KML最外圈Placemark中未解析到有效坐标点: %s", kml_path)
+        return None
+
+    kml_min_lon = min(lons)
+    kml_max_lon = max(lons)
+    kml_min_lat = min(lats)
+    kml_max_lat = max(lats)
+
+    logger.info(
+        "KML最外圈经纬度范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
+        kml_min_lon, kml_max_lon, kml_min_lat, kml_max_lat
+    )
+    return kml_min_lon, kml_max_lon, kml_min_lat, kml_max_lat
+
+
+def merge_search_bbox_with_kml(base_min_lon, base_max_lon, base_min_lat, base_max_lat,
+                               kml_min_lon, kml_max_lon, kml_min_lat, kml_max_lat):
+    """
+    判断基础搜索范围与KML最外圈范围是否有交集，若有则取并集。
+
+    参数:
+        base_min_lon, base_max_lon, base_min_lat, base_max_lat: 基础搜索范围
+        kml_min_lon, kml_max_lon, kml_min_lat, kml_max_lat: KML最外圈范围
+
+    返回:
+        (min_lon, max_lon, min_lat, max_lat) 合并后（或原始）的范围
+    """
+    # 判断两个矩形是否有交集
+    has_lon_overlap = base_min_lon <= kml_max_lon and kml_min_lon <= base_max_lon
+    has_lat_overlap = base_min_lat <= kml_max_lat and kml_min_lat <= base_max_lat
+    has_intersection = has_lon_overlap and has_lat_overlap
+
+    if not has_intersection:
+        logger.info(
+            "KML范围与原始搜索范围无交集，使用原始范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
+            base_min_lon, base_max_lon, base_min_lat, base_max_lat
+        )
+        return base_min_lon, base_max_lon, base_min_lat, base_max_lat
+
+    # 取并集
+    merged_min_lon = min(base_min_lon, kml_min_lon)
+    merged_max_lon = max(base_max_lon, kml_max_lon)
+    merged_min_lat = min(base_min_lat, kml_min_lat)
+    merged_max_lat = max(base_max_lat, kml_max_lat)
+
+    logger.info(
+        "KML范围与原始搜索范围有交集，取并集: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
+        merged_min_lon, merged_max_lon, merged_min_lat, merged_max_lat
+    )
+    return merged_min_lon, merged_max_lon, merged_min_lat, merged_max_lat
+
+
 # ============================================================
 # 公共接口
 # ============================================================
 
 def calculate_dn_optimized(ac_tif_path, ia_tif_path, output_path,
-                           epicenter_lon, epicenter_lat, magnitude):
+                           epicenter_lon, epicenter_lat, magnitude,
+                           intensity_kml_path=None):
     """
     优化版本：使用向量化计算提高效率
     计算滑动距离Dn并输出Dn.tif
@@ -151,6 +293,7 @@ def calculate_dn_optimized(ac_tif_path, ia_tif_path, output_path,
         epicenter_lon: 震中经度
         epicenter_lat: 震中纬度
         magnitude: 震级
+        intensity_kml_path: （可选）烈度KML文件路径；若提供，则与震中范围取并集确定输出范围
 
     赋值规则:
         - ac 为 nodata → Dn = nodata (-9999)
@@ -158,14 +301,15 @@ def calculate_dn_optimized(ac_tif_path, ia_tif_path, output_path,
         - ac 有值, Ia > 0 → 按公式计算 Dn
     """
     logger.info(
-        '开始计算Dn.tif: ac=%s ia=%s output=%s lon=%.4f lat=%.4f M=%.1f',
+        '开始计算Dn.tif: ac=%s ia=%s output=%s lon=%.4f lat=%.4f M=%.1f kml=%s',
         ac_tif_path, ia_tif_path, output_path,
-        epicenter_lon, epicenter_lat, magnitude
+        epicenter_lon, epicenter_lat, magnitude, intensity_kml_path
     )
     try:
         _calculate_dn_optimized_impl(
             ac_tif_path, ia_tif_path, output_path,
-            epicenter_lon, epicenter_lat, magnitude
+            epicenter_lon, epicenter_lat, magnitude,
+            intensity_kml_path=intensity_kml_path
         )
         logger.info('Dn.tif 计算完成: %s', output_path)
     except Exception as exc:
@@ -178,7 +322,8 @@ def calculate_dn_optimized(ac_tif_path, ia_tif_path, output_path,
 # ============================================================
 
 def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
-                                 epicenter_lon, epicenter_lat, magnitude):
+                                 epicenter_lon, epicenter_lat, magnitude,
+                                 intensity_kml_path=None):
     """calculate_dn_optimized 的实际实现。"""
 
     # ----------------------------------------------------------
@@ -215,6 +360,27 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
 
     logger.info("经度范围: [%.6f, %.6f]", min_lon, max_lon)
     logger.info("纬度范围: [%.6f, %.6f]", min_lat, max_lat)
+
+    # ----------------------------------------------------------
+    # 2b. 若提供了烈度KML文件，与原始范围合并
+    # ----------------------------------------------------------
+    if intensity_kml_path is not None:
+        if not os.path.exists(intensity_kml_path):
+            logger.warning("烈度KML文件不存在，忽略KML范围合并: %s", intensity_kml_path)
+        else:
+            kml_bbox = parse_kml_outermost_bbox(intensity_kml_path)
+            if kml_bbox is not None:
+                kml_min_lon, kml_max_lon, kml_min_lat, kml_max_lat = kml_bbox
+                min_lon, max_lon, min_lat, max_lat = merge_search_bbox_with_kml(
+                    min_lon, max_lon, min_lat, max_lat,
+                    kml_min_lon, kml_max_lon, kml_min_lat, kml_max_lat
+                )
+                logger.info(
+                    "合并后经纬度范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
+                    min_lon, max_lon, min_lat, max_lat
+                )
+            else:
+                logger.warning("KML文件解析失败，使用原始搜索范围")
 
     # ----------------------------------------------------------
     # 3. 打开 ac.tif 并读取数据
@@ -552,6 +718,7 @@ if __name__ == "__main__":
     epicenter_lat = 34.09
     magnitude = 3.0
 
+    # 示例1：不传入烈度KML（与原逻辑完全一致）
     calculate_dn_optimized(
         ac_tif_path=ac_tif_path,
         ia_tif_path=ia_tif_path,
@@ -559,4 +726,16 @@ if __name__ == "__main__":
         epicenter_lon=epicenter_lon,
         epicenter_lat=epicenter_lat,
         magnitude=magnitude
+    )
+
+    # 示例2：传入烈度KML文件，与原始范围合并确定输出范围
+    intensity_kml_path = "../../data/geology/ia/烈度.kml"
+    calculate_dn_optimized(
+        ac_tif_path=ac_tif_path,
+        ia_tif_path=ia_tif_path,
+        output_path=output_path,
+        epicenter_lon=epicenter_lon,
+        epicenter_lat=epicenter_lat,
+        magnitude=magnitude,
+        intensity_kml_path=intensity_kml_path
     )
