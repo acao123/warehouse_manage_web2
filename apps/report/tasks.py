@@ -502,6 +502,7 @@ def _gen_dn_tif(task: ReportTask, output_dir: str, ia_tif_path: str) -> str | No
             epicenter_lon=float(task.longitude),
             epicenter_lat=float(task.latitude),
             magnitude=task.magnitude,
+            intensity_kml_path = task.intensity_kml_path
         )
         logger.info('[任务 %s] Dn.tif 生成完成: %s', task.id, dn_path)
         return dn_path
@@ -555,7 +556,8 @@ def _gen_img11(task: ReportTask, output_dir: str, dn_tif_path: str):
             b=-0.1803,
             c=0.5165,
             output_path=out,
-            dn_tif_path = dn_tif_path
+            dn_tif_path = dn_tif_path,
+            intensity_kml_path = task.intensity_kml_path
         )
         img_info = statistics_summary
         logger.info('[任务 %s] 图十一生成完成: %s, 最大Dn=%s cm, 说明=%s',
