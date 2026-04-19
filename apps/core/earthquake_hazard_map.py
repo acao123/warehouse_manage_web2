@@ -2988,6 +2988,23 @@ def generate_earthquake_hazard_map(longitude, latitude, magnitude,
         raise
 
 
+def _compute_bbox_from_coords(coords):
+    """
+    根据坐标列表计算外接矩形（QgsRectangle）。
+
+    参数:
+        coords (list): 坐标列表 [(lon, lat), ...]
+
+    返回:
+        QgsRectangle 或 None（坐标为空时返回 None）
+    """
+    if not coords:
+        return None
+    lons = [c[0] for c in coords]
+    lats = [c[1] for c in coords]
+    return QgsRectangle(min(lons), min(lats), max(lons), max(lats))
+
+
 def _generate_earthquake_hazard_map_impl(longitude, latitude, magnitude,
                                          a, b, c,
                                          output_path, dn_tif_path, intensity_kml_path):
@@ -3044,7 +3061,27 @@ def _generate_earthquake_hazard_map_impl(longitude, latitude, magnitude,
 
     # 计算地图范围（基于震中和震级，不受烈度圈影响）
     extent = calculate_extent(longitude, latitude, half_size_km)
-    print(f"[信息] 地图范围: {extent.toString()}")
+    print(f"[信息] 地图显示范围(extent): {extent.toString()}")
+
+    # 计算用于危险性栅格生成的范围（compute_extent），需覆盖显示范围和 KML 外圈
+    skip_area_stats = False
+    kml_bbox = _compute_bbox_from_coords(outermost_intensity_coords) if outermost_intensity_coords else None
+    if kml_bbox is None:
+        # 无 KML 外圈：直接使用显示范围
+        compute_extent = extent
+        print("[信息] 无烈度圈范围，compute_extent = extent")
+    else:
+        print(f"[信息] KML 外圈范围(kml_bbox): {kml_bbox.toString()}")
+        if not extent.intersects(kml_bbox):
+            # 无交集：使用显示范围，面积统计直接输出 0
+            compute_extent = extent
+            skip_area_stats = True
+            print("[信息] 烈度圈范围与地图显示范围无交集，面积统计输出为 0")
+        else:
+            # 有交集：取并集
+            compute_extent = QgsRectangle(extent)
+            compute_extent.combineExtentWith(kml_bbox)
+            print(f"[信息] 烈度圈与显示范围有交集，compute_extent(并集): {compute_extent.toString()}")
 
     # 计算地图像素高度
     map_height_mm = calculate_map_height_from_extent(extent, MAP_WIDTH_MM)
@@ -3100,7 +3137,7 @@ def _generate_earthquake_hazard_map_impl(longitude, latitude, magnitude,
                 # 生成危险性概率TIF文件（裁剪范围 + 公式计算）
                 hazard_tif_path = temp_manager.get_temp_file(suffix="_hazard_prob.tif")
                 result_path, max_dn_value, prob_array_2d, geotransform = generate_hazard_tif(
-                    abs_tif_path, hazard_tif_path, extent, a, b, c)
+                    abs_tif_path, hazard_tif_path, compute_extent, a, b, c)
 
                 if result_path and prob_array_2d is not None:
                     # 展平数组用于Jenks分类
@@ -3121,10 +3158,16 @@ def _generate_earthquake_hazard_map_impl(longitude, latitude, magnitude,
 
                     # 计算各危险等级面积统计（基于烈度圈范围）
                     if outermost_intensity_coords and geotransform:
-                        # 使用烈度圈范围进行统计
-                        area_stats = calculate_area_statistics_with_intensity(
-                            prob_array_2d, breaks, geotransform,
-                            outermost_intensity_coords, extent)
+                        if skip_area_stats:
+                            # 烈度圈与显示范围无交集，直接输出 0
+                            area_stats = {name: {'area_km2': 0.0, 'percent': 0.0}
+                                          for name in HAZARD_LEVEL_NAMES}
+                            area_stats['total_valid_km2'] = 0.0
+                        else:
+                            # 使用烈度圈范围进行统计（传入 compute_extent 保证坐标一致）
+                            area_stats = calculate_area_statistics_with_intensity(
+                                prob_array_2d, breaks, geotransform,
+                                outermost_intensity_coords, compute_extent)
                     else:
                         # 无烈度圈时使用全部像素统计（原逻辑）
                         area_stats = calculate_area_statistics(
