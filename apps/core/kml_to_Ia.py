@@ -236,7 +236,7 @@ class KmlToIaConverter:
         max_memory_gb: float = 10.0,
 
         # ---- 并行插值参数 ----
-        max_interp_workers: int = 2,        # scipy插值并行线程数，推荐 1~4
+        max_interp_workers: int = 4,        # scipy插值并行线程数，推荐 1~4
 
         # ---- 取消信号参数 ----
         cancel_event: Optional[threading.Event] = None,  # 取消事件，set()后立即停止插值
