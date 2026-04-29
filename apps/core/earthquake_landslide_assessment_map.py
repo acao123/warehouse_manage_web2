@@ -1090,8 +1090,8 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
             class_pixel_counts[value] = count
             total_valid_pixels += count
 
-        # 计算总面积掩码（统计范围内所有像素，不限于有值像素，确保百分比以多边形总面积为基准）
-        # total_polygon_pixels = KML掩膜内全部像素（有值+无值），而非仅有值像素
+        # 计算统计范围内全部像素数（含无值/nodata像素），用于百分比分母，确保百分比以多边形总面积为基准
+        # total_polygon_pixels = KML掩膜内全部像素数（有值+无值），而非仅有值像素
         if kml_mask is not None:
             total_polygon_pixels = int(np.sum(kml_mask))
         else:

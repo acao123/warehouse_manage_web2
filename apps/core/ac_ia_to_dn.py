@@ -257,8 +257,7 @@ def merge_search_bbox_with_kml(base_min_lon, base_max_lon, base_min_lat, base_ma
 
     if not has_intersection:
         logger.warning(
-            "KML范围与原始搜索范围无交集（KML烈度圈数据可能异常），"
-            "回退使用原始震中搜索范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
+            "KML范围与原始搜索范围无交集（KML烈度圈数据可能异常），回退使用原始震中搜索范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
             base_min_lon, base_max_lon, base_min_lat, base_max_lat
         )
         return base_min_lon, base_max_lon, base_min_lat, base_max_lat
