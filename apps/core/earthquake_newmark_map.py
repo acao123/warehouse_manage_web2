@@ -1011,7 +1011,8 @@ def select_legend_column(max_value):
 
     返回:
         list: 对应的11个分档值列表（包含0到最大值的11个档位），
-              如果max_value <= 0 或 > 1000则返回None（不显示图例）；
+              如果max_value <= 0则返回None（不显示图例）；
+              如果max_value > 1000则返回基于实际最大值的动态分档列；
               如果max_value is None则返回默认分档列（最大值10）
     """
     if max_value is None:
@@ -1024,9 +1025,9 @@ def select_legend_column(max_value):
         return None
 
     if max_value > 1000:
-        logger.info('最大值 %.4f > 1000，图例文字不显示', max_value)
-        print(f"[信息] 最大值 {max_value} > 1000，图例文字不显示")
-        return None
+        logger.info('最大值 %.4f > 1000，使用动态分档', max_value)
+        print(f"[信息] 最大值 {max_value} > 1000，使用动态分档")
+        return [0, 1, 2, 5, 10, 20, 50, 100, 250, 500, max_value]
 
     # 选择最接近但不小于max_value的阈值
     selected_threshold = None
@@ -1064,6 +1065,9 @@ def format_legend_value(value):
     elif value == int(value):
         # 整数
         return f"{int(value)}"
+    elif value > 100:
+        # 大于100的非整数，取整显示
+        return f"{int(round(value))}"
     else:
         return f"{value:.2f}"
 
@@ -2095,8 +2099,6 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
             layout.addLayoutItem(value_label)
 
         print(f"[信息] Newmark位移图例添加完成，共10个色块，10个边界标签")
-    elif legend_values and not show_legend_text:
-        print("[信息] Dn最大值超过1000，不显示Newmark位移图例文字")
     else:
         print("[信息] 无Newmark位移数据，跳过Newmark位移图例")
 
@@ -2414,7 +2416,7 @@ def _generate_earthquake_newmark_map_impl(longitude, latitude, magnitude,
             logger.warning('加载Newmark位移底图失败，跳过: %s', exc)
             print(f"[警告] 加载Newmark位移底图失败，跳过: {exc}")
 
-        # show_legend_text 由 legend_values 决定：max_value <= 0 时 legend_values 为 None
+        # show_legend_text 由 legend_values 决定：max_value <= 0 时 legend_values 为 None；max_value > 1000 时使用动态分档
         show_legend_text = legend_values is not None
 
         # 可降级：矢量边界图层加载失败不影响整体流程
@@ -2649,8 +2651,11 @@ def run_all_tests():
     print(f"  最大值8 -> 选择10的列 ✓")
 
     legend_over = select_legend_column(1500)
-    assert legend_over is None
-    print(f"  最大值1500 -> 返回None ✓")
+    assert legend_over is not None
+    assert legend_over[0] == 0
+    assert legend_over[10] == 1500
+    assert legend_over[1:10] == [1, 2, 5, 10, 20, 50, 100, 250, 500]
+    print(f"  最大值1500 -> 返回动态分档列 ✓")
 
     legend_zero = select_legend_column(0)
     assert legend_zero is None
