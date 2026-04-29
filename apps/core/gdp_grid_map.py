@@ -227,12 +227,12 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 # 最左侧颜色：rgb(88,19,252)
 # 最右侧颜色：rgb(255,43,24)
 GDP_CLASSES = [
-    {"min": 0, "max": 1000, "label": "0~1,000"},
-    {"min": 1000.001, "max": 2000, "label": "1,000~2,000"},
-    {"min": 2000.001, "max": 5000, "label": "2,000~5,000"},
-    {"min": 5000.001, "max": 10000, "label": "5,000~10,000"},
-    {"min": 10000.001, "max": 50000, "label": "10,000~50,000"},
-    {"min": 50000.001, "max": 100000, "label": "50,000~100,000"},
+    {"min": 0, "max": 1, "label": "0~1"},
+    {"min": 1.001, "max": 10, "label": "1~10"},
+    {"min": 10.001, "max": 100, "label": "10~100"},
+    {"min": 100.001, "max": 1000, "label": "100~1,000"},
+    {"min": 1000.001, "max": 10000, "label": "1,000~10,000"},
+    {"min": 10000.001, "max": 100000, "label": "10,000~100,000"},
     {"min": 100000.001, "max": 500000, "label": "100,000~500,000"},
     {"min": 500000.001, "max": 1000000, "label": "500,000~1,000,000"},
     {"min": 1000000.001, "max": 1500000, "label": "1,000,000~1,500,000"},
@@ -2216,12 +2216,12 @@ def test_gdp_classes():
 
     # 验证分档边界
     assert GDP_CLASSES[0]["min"] == 0
-    assert GDP_CLASSES[0]["max"] == 1000
-    assert GDP_CLASSES[0]["label"] == "0~1,000"
+    assert GDP_CLASSES[0]["max"] == 1
+    assert GDP_CLASSES[0]["label"] == "0~1"
     print(f"  第1档: {GDP_CLASSES[0]['label']} ✓")
 
-    assert GDP_CLASSES[1]["min"] == 1000.001
-    assert GDP_CLASSES[1]["max"] == 2000
+    assert GDP_CLASSES[1]["min"] == 1.001
+    assert GDP_CLASSES[1]["max"] == 10
     print(f"  第2档: {GDP_CLASSES[1]['label']} ✓")
 
     assert GDP_CLASSES[9]["min"] == 1500000.001
@@ -2272,7 +2272,7 @@ def test_gdp_legend_list():
     first_item = legend_list[0]
     assert len(first_item) == 2  # (color_rgba, label)
     assert len(first_item[0]) == 4  # RGBA
-    assert first_item[1] == "0~1,000"
+    assert first_item[1] == "0~1"
     print(f"  第1项标签: {first_item[1]} ✓")
 
     # 骮证最后一项
