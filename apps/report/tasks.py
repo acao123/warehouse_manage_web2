@@ -288,12 +288,21 @@ def _gen_img2(task: ReportTask, output_dir: str, basemap_path=None, annotation_p
         info = None
         if result and isinstance(result, dict):
             max_intensity = result.get('max_intensity')
+            intensity_str = None
             if max_intensity is not None:
                 try:
-                    info = int_to_roman(int(max_intensity))
+                    intensity_str = int_to_roman(int(max_intensity))
                 except Exception:
-                    info = str(max_intensity)
-        info = f'预计极震区烈度可达{info}度，极震区面积估算为{format_area(result['max_intensity_area'])}平方千米'
+                    intensity_str = str(max_intensity)
+
+            max_area = result.get('max_intensity_area')
+            if intensity_str is not None and max_area is not None:
+                info = (
+                    f'预计极震区烈度可达{intensity_str}度，'
+                    f'极震区面积估算为{format_area(max_area)}平方千米'
+                )
+            elif intensity_str is not None:
+                info = f'预计极震区烈度可达{intensity_str}度'
         logger.info('[任务 %s] 图二生成完成: %s, 说明=%s', task.id, out, info)
         return out, info
     except Exception as exc:
