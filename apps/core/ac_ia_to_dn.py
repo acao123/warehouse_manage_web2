@@ -256,8 +256,9 @@ def merge_search_bbox_with_kml(base_min_lon, base_max_lon, base_min_lat, base_ma
     has_intersection = has_lon_overlap and has_lat_overlap
 
     if not has_intersection:
-        logger.info(
-            "KML范围与原始搜索范围无交集，使用原始范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
+        logger.warning(
+            "KML范围与原始搜索范围无交集（KML烈度圈数据可能异常），"
+            "回退使用原始震中搜索范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
             base_min_lon, base_max_lon, base_min_lat, base_max_lat
         )
         return base_min_lon, base_max_lon, base_min_lat, base_max_lat
@@ -358,12 +359,14 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
     min_lat = epicenter_lat - lat_range
     max_lat = epicenter_lat + lat_range
 
-    logger.info("经度范围: [%.6f, %.6f]", min_lon, max_lon)
-    logger.info("纬度范围: [%.6f, %.6f]", min_lat, max_lat)
-
     # ----------------------------------------------------------
     # 2b. 若提供了烈度KML文件，与原始范围合并
     # ----------------------------------------------------------
+    logger.info(
+        "原始搜索范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
+        min_lon, max_lon, min_lat, max_lat
+    )
+
     if intensity_kml_path is not None:
         if not os.path.exists(intensity_kml_path):
             logger.warning("烈度KML文件不存在，忽略KML范围合并: %s", intensity_kml_path)
@@ -371,12 +374,16 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
             kml_bbox = parse_kml_outermost_bbox(intensity_kml_path)
             if kml_bbox is not None:
                 kml_min_lon, kml_max_lon, kml_min_lat, kml_max_lat = kml_bbox
+                logger.info(
+                    "KML最外圈范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
+                    kml_min_lon, kml_max_lon, kml_min_lat, kml_max_lat
+                )
                 min_lon, max_lon, min_lat, max_lat = merge_search_bbox_with_kml(
                     min_lon, max_lon, min_lat, max_lat,
                     kml_min_lon, kml_max_lon, kml_min_lat, kml_max_lat
                 )
                 logger.info(
-                    "合并后经纬度范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
+                    "合并后（裁剪前）经纬度范围: lon=[%.6f, %.6f], lat=[%.6f, %.6f]",
                     min_lon, max_lon, min_lat, max_lat
                 )
             else:
@@ -409,10 +416,25 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
         col_max, row_min = get_pixel_coords(ac_geotransform, max_lon, max_lat)
 
         # 确保像素坐标在有效范围内
+        raw_col_min, raw_row_min, raw_col_max, raw_row_max = col_min, row_min, col_max, row_max
         col_min = max(0, col_min)
         row_min = max(0, row_min)
         col_max = min(ac_dataset.RasterXSize, col_max)
         row_max = min(ac_dataset.RasterYSize, row_max)
+
+        if (col_min != raw_col_min or row_min != raw_row_min
+                or col_max != raw_col_max or row_max != raw_row_max):
+            logger.info(
+                "输出范围已被 ac.tif 边界裁剪: 原始像素区域 col=[%d, %d] row=[%d, %d] "
+                "→ 裁剪后 col=[%d, %d] row=[%d, %d]",
+                raw_col_min, raw_col_max, raw_row_min, raw_row_max,
+                col_min, col_max, row_min, row_max
+            )
+        else:
+            logger.info(
+                "输出范围未超出 ac.tif 边界，无需裁剪: col=[%d, %d] row=[%d, %d]",
+                col_min, col_max, row_min, row_max
+            )
 
         read_width = col_max - col_min
         read_height = row_max - row_min

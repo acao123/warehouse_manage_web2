@@ -3049,9 +3049,13 @@ def _generate_earthquake_hazard_map_impl(longitude, latitude, magnitude,
             if outermost_intensity_coords:
                 print(f"[信息] 使用烈度圈 {min_intensity}度 作为统计范围，顶点数: {len(outermost_intensity_coords)}")
             else:
+                logger.warning('无法获取KML最外圈烈度圈坐标，面积统计回退为全部像素统计: kml=%s', intensity_kml_path)
                 print("[警告] 无法获取最外圈烈度圈坐标，将使用全部像素进行统计")
         else:
+            logger.warning('KML解析结果为空，面积统计回退为全部像素统计: kml=%s', intensity_kml_path)
             print("[警告] KML解析结果为空，将使用全部像素进行统计")
+    else:
+        logger.warning('未提供烈度KML文件，面积统计将使用矩形extent范围（非烈度圈多边形）')
 
     # 获取震级配置（地图范围和比例尺）
     config = get_magnitude_config(magnitude)
@@ -3169,7 +3173,11 @@ def _generate_earthquake_hazard_map_impl(longitude, latitude, magnitude,
                                 prob_array_2d, breaks, geotransform,
                                 outermost_intensity_coords, compute_extent)
                     else:
-                        # 无烈度圈时使用全部像素统计（原逻辑）
+                        # 无烈度圈时使用全部像素统计（原逻辑），面积基于矩形extent范围
+                        logger.warning(
+                            '未能获取烈度圈多边形坐标，面积统计回退为矩形extent范围（非多边形掩膜）: kml=%s',
+                            intensity_kml_path
+                        )
                         area_stats = calculate_area_statistics(
                             prob_flat, breaks, abs_tif_path, extent)
                 else:
