@@ -253,13 +253,13 @@ class KmlToIaConverter:
 
         # ---- ArcGIS IDW 对齐参数（qgis_idw 方法专用）----
         idw_num_neighbors: int = 12,          # KD-Tree 局部搜索邻近点数，与 ArcGIS 默认一致
-        idw_max_distance: Optional[float] = None,  # 最大搜索距离（度），None 表示不限制
+        idw_max_distance: Optional[float] = None,  # 最大搜索距离（EPSG:4326度），None 表示不限制
 
         # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
         ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
-        ebk_overlap_factor: float = 1.0,      # 子集重叠因子，越大子集越多
+        ebk_overlap_factor: float = 1.0,      # 子集重叠因子（>=1.0；<1.0时按1.0处理），越大子集越多
         ebk_variogram: str = 'power',         # 变差函数，与 ArcGIS EBK 默认一致
-        ebk_n_simulations: int = 1,           # 保留参数（预留扩展），简化版固定为1
+        ebk_n_simulations: int = 1,           # 保留参数（预留扩展），简化版固定为1，设为其他值无效
     ):
         self.kml_path = kml_path
         self.ia_output_path = ia_output_path
@@ -308,6 +308,11 @@ class KmlToIaConverter:
         self.ebk_overlap_factor = ebk_overlap_factor
         self.ebk_variogram = ebk_variogram
         self.ebk_n_simulations = ebk_n_simulations
+        if ebk_n_simulations != 1:
+            logger.warning(
+                "ebk_n_simulations=%d 被忽略：当前简化版 EBK 固定使用 1 次模拟，"
+                "多次模拟功能预留待扩展。", ebk_n_simulations
+            )
 
         # 运行时数据（由 run() 过程填充）
         self._contours: List[dict] = []
@@ -1647,17 +1652,16 @@ class KmlToIaConverter:
             vals_f64 = values.astype(np.float64)
             k_per_subset = min(subset_size, n_samples)
 
-            # 确定子集种子数量（重叠因子越大，子集越多）
+            # 确定子集种子数量（overlap_factor < 1.0 时按 1.0 处理）
             n_subsets = max(1, int(
                 np.ceil(n_samples / subset_size * max(1.0, overlap_factor))
             ))
+            # 子集数不超过采样点数（避免重复种子导致重复子集）
             n_subsets = min(n_subsets, n_samples)
 
-            # 固定随机种子保证可复现
+            # 固定随机种子保证可复现；n_subsets <= n_samples 故 replace=False
             rng = np.random.default_rng(seed=42)
-            seed_indices = rng.choice(
-                n_samples, size=n_subsets, replace=(n_subsets > n_samples)
-            )
+            seed_indices = rng.choice(n_samples, size=n_subsets, replace=False)
 
             logger.info("EBK 子集划分: 计划建立 %d 个子集（每个约 %d 点）",
                         n_subsets, k_per_subset)
