@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.2）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.3）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,15 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.2）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.3 相较 v3.2）：
+    1. qgis_idw 改为 KD-Tree 局部 IDW，与 ArcGIS IDW 默认参数对齐
+       （最近 12 点搜索邻域，反距离权重幂次=2），性能较全局 IDW 大幅提升
+    2. kriging 改为子集化 EBK（简化版 Empirical Bayesian Kriging），
+       与 ArcGIS EBK 默认参数（子集大小 100，power 变差函数）对齐；
+       模型构建复杂度从全局 O(n³) 降为 N×O(K³)，当 n_samples > 500 时显著加速
+    3. 新增 idw_num_neighbors、idw_max_distance、ebk_subset_size、
+       ebk_overlap_factor、ebk_variogram、ebk_n_simulations 参数
 
 主要改进（v3.2 相较 v3.1）：
     1. QGIS插值优化：使用 QgsGridFileWriter 替代逐像素 Python 循环，
@@ -27,17 +36,17 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.2）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.2)
-日期: 2026-03-31
-版本: 3.2
+作者: acao (重构版 v3.3)
+日期: 2026-04-29
+版本: 3.3
 QGIS版本: 3.40.15
 
 支持插值方法:
     - 'scipy_tin' : scipy Delaunay三角网插值（默认，平滑无突变，推荐）
     - 'radial'    : 径向距离1D插值（专为同心圈优化，完美单调递增）
     - 'scipy_idw' : scipy RBFInterpolator（速度快，支持邻近点限制）
-    - 'kriging'   : pykrige普通克里金插值（统计精度最高，需安装pykrige）
-    - 'qgis_idw'  : QGIS自带反距离权重插值（无需额外依赖）
+    - 'kriging'   : 简化版 Empirical Bayesian Kriging（与 ArcGIS EBK 对齐，需 scipy + pykrige）
+    - 'qgis_idw'  : KD-Tree 局部反距离权重插值（与 ArcGIS IDW 对齐，需 scipy）
     - 'qgis_tin'  : QGIS自带三角网插值（无需额外依赖）
 
 插值范围:
@@ -126,6 +135,7 @@ try:
         CloughTocher2DInterpolator as _CloughTocher2DInterpolator,
         interp1d as _interp1d,
     )
+    from scipy.spatial import cKDTree as _cKDTree
     _HAS_SCIPY = True
 except ImportError:
     _HAS_SCIPY = False
@@ -171,8 +181,8 @@ class KmlToIaConverter:
         - 'scipy_tin'（默认/推荐）：scipy Delaunay三角网插值，C1/C0连续，平滑无突变
         - 'radial'     ：径向距离1D插值，专为同心圈优化，完美单调递增
         - 'scipy_idw'  ：scipy RBF插值，速度快，支持邻近点限制，需安装scipy
-        - 'kriging'    ：pykrige普通克里金插值，统计精度最高，需安装pykrige
-        - 'qgis_idw'   ：QGIS反距离权重，适合稀疏/不均匀数据，无需额外依赖
+        - 'kriging'    ：简化版 EBK（子集化克里金），与 ArcGIS EBK 对齐，需安装 scipy + pykrige
+        - 'qgis_idw'   ：KD-Tree 局部反距离权重插值，与 ArcGIS IDW 对齐，需安装 scipy
         - 'qgis_tin'   ：QGIS三角网插值，基于Delaunay三角剖分，无需额外依赖
 
     用法示例:
@@ -240,6 +250,16 @@ class KmlToIaConverter:
 
         # ---- 取消信号参数 ----
         cancel_event: Optional[threading.Event] = None,  # 取消事件，set()后立即停止插值
+
+        # ---- ArcGIS IDW 对齐参数（qgis_idw 方法专用）----
+        idw_num_neighbors: int = 12,          # KD-Tree 局部搜索邻近点数，与 ArcGIS 默认一致
+        idw_max_distance: Optional[float] = None,  # 最大搜索距离（度），None 表示不限制
+
+        # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
+        ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
+        ebk_overlap_factor: float = 1.0,      # 子集重叠因子，越大子集越多
+        ebk_variogram: str = 'power',         # 变差函数，与 ArcGIS EBK 默认一致
+        ebk_n_simulations: int = 1,           # 保留参数（预留扩展），简化版固定为1
     ):
         self.kml_path = kml_path
         self.ia_output_path = ia_output_path
@@ -280,6 +300,14 @@ class KmlToIaConverter:
         self.max_interp_workers = max(1, max_interp_workers)
         # 取消信号
         self._cancel_event: Optional[threading.Event] = cancel_event
+        # ArcGIS IDW 参数
+        self.idw_num_neighbors = idw_num_neighbors
+        self.idw_max_distance = idw_max_distance
+        # ArcGIS EBK 参数
+        self.ebk_subset_size = ebk_subset_size
+        self.ebk_overlap_factor = ebk_overlap_factor
+        self.ebk_variogram = ebk_variogram
+        self.ebk_n_simulations = ebk_n_simulations
 
         # 运行时数据（由 run() 过程填充）
         self._contours: List[dict] = []
@@ -797,6 +825,190 @@ class KmlToIaConverter:
             out_ds = None
             band = None
             del interpolator, layer
+            gc.collect()
+
+    # ==================== ArcGIS IDW 插值方法（KD-Tree 局部 IDW）====================
+
+    def _run_arcgis_idw_interpolation(
+            self,
+            x_arr: np.ndarray,
+            y_arr: np.ndarray,
+            values: np.ndarray,
+            output_tif_path: str,
+    ) -> None:
+        """
+        ArcGIS IDW 风格的局部反距离权重插值（KD-Tree 加速）。
+
+        与 ArcGIS IDW 工具原理一致：
+            - 使用 scipy.spatial.cKDTree 对每个像素查询最近的 N 个采样点
+              （默认 N=12，与 ArcGIS IDW 默认 Search Neighborhood 一致）。
+            - 反距离权重 w_i = 1 / d_i^power；当 d_i = 0 时直接取该点的值。
+            - 支持可选最大搜索距离 idw_max_distance（单位：度）。
+
+        性能：cKDTree.query 在 C 扩展层释放 GIL，可通过 ThreadPoolExecutor 多线程加速；
+              局部搜索复杂度 O(n_pixels × log(n_samples) × N)，
+              远优于全局 IDW 的 O(n_pixels × n_samples)。
+
+        参数:
+            x_arr: 采样点X坐标(经度)
+            y_arr: 采样点Y坐标(纬度)
+            values: 采样点对应值（Ia）
+            output_tif_path: 输出 GeoTIFF 文件路径
+        """
+        if not _HAS_SCIPY:
+            raise ImportError(
+                "scipy 未安装，无法使用 'qgis_idw' (ArcGIS IDW) 方法。"
+                "请在 QGIS Python 环境中运行: pip install scipy"
+            )
+
+        tree = None
+        out_ds = None
+        band = None
+
+        try:
+            # 建立 KD-Tree（在所有分块插值时共享）
+            pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
+            tree = _cKDTree(pts_train)
+            del pts_train
+            vals_f64 = values.astype(np.float64)
+
+            n_neighbors = min(self.idw_num_neighbors, len(x_arr))
+            power = self.qgis_idw_power
+            max_dist = self.idw_max_distance
+
+            logger.info(
+                "ArcGIS IDW (KD-Tree) 插值: 邻近点数=%d, 幂次=%.1f, 最大距离=%s",
+                n_neighbors, power,
+                f"{max_dist:.6f}°" if max_dist is not None else "无限制",
+            )
+
+            os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+            self._ensure_file_writable(output_tif_path)
+            driver = gdal.GetDriverByName('GTiff')
+            out_ds = driver.Create(
+                output_tif_path,
+                self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
+                ['COMPRESS=LZW', 'TILED=YES'],
+            )
+            out_ds.SetGeoTransform(self._geo_transform)
+            out_ds.SetProjection(self._utm_srs.ExportToWkt())
+            band = out_ds.GetRasterBand(1)
+            band.SetNoDataValue(-9999.0)
+
+            grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
+            n_rows = self._n_rows
+            chunk_rows = self.chunk_size
+            chunk_starts = list(range(0, n_rows, chunk_rows))
+
+            # 内层函数：在线程中计算单个分块的 ArcGIS IDW 插值结果
+            def _compute_chunk_arcgis_idw(row_start: int) -> Tuple[int, np.ndarray]:
+                row_end = min(row_start + chunk_rows, n_rows)
+                actual_rows = row_end - row_start
+                grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
+                xx, yy = np.meshgrid(grid_x, grid_y)
+                pts_query = np.column_stack([xx.ravel(), yy.ravel()])
+                del xx, yy
+                n_pts = pts_query.shape[0]
+
+                # 查询最近的 n_neighbors 个采样点
+                dists, idxs = tree.query(pts_query, k=n_neighbors)
+                # 保证形状为 (n_pts, n_neighbors)，即使 n_neighbors==1 也统一
+                if n_neighbors == 1:
+                    dists = dists.reshape(-1, 1)
+                    idxs = idxs.reshape(-1, 1)
+
+                # 精确匹配（d=0）的像素：直接取该采样点的值
+                exact_mask = dists[:, 0] == 0.0
+
+                # 反距离权重（d=0 处设为 0.0，避免除零；精确匹配单独处理）
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    weights = np.where(dists > 0.0, 1.0 / (dists ** power), 0.0)
+
+                # 可选：超出最大搜索距离的邻居权重置 0
+                if max_dist is not None:
+                    weights[dists > max_dist] = 0.0
+
+                weight_sum = weights.sum(axis=1)  # (n_pts,)
+                chunk_vals = np.full(n_pts, -9999.0, dtype=np.float64)
+
+                # 非精确匹配且权重和 > 0 的像素：加权平均
+                valid_mask = (~exact_mask) & (weight_sum > 0.0)
+                if valid_mask.any():
+                    w = weights[valid_mask]           # (n_valid, n_neighbors)
+                    v = vals_f64[idxs[valid_mask]]    # (n_valid, n_neighbors)
+                    chunk_vals[valid_mask] = (w * v).sum(axis=1) / weight_sum[valid_mask]
+
+                # 精确匹配：直接赋值
+                if exact_mask.any():
+                    chunk_vals[exact_mask] = vals_f64[idxs[exact_mask, 0]]
+
+                del pts_query, dists, idxs, weights, weight_sum
+
+                result = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
+                del chunk_vals
+                nodata_mask = result < -9998.0
+                np.maximum(result, 0.0, out=result)
+                result[nodata_mask] = -9999.0
+                return row_start, result
+
+            start_time = time.time()
+            logger.info("ArcGIS IDW 插值开始，分块数=%d，并行线程数=%d",
+                        len(chunk_starts), self.max_interp_workers)
+
+            # 滑动窗口式并行提交与消费（与 scipy_idw 保持相同模式）
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.max_interp_workers
+            ) as executor:
+                pending: dict = {}
+                submit_ptr = 0
+
+                while submit_ptr < len(chunk_starts) and submit_ptr < self.max_interp_workers:
+                    rs = chunk_starts[submit_ptr]
+                    pending[rs] = executor.submit(_compute_chunk_arcgis_idw, rs)
+                    submit_ptr += 1
+
+                for chunk_idx, rs in enumerate(chunk_starts):
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise TaskCancelledException("任务已被取消")
+                    try:
+                        row_start_res, chunk_vals = pending.pop(rs).result()
+                    except Exception as exc:
+                        logger.error("ArcGIS IDW 分块 row_start=%d 失败: %s", rs, exc)
+                        raise
+
+                    band.WriteArray(chunk_vals, 0, row_start_res)
+                    del chunk_vals
+                    gc.collect()
+
+                    if submit_ptr < len(chunk_starts):
+                        next_rs = chunk_starts[submit_ptr]
+                        pending[next_rs] = executor.submit(_compute_chunk_arcgis_idw, next_rs)
+                        submit_ptr += 1
+
+                    row_end = min(rs + chunk_rows, n_rows)
+                    if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
+                        elapsed = time.time() - start_time
+                        logger.info("ArcGIS IDW 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
+                                    row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
+
+            band.ComputeStatistics(False)
+            band.FlushCache()
+
+            total_time = time.time() - start_time
+            logger.info("ArcGIS IDW 插值完成，总耗时: %.1fs, 已保存: %s",
+                        total_time, output_tif_path)
+
+        except TaskCancelledException:
+            raise
+        except Exception as exc:
+            logger.error("ArcGIS IDW 插值失败: %s", exc, exc_info=True)
+            raise
+        finally:
+            out_ds = None
+            band = None
+            if tree is not None:
+                del tree
             gc.collect()
 
     # ==================== scipy 插值方法 ====================
@@ -1369,6 +1581,281 @@ class KmlToIaConverter:
             del ok
             gc.collect()
 
+    # ==================== EBK 插值方法（子集化克里金）====================
+
+    def _run_ebk_interpolation(
+            self,
+            x_arr: np.ndarray,
+            y_arr: np.ndarray,
+            values: np.ndarray,
+            output_tif_path: str,
+    ) -> None:
+        """
+        简化版 EBK（Empirical Bayesian Kriging）插值，与 ArcGIS EBK 原理对齐。
+
+        算法说明（简化版 EBK）：
+            1. 子集划分：使用 cKDTree 将采样点划分为多个重叠子集
+               （每个子集约 ebk_subset_size 个点，通过随机种子 + KNN 构成）。
+            2. 每个子集建立局部 OrdinaryKriging 模型
+               （变差函数默认 'power'，与 ArcGIS EBK 默认值一致）。
+            3. 逐分块预测：每个像素查询最近的若干子集，
+               以 1/(1+d²) 为权重对各局部模型预测值加权平均。
+
+        性能优势：模型构建复杂度从全局 O(n³) 降为 N×O(K³)，
+                  当 n_samples > 500 时模型构建加速显著。
+
+        参数:
+            x_arr: 采样点X坐标(经度)
+            y_arr: 采样点Y坐标(纬度)
+            values: 采样点对应值（Ia）
+            output_tif_path: 输出 GeoTIFF 文件路径
+        """
+        if not _HAS_PYKRIGE:
+            raise ImportError(
+                "pykrige 未安装，无法使用 'kriging' (EBK) 方法。"
+                "请在 QGIS Python 环境中运行: pip install pykrige"
+            )
+        if not _HAS_SCIPY:
+            raise ImportError(
+                "scipy 未安装，无法使用 'kriging' (EBK) 方法。"
+                "请在 QGIS Python 环境中运行: pip install scipy"
+            )
+
+        out_ds = None
+        band = None
+
+        try:
+            n_samples = len(x_arr)
+            subset_size = self.ebk_subset_size
+            overlap_factor = self.ebk_overlap_factor
+
+            # 向后兼容：若 ebk_variogram 仍是默认值 'power' 且
+            # 用户设置了非默认的 kriging_variogram（!= 'linear'），则使用旧值
+            variogram = self.ebk_variogram
+            if variogram == 'power' and self.kriging_variogram != 'linear':
+                variogram = self.kriging_variogram
+                logger.info("EBK 向后兼容：使用 kriging_variogram='%s'", variogram)
+
+            logger.info(
+                "EBK 插值: 采样点数=%d, 子集大小=%d, 重叠因子=%.1f, 变差函数=%s",
+                n_samples, subset_size, overlap_factor, variogram,
+            )
+
+            # ---- 1. 子集划分 ----
+            pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
+            tree_train = _cKDTree(pts_train)
+            vals_f64 = values.astype(np.float64)
+            k_per_subset = min(subset_size, n_samples)
+
+            # 确定子集种子数量（重叠因子越大，子集越多）
+            n_subsets = max(1, int(
+                np.ceil(n_samples / subset_size * max(1.0, overlap_factor))
+            ))
+            n_subsets = min(n_subsets, n_samples)
+
+            # 固定随机种子保证可复现
+            rng = np.random.default_rng(seed=42)
+            seed_indices = rng.choice(
+                n_samples, size=n_subsets, replace=(n_subsets > n_samples)
+            )
+
+            logger.info("EBK 子集划分: 计划建立 %d 个子集（每个约 %d 点）",
+                        n_subsets, k_per_subset)
+
+            # ---- 2. 建立局部克里金模型 ----
+            local_models = []  # list of (ok_model, center_x, center_y, radius)
+            report_interval = max(1, n_subsets // 10)
+
+            for i, seed_idx in enumerate(seed_indices):
+                # 每 50 个子集检查一次取消信号
+                if i % 50 == 0:
+                    self._check_cancelled()
+
+                seed_pt = pts_train[seed_idx]
+                # 查询 k_per_subset 个最近邻构成子集
+                dists_k, idxs_k = tree_train.query(
+                    seed_pt.reshape(1, -1), k=k_per_subset
+                )
+                dists_k = dists_k[0]  # shape: (k_per_subset,)
+                idxs_k  = idxs_k[0]  # shape: (k_per_subset,)
+
+                sub_x = x_arr[idxs_k].astype(np.float64)
+                sub_y = y_arr[idxs_k].astype(np.float64)
+                sub_v = vals_f64[idxs_k]
+
+                # 跳过点数不足的子集（OrdinaryKriging 至少需要 3 个点）
+                if len(idxs_k) < 3:
+                    logger.debug("子集 %d/%d 点数不足(%d)，跳过",
+                                 i + 1, n_subsets, len(idxs_k))
+                    continue
+
+                # 跳过值无变化的子集（避免克里金奇异矩阵）
+                if np.std(sub_v) < 1e-10:
+                    logger.debug("子集 %d/%d 值无变化，跳过", i + 1, n_subsets)
+                    continue
+
+                try:
+                    ok = _OrdinaryKriging(
+                        sub_x, sub_y, sub_v,
+                        variogram_model=variogram,
+                        nlags=self.kriging_nlags,
+                        verbose=False,
+                        enable_plotting=False,
+                    )
+                    radius = float(np.max(dists_k))
+                    local_models.append(
+                        (ok, float(seed_pt[0]), float(seed_pt[1]), radius)
+                    )
+                except Exception as exc:
+                    logger.warning("EBK 子集 %d/%d 建模失败: %s",
+                                   i + 1, n_subsets, exc)
+                    continue
+
+                if (i + 1) % report_interval == 0 or i + 1 == n_subsets:
+                    logger.info("EBK 建模进度: %d/%d，已建立 %d 个模型",
+                                i + 1, n_subsets, len(local_models))
+
+            if not local_models:
+                raise RuntimeError(
+                    "EBK 没有可用的子集克里金模型，"
+                    "请检查采样点数量（≥3）和 ebk_subset_size 参数"
+                )
+
+            n_models = len(local_models)
+            logger.info("EBK 共建立 %d 个局部子集克里金模型", n_models)
+
+            # 子集中心的 KD-Tree（用于快速查找每个像素的最近子集）
+            centers = np.array(
+                [[m[1], m[2]] for m in local_models], dtype=np.float64
+            )
+            tree_centers = _cKDTree(centers)
+            k_predict = min(3, n_models)  # 每个像素使用最近 k_predict 个子集预测
+
+            # ---- 3. 输出栅格准备 ----
+            os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+            self._ensure_file_writable(output_tif_path)
+            driver = gdal.GetDriverByName('GTiff')
+            out_ds = driver.Create(
+                output_tif_path,
+                self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
+                ['COMPRESS=LZW', 'TILED=YES'],
+            )
+            out_ds.SetGeoTransform(self._geo_transform)
+            out_ds.SetProjection(self._utm_srs.ExportToWkt())
+            band = out_ds.GetRasterBand(1)
+            band.SetNoDataValue(-9999.0)
+
+            grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
+            n_rows_total = self._n_rows
+            chunk_rows = self.chunk_size
+            n_closest = min(self.kriging_neighbors, k_per_subset)
+            start_time = time.time()
+
+            # ---- 4. 逐分块预测（串行，进度完整报告）----
+            for chunk_idx, row_start in enumerate(range(0, n_rows_total, chunk_rows)):
+                self._check_cancelled()
+                row_end = min(row_start + chunk_rows, n_rows_total)
+                actual_rows = row_end - row_start
+
+                grid_y = (
+                    self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
+                )
+                xx, yy = np.meshgrid(grid_x, grid_y)
+                pts_query = np.column_stack([xx.ravel(), yy.ravel()])
+                del xx, yy
+                n_pts = pts_query.shape[0]
+
+                # 查询每个像素最近的 k_predict 个子集
+                dists_to_centers, subset_idxs = tree_centers.query(
+                    pts_query, k=k_predict
+                )
+                if k_predict == 1:
+                    dists_to_centers = dists_to_centers.reshape(-1, 1)
+                    subset_idxs      = subset_idxs.reshape(-1, 1)
+
+                # 权重：w = 1 / (1 + d²)（基于子集中心到像素的距离）
+                weights_pred = 1.0 / (1.0 + dists_to_centers ** 2)
+
+                # 展平为列表，方便按模型分组
+                all_model_idxs = subset_idxs.ravel()                     # (n_pts * k_predict,)
+                all_pixel_idxs = np.repeat(np.arange(n_pts), k_predict)  # (n_pts * k_predict,)
+                all_weights    = weights_pred.ravel()                     # (n_pts * k_predict,)
+
+                # 初始化加权累积数组
+                weighted_sum = np.zeros(n_pts, dtype=np.float64)
+                weight_total = np.zeros(n_pts, dtype=np.float64)
+
+                # 按模型批量预测：每个唯一子集只调用一次 ok.execute
+                for m_idx in np.unique(all_model_idxs):
+                    sel          = all_model_idxs == m_idx
+                    px_idxs_sel  = all_pixel_idxs[sel]
+                    w_sel        = all_weights[sel]
+                    px_coords    = pts_query[px_idxs_sel, 0].astype(np.float64)
+                    py_coords    = pts_query[px_idxs_sel, 1].astype(np.float64)
+
+                    try:
+                        z, _ = local_models[m_idx][0].execute(
+                            'points', px_coords, py_coords,
+                            n_closest_points=n_closest,
+                            backend='loop',
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "EBK 子集 %d 块 %d 预测失败，跳过: %s",
+                            m_idx, chunk_idx, exc,
+                        )
+                        continue
+
+                    np.add.at(weighted_sum, px_idxs_sel,
+                              w_sel * np.asarray(z, dtype=np.float64))
+                    np.add.at(weight_total, px_idxs_sel, w_sel)
+
+                del pts_query, dists_to_centers, subset_idxs, weights_pred
+                del all_model_idxs, all_pixel_idxs, all_weights
+
+                # 归一化
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    chunk_vals = np.where(
+                        weight_total > 0.0,
+                        weighted_sum / weight_total,
+                        -9999.0,
+                    )
+                del weighted_sum, weight_total
+
+                chunk_vals = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
+                nodata_mask = chunk_vals < -9998.0
+                np.maximum(chunk_vals, 0.0, out=chunk_vals)
+                chunk_vals[nodata_mask] = -9999.0
+
+                band.WriteArray(chunk_vals, 0, row_start)
+                del chunk_vals
+                gc.collect()
+
+                if (chunk_idx + 1) % 5 == 0 or row_end == n_rows_total:
+                    elapsed = time.time() - start_time
+                    logger.info(
+                        "EBK 预测进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
+                        row_end, n_rows_total,
+                        100.0 * row_end / n_rows_total, elapsed,
+                    )
+
+            band.ComputeStatistics(False)
+            band.FlushCache()
+
+            total_time = time.time() - start_time
+            logger.info("EBK 插值完成，总耗时: %.1fs, 已保存: %s",
+                        total_time, output_tif_path)
+
+        except TaskCancelledException:
+            raise
+        except Exception as exc:
+            logger.error("EBK 插值失败: %s", exc, exc_info=True)
+            raise
+        finally:
+            out_ds = None
+            band = None
+            gc.collect()
+
     # ==================== 统一插值入口 ====================
 
     def _interpolate_ia_to_file(
@@ -1389,8 +1876,10 @@ class KmlToIaConverter:
         """
         method = self.interp_method
 
-        if method in ('qgis_idw', 'qgis_tin'):
+        if method == 'qgis_tin':
             self._run_qgis_interpolation(x_arr, y_arr, ia_values, output_tif_path)
+        elif method == 'qgis_idw':
+            self._run_arcgis_idw_interpolation(x_arr, y_arr, ia_values, output_tif_path)
         elif method == 'scipy_idw':
             self._run_scipy_interpolation(x_arr, y_arr, ia_values, output_tif_path)
         elif method == 'scipy_tin':
@@ -1398,7 +1887,7 @@ class KmlToIaConverter:
         elif method == 'radial':
             self._run_radial_interpolation(x_arr, y_arr, ia_values, output_tif_path)
         elif method == 'kriging':
-            self._run_kriging_interpolation(x_arr, y_arr, ia_values, output_tif_path)
+            self._run_ebk_interpolation(x_arr, y_arr, ia_values, output_tif_path)
         else:
             raise ValueError(
                 f"不支持的插值方法: '{method}'，"
@@ -1687,17 +2176,18 @@ if __name__ == "__main__":
 
         # ========== 选择插值方法 ==========
         # 推荐方法（平滑，无突变）
-        interp_method='qgis_idw',  # scipy TIN - 平滑无突变（默认推荐）
+        interp_method='qgis_idw',  # ArcGIS IDW (KD-Tree局部IDW，与ArcGIS默认对齐，需scipy)
         # interp_method='radial',   # 径向插值 - 专为同心圈，完美单调递增
 
         # 其他可用方法
         # interp_method='scipy_idw',  # scipy RBF - 速度快（可能有边界突变）
-        # interp_method='kriging',    # 普通克里金 - 统计精度最高，速度最慢
-        # interp_method='qgis_idw',   # QGIS IDW - 无需额外依赖
+        # interp_method='kriging',    # EBK 子集化克里金 - 与ArcGIS EBK对齐，需scipy+pykrige
         # interp_method='qgis_tin',   # QGIS TIN - 无需额外依赖
 
-        # QGIS IDW 参数（仅 interp_method='qgis_idw' 时有效）
-        qgis_idw_power=2.0,  # IDW幂次；推荐1.0~4.0，越大近点主导
+        # ArcGIS IDW 参数（仅 interp_method='qgis_idw' 时有效，需安装scipy）
+        qgis_idw_power=2.0,         # IDW幂次；推荐1.0~4.0，越大近点主导（与ArcGIS默认一致）
+        idw_num_neighbors=12,        # 局部搜索邻近点数；默认12与ArcGIS一致，越大结果越平滑
+        # idw_max_distance=0.5,      # 最大搜索距离（度），None表示不限制（与ArcGIS默认一致）
 
         # QGIS TIN 参数（仅 interp_method='qgis_tin' 时有效）
         qgis_tin_method=0,  # TIN子方法: 0=线性（快）, 1=Clough-Tocher（平滑）
@@ -1712,17 +2202,21 @@ if __name__ == "__main__":
         # 径向插值参数（仅 interp_method='radial' 时有效，需安装scipy）
         radial_kind='cubic',  # 1D插值类型: 'linear'(快), 'cubic'(更平滑)
 
-        # 克里金参数（仅 interp_method='kriging' 时有效，需安装pykrige）
-        kriging_variogram='linear',  # 变差函数: 'linear','power','gaussian','spherical'
-        kriging_nlags=6,  # 半变差函数滞后数
-        kriging_neighbors=50,  # 克里金最近邻点数
+        # EBK 参数（仅 interp_method='kriging' 时有效，需安装scipy+pykrige）
+        ebk_subset_size=100,        # 子集大小；默认100与ArcGIS EBK一致
+        ebk_overlap_factor=1.0,     # 子集重叠因子；越大子集数越多
+        ebk_variogram='power',      # 变差函数；默认'power'与ArcGIS EBK一致
+        # 旧版 kriging 参数（保留向后兼容）
+        kriging_variogram='linear',  # 变差函数: 旧参数，ebk_variogram优先生效
+        kriging_nlags=6,             # 半变差函数滞后数
+        kriging_neighbors=50,        # 克里金最近邻点数（每次预测使用的训练点数）
 
         # 内存优化参数
         chunk_size=1000,  # 栅格分块行数；推荐500~2000
         coord_batch_size=10000,  # 坐标转换批次大小；推荐5000~50000
         max_memory_gb=10.0,  # 最大内存使用限制(GB)；参考值，实际由上方参数控制
 
-        # 并行插值参数（scipy方法适用）
-        max_interp_workers=2,  # scipy插值并行线程数；推荐1~4，越多速度越快但内存消耗越大
+        # 并行插值参数（scipy/ArcGIS IDW 方法适用）
+        max_interp_workers=2,  # 插值并行线程数；推荐1~4，越多速度越快但内存消耗越大
     )
     converter.run()
