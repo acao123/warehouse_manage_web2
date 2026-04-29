@@ -2942,20 +2942,14 @@ def _generate_earthquake_landslide_assessment_map_impl(longitude, latitude, magn
         if county_legend_layer:
             project.addMapLayer(county_legend_layer)
 
-        intensity_legend_layer = create_intensity_legend_layer()
-        if intensity_legend_layer:
-            project.addMapLayer(intensity_legend_layer)
+        # 不在地图上显示烈度圈，仅用于统计范围，故不创建烈度圈图例图层
+        # intensity_legend_layer = create_intensity_legend_layer()
 
         # 处理烈度圈KML（统一解析为绝对路径，供后续统计使用）
-        intensity_layer = None
+        # 不在地图上显示烈度圈，仅用于统计范围
         abs_kml = None
         if kml_path:
             abs_kml = kml_path if os.path.isabs(kml_path) else resolve_path(kml_path)
-            intensity_data = parse_intensity_kml(abs_kml)
-            if intensity_data:
-                intensity_layer = create_intensity_layer(intensity_data)
-                if intensity_layer:
-                    project.addMapLayer(intensity_layer)
 
         # 创建震中图层
         epicenter_layer = create_epicenter_layer(longitude, latitude)
@@ -2966,11 +2960,10 @@ def _generate_earthquake_landslide_assessment_map_impl(longitude, latitude, magn
         if annotation_raster:
             project.addMapLayer(annotation_raster)
 
-        # 按渲染顺序排列图层（第一项在最上层）
+        # 按渲染顺序排列图层（第一项在最上层，不含烈度圈）
         ordered_layers = [lyr for lyr in [
             epicenter_layer,
             annotation_raster,
-            intensity_layer,
             city_point_layer,
             province_label_layer,
             province_layer,
@@ -3425,17 +3418,16 @@ def test_legend_layout_config():
     print(f"  滑坡评估图例项字体大小: {ASSESSMENT_LEGEND_FONT_SIZE_PT}pt ✓")
     print(f"  滑坡评估图例项行高: {ASSESSMENT_LEGEND_ROW_HEIGHT_MM}mm ✓")
 
-    # 验证3行2列布局（含烈度圈）
+    # 验证3行2列布局（不含烈度圈，烈度圈不在地图上显示）
     legend_items = [
         ("震中", "star"),
         ("地级市", "circle"),
         ("省界", "solid_line"),
         ("市界", "dash_line_city"),
         ("县界", "dash_line_county"),
-        ("烈度圈", "solid_line_black"),
     ]
-    assert len(legend_items) == 6  # 3行 x 2列 = 6项
-    print(f"  基本图例项数量: {len(legend_items)} (3行x2列) ✓")
+    assert len(legend_items) == 5  # 基本图例项（不含烈度圈）
+    print(f"  基本图例项数量: {len(legend_items)} (不含烈度圈) ✓")
 
     print("  图例布局配置测试通过 ✓")
 
