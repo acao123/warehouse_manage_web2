@@ -2945,8 +2945,9 @@ def _generate_earthquake_landslide_assessment_map_impl(longitude, latitude, magn
         # 不在地图上显示烈度圈，仅用于统计范围，故不创建烈度圈图例图层
         # intensity_legend_layer = create_intensity_legend_layer()
 
-        # 处理烈度圈KML（统一解析为绝对路径，供后续统计使用）
+        # 将KML路径转换为绝对路径，供后续面积统计使用
         # 不在地图上显示烈度圈，仅用于统计范围
+        # （compute_landslide_area_statistics 内部会调用 parse_intensity_kml 进行统计）
         abs_kml = None
         if kml_path:
             abs_kml = kml_path if os.path.isabs(kml_path) else resolve_path(kml_path)
