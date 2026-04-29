@@ -275,6 +275,48 @@ def merge_search_bbox_with_kml(base_min_lon, base_max_lon, base_min_lat, base_ma
     return merged_min_lon, merged_max_lon, merged_min_lat, merged_max_lat
 
 
+def get_utm_epsg(center_lon):
+    """
+    根据中央经度选择适合中国范围的 UTM 投影带 EPSG 编号。
+    优先匹配北半球东经 72°–138° 范围内的 UTM 带；
+    超出范围时使用标准公式 32600 + int((lon+180)/6) + 1 兜底并记录 warning。
+
+    参数:
+        center_lon: 工作范围中央经度（度）
+
+    返回:
+        EPSG 整数，例如 32648
+    """
+    # UTM 带对照表：(经度下界, 经度上界, EPSG)
+    utm_table = [
+        (72,  78,  32643),
+        (78,  84,  32644),
+        (84,  90,  32645),
+        (90,  96,  32646),
+        (96,  102, 32647),
+        (102, 108, 32648),
+        (108, 114, 32649),
+        (114, 120, 32650),
+        (120, 126, 32651),
+        (126, 132, 32652),
+        (132, 138, 32653),
+    ]
+    for lon_min, lon_max, epsg in utm_table:
+        if lon_min <= center_lon < lon_max:
+            logger.info(
+                "UTM 带选择：中央经度 %.4f°，匹配 EPSG:%d（经度范围 %d°–%d°E）",
+                center_lon, epsg, lon_min, lon_max
+            )
+            return epsg
+    # 兜底：标准 UTM 北半球公式
+    epsg = 32600 + int((center_lon + 180) / 6) + 1
+    logger.warning(
+        "中央经度 %.4f° 超出表格范围 72°–138°E，使用标准公式兜底 EPSG:%d",
+        center_lon, epsg
+    )
+    return epsg
+
+
 # ============================================================
 # 公共接口
 # ============================================================
@@ -389,11 +431,16 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
                 logger.warning("KML文件解析失败，使用原始搜索范围")
 
     # ----------------------------------------------------------
-    # 3. 打开 ac.tif 并读取数据
+    # 3. 打开 ac.tif 并确定裁剪窗口
     # ----------------------------------------------------------
     ac_dataset = None
     ia_dataset = None
     out_dataset = None
+    # 内存中间数据集（用于 UTM 重投影）
+    ac_mem_ds = None
+    ia_mem_ds = None
+    ac_utm_ds = None
+    ia_utm_ds = None
 
     try:
         ac_dataset = gdal.Open(ac_tif_path, gdal.GA_ReadOnly)
@@ -403,7 +450,6 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
         _validate_epsg4326(ac_dataset, ac_tif_path)
 
         ac_geotransform = ac_dataset.GetGeoTransform()
-        ac_projection = ac_dataset.GetProjection()
         ac_band = ac_dataset.GetRasterBand(1)
         ac_nodata = ac_band.GetNoDataValue()
 
@@ -450,32 +496,18 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
             col_min, row_min, read_width, read_height
         )
 
-        ac_data_raw = ac_band.ReadAsArray(col_min, row_min, read_width, read_height)
-        if ac_data_raw is None:
-            raise IOError(
-                f"读取 ac.tif 数据失败: "
-                f"offset=({col_min},{row_min}), size=({read_width},{read_height})"
-            )
-        ac_data = ac_data_raw.astype(np.float64)
+        # 计算 WGS84 工作区域的地理边界（用于后续 Ia 裁剪和中央经度计算）
+        out_geotransform_4326 = list(ac_geotransform)
+        out_geotransform_4326[0] = ac_geotransform[0] + col_min * ac_geotransform[1]
+        out_geotransform_4326[3] = ac_geotransform[3] + row_min * ac_geotransform[5]
 
-        # 构建 ac nodata 掩码 (True = 该像素是 nodata)
-        ac_is_nodata = _nodata_mask(ac_data, ac_nodata)
-        # ac 有效值掩码 (True = 该像素有有效的 ac 值)
-        ac_is_valid = ~ac_is_nodata
-
-        # ★ 关键：将 a_c 从 m/s² 转换为 g 单位
-        ac_data_g = np.where(ac_is_valid, ac_data / GRAVITY, np.nan)
-
-        valid_count = int(np.sum(ac_is_valid))
-        logger.info(
-            "ac 数据统计(转换为g后): 有效像素=%d, min=%.6f, max=%.6f",
-            valid_count,
-            float(np.nanmin(ac_data_g)) if valid_count > 0 else 0,
-            float(np.nanmax(ac_data_g)) if valid_count > 0 else 0
-        )
+        work_lon_min = out_geotransform_4326[0]
+        work_lon_max = out_geotransform_4326[0] + read_width * out_geotransform_4326[1]
+        work_lat_max = out_geotransform_4326[3]
+        work_lat_min = out_geotransform_4326[3] + read_height * out_geotransform_4326[5]
 
         # ----------------------------------------------------------
-        # 4. 打开 Ia.tif 并读取数据
+        # 4. 打开 Ia.tif
         # ----------------------------------------------------------
         ia_dataset = gdal.Open(ia_tif_path, gdal.GA_ReadOnly)
         if ia_dataset is None:
@@ -491,139 +523,211 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
         logger.debug("Ia.tif NoData: %s", ia_nodata)
 
         # ----------------------------------------------------------
-        # 5. 计算输出的地理变换参数
+        # 5. 根据工作区域中央经度选择 UTM 投影带
         # ----------------------------------------------------------
-        out_geotransform = list(ac_geotransform)
-        out_geotransform[0] = ac_geotransform[0] + col_min * ac_geotransform[1]
-        out_geotransform[3] = ac_geotransform[3] + row_min * ac_geotransform[5]
+        center_lon = (work_lon_min + work_lon_max) / 2.0
+        utm_epsg = get_utm_epsg(center_lon)
+        utm_srs_str = f'EPSG:{utm_epsg}'
+
+        # nodata 值（若原始为 None 则用 -9999）
+        ac_nodata_val = ac_nodata if ac_nodata is not None else -9999.0
+        ia_nodata_val = ia_nodata if ia_nodata is not None else -9999.0
 
         # ----------------------------------------------------------
-        # 6. 创建坐标网格，映射 ac 像素 -> Ia 像素
+        # 6. 在内存中裁剪 ac.tif 工作区域（为 Warp 做准备）
         # ----------------------------------------------------------
-        cols = np.arange(read_width)
-        rows = np.arange(read_height)
-        col_grid, row_grid = np.meshgrid(cols, rows)
+        logger.info(
+            "使用 gdal.Translate 在内存中裁剪 ac.tif: srcWin=[%d, %d, %d, %d]",
+            col_min, row_min, read_width, read_height
+        )
+        ac_mem_ds = gdal.Translate(
+            '', ac_dataset,
+            format='MEM',
+            srcWin=[col_min, row_min, read_width, read_height]
+        )
+        if ac_mem_ds is None:
+            raise IOError("gdal.Translate 创建 ac 内存裁剪数据集失败")
 
-        # 每个像素中心的地理坐标
-        lon_grid = out_geotransform[0] + (col_grid + 0.5) * out_geotransform[1]
-        lat_grid = out_geotransform[3] + (row_grid + 0.5) * out_geotransform[5]
+        # ----------------------------------------------------------
+        # 7. 在内存中裁剪 Ia.tif 工作区域（与 ac 工作区域地理范围对应）
+        # ----------------------------------------------------------
+        # 西北角 → (ia_col_clip_min, ia_row_clip_min)
+        # 东南角 → (ia_col_clip_max, ia_row_clip_max)
+        ia_col_clip_min, ia_row_clip_min = get_pixel_coords(
+            ia_geotransform, work_lon_min, work_lat_max
+        )
+        ia_col_clip_max, ia_row_clip_max = get_pixel_coords(
+            ia_geotransform, work_lon_max, work_lat_min
+        )
+        # 加 1 保证包含边缘像素，并裁剪到有效范围
+        ia_col_clip_max += 1
+        ia_row_clip_max += 1
+        ia_col_clip_min = max(0, ia_col_clip_min)
+        ia_row_clip_min = max(0, ia_row_clip_min)
+        ia_col_clip_max = min(ia_dataset.RasterXSize, ia_col_clip_max)
+        ia_row_clip_max = min(ia_dataset.RasterYSize, ia_row_clip_max)
 
-        # 对应的 Ia.tif 像素坐标
-        ia_col_grid = ((lon_grid - ia_geotransform[0]) / ia_geotransform[1]).astype(int)
-        ia_row_grid = ((lat_grid - ia_geotransform[3]) / ia_geotransform[5]).astype(int)
+        ia_clip_width = ia_col_clip_max - ia_col_clip_min
+        ia_clip_height = ia_row_clip_max - ia_row_clip_min
 
-        # Ia 坐标在有效像素范围内的掩码
-        in_ia_bounds = (
-            (ia_col_grid >= 0) &
-            (ia_col_grid < ia_dataset.RasterXSize) &
-            (ia_row_grid >= 0) &
-            (ia_row_grid < ia_dataset.RasterYSize)
+        if ia_clip_width > 0 and ia_clip_height > 0:
+            logger.info(
+                "使用 gdal.Translate 在内存中裁剪 Ia.tif: srcWin=[%d, %d, %d, %d]",
+                ia_col_clip_min, ia_row_clip_min, ia_clip_width, ia_clip_height
+            )
+            ia_mem_ds = gdal.Translate(
+                '', ia_dataset,
+                format='MEM',
+                srcWin=[ia_col_clip_min, ia_row_clip_min, ia_clip_width, ia_clip_height]
+            )
+            if ia_mem_ds is None:
+                logger.warning("gdal.Translate 创建 Ia 内存裁剪数据集失败，Ia 将视为全无效")
+        else:
+            logger.warning(
+                "ac 工作区域与 Ia.tif 无有效重叠（裁剪窗口为空），Ia 将视为全无效"
+            )
+            ia_mem_ds = None
+
+        # ----------------------------------------------------------
+        # 8. 将 ac 重投影并重采样到 UTM/30m（在内存中）
+        # ----------------------------------------------------------
+        logger.info(
+            "开始 warp ac 到 UTM（%s），目标像元 30m，重采样方式：双线性…", utm_srs_str
+        )
+        ac_utm_ds = gdal.Warp(
+            '', ac_mem_ds,
+            format='MEM',
+            dstSRS=utm_srs_str,
+            xRes=30, yRes=30,
+            resampleAlg=gdal.GRA_Bilinear,
+            dstNodata=ac_nodata_val,
+            targetAlignedPixels=True,
+            creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=YES']
+        )
+        if ac_utm_ds is None:
+            raise IOError(f"gdal.Warp 重投影 ac 到 {utm_srs_str} 失败")
+
+        ac_utm_gt = ac_utm_ds.GetGeoTransform()
+        utm_width = ac_utm_ds.RasterXSize
+        utm_height = ac_utm_ds.RasterYSize
+
+        # UTM 下的输出边界 (minX, minY, maxX, maxY)
+        ac_utm_bounds = (
+            ac_utm_gt[0],
+            ac_utm_gt[3] + utm_height * ac_utm_gt[5],   # minY（南边）
+            ac_utm_gt[0] + utm_width * ac_utm_gt[1],    # maxX（东边）
+            ac_utm_gt[3]                                 # maxY（北边）
+        )
+
+        logger.info(
+            "ac UTM/30m 栅格: EPSG:%d, 宽度=%d, 高度=%d, 像元=%.1f m, "
+            "范围=(%.2f, %.2f, %.2f, %.2f)",
+            utm_epsg, utm_width, utm_height, ac_utm_gt[1],
+            ac_utm_bounds[0], ac_utm_bounds[1], ac_utm_bounds[2], ac_utm_bounds[3]
         )
 
         # ----------------------------------------------------------
-        # 7. 初始化 Dn 数组 + 读取 Ia 数据并映射
+        # 9. 将 Ia 重投影并重采样到与 ac 完全相同的 UTM/30m 网格
+        # ----------------------------------------------------------
+        if ia_mem_ds is not None:
+            logger.info(
+                "开始 warp Ia 到 UTM（%s），对齐 ac 网格（宽=%d, 高=%d）…",
+                utm_srs_str, utm_width, utm_height
+            )
+            ia_utm_ds = gdal.Warp(
+                '', ia_mem_ds,
+                format='MEM',
+                dstSRS=utm_srs_str,
+                outputBounds=ac_utm_bounds,
+                width=utm_width,
+                height=utm_height,
+                xRes=30, yRes=30,
+                resampleAlg=gdal.GRA_Bilinear,
+                dstNodata=ia_nodata_val,
+                creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=YES']
+            )
+            if ia_utm_ds is None:
+                logger.warning(
+                    "gdal.Warp 重投影 Ia 到 %s 失败，Ia 将视为全无效", utm_srs_str
+                )
+        else:
+            ia_utm_ds = None
+
+        if ia_utm_ds is not None:
+            logger.info(
+                "Ia UTM/30m 栅格: 宽度=%d, 高度=%d（与 ac 网格对齐）",
+                ia_utm_ds.RasterXSize, ia_utm_ds.RasterYSize
+            )
+
+        # ----------------------------------------------------------
+        # 10. 读取 UTM/30m 栅格数据，构建掩码
+        # ----------------------------------------------------------
+        ac_data_utm = ac_utm_ds.GetRasterBand(1).ReadAsArray().astype(np.float64)
+
+        # ac nodata 掩码与有效掩码
+        ac_is_nodata = _nodata_mask(ac_data_utm, ac_nodata_val)
+        ac_is_valid = ~ac_is_nodata
+
+        # ★ 关键：将 a_c 从 m/s² 转换为 g 单位
+        ac_data_g = np.where(ac_is_valid, ac_data_utm / GRAVITY, np.nan)
+
+        valid_count = int(np.sum(ac_is_valid))
+        logger.info(
+            "ac UTM 数据统计（转换为 g 后）: 有效像素=%d, min=%.6f, max=%.6f",
+            valid_count,
+            float(np.nanmin(ac_data_g)) if valid_count > 0 else 0,
+            float(np.nanmax(ac_data_g)) if valid_count > 0 else 0
+        )
+
+        # 读取 Ia UTM 数据
+        if ia_utm_ds is not None:
+            ia_data_utm = ia_utm_ds.GetRasterBand(1).ReadAsArray().astype(np.float64)
+            ia_is_nodata = _nodata_mask(ia_data_utm, ia_nodata_val)
+            # Ia 可用：ac 有效 & Ia 非nodata & Ia > 0
+            ia_is_usable = ac_is_valid & (~ia_is_nodata) & (ia_data_utm > 0)
+
+            ia_usable_count = int(np.sum(ia_is_usable))
+            logger.info("Ia UTM 数据统计: 可用像素(>0)=%d", ia_usable_count)
+            if ia_usable_count > 0:
+                logger.info(
+                    "Ia 可用值范围: min=%.6f, max=%.6f",
+                    float(np.min(ia_data_utm[ia_is_usable])),
+                    float(np.max(ia_data_utm[ia_is_usable]))
+                )
+        else:
+            logger.warning("Ia UTM 数据集为空，所有 ac 有值处 Dn 赋值为 0")
+            ia_data_utm = np.zeros((utm_height, utm_width), dtype=np.float64)
+            ia_is_usable = np.zeros((utm_height, utm_width), dtype=bool)
+
+        # ----------------------------------------------------------
+        # 11. 初始化 Dn 数组（UTM/30m 网格）
         # ----------------------------------------------------------
         # ★ 赋值策略:
         #   - 先全部初始化为 NODATA_VALUE
         #   - ac 有值的位置先赋 0（覆盖 nodata，包括 Ia 无值的情况）
         #   - ac 有值 & Ia 有值 & Ia>0 的位置按公式计算后覆盖
-        dn_data = np.full((read_height, read_width), NODATA_VALUE, dtype=np.float64)
+        dn_data = np.full((utm_height, utm_width), NODATA_VALUE, dtype=np.float64)
         dn_data[ac_is_valid] = 0.0
 
-        if not np.any(in_ia_bounds & ac_is_valid):
-            # ac 有效区域与 Ia 没有任何重叠，ac 有值处已经是 0，完成
+        if not np.any(ia_is_usable):
             logger.warning(
-                "ac 有效区域与 Ia.tif 没有重叠，所有 ac 有值处 Dn 赋值为 0"
+                "ac 有效区域内没有可用的 Ia 值，所有 ac 有值处 Dn 赋值为 0"
             )
         else:
-            # 计算 Ia.tif 需要读取的最小包围矩形
-            need_read = in_ia_bounds & ac_is_valid
-            ia_col_min = int(np.min(ia_col_grid[need_read]))
-            ia_col_max = int(np.max(ia_col_grid[need_read])) + 1
-            ia_row_min = int(np.min(ia_row_grid[need_read]))
-            ia_row_max = int(np.max(ia_row_grid[need_read])) + 1
-
-            ia_col_min = max(0, ia_col_min)
-            ia_col_max = min(ia_dataset.RasterXSize, ia_col_max)
-            ia_row_min = max(0, ia_row_min)
-            ia_row_max = min(ia_dataset.RasterYSize, ia_row_max)
-
-            ia_read_width = ia_col_max - ia_col_min
-            ia_read_height = ia_row_max - ia_row_min
-
-            if ia_read_width <= 0 or ia_read_height <= 0:
-                raise ValueError("Ia.tif 读取区域计算异常，宽度或高度 <= 0")
-
-            logger.info(
-                "读取Ia.tif区域: 起始列=%d, 起始行=%d, 宽度=%d, 高度=%d",
-                ia_col_min, ia_row_min, ia_read_width, ia_read_height
-            )
-
-            ia_data_raw = ia_band.ReadAsArray(
-                ia_col_min, ia_row_min, ia_read_width, ia_read_height
-            )
-            if ia_data_raw is None:
-                raise IOError(
-                    f"读取 Ia.tif 数据失败: "
-                    f"offset=({ia_col_min},{ia_row_min}), "
-                    f"size=({ia_read_width},{ia_read_height})"
-                )
-            ia_data = ia_data_raw.astype(np.float64)
-
-            # 调整 Ia 索引到局部坐标
-            local_ia_col = ia_col_grid - ia_col_min
-            local_ia_row = ia_row_grid - ia_row_min
-
-            # 有效映射掩码：在 Ia 边界内 & 局部坐标合法 & ac 有效
-            mapped_mask = (
-                in_ia_bounds &
-                ac_is_valid &
-                (local_ia_col >= 0) &
-                (local_ia_col < ia_read_width) &
-                (local_ia_row >= 0) &
-                (local_ia_row < ia_read_height)
-            )
-
-            # 从 Ia 数据中取值（仅对 mapped_mask 为 True 的位置）
-            ia_values = np.zeros((read_height, read_width), dtype=np.float64)
-            mapped_rows, mapped_cols = np.where(mapped_mask)
-            if mapped_rows.size > 0:
-                ia_values[mapped_rows, mapped_cols] = ia_data[
-                    local_ia_row[mapped_rows, mapped_cols],
-                    local_ia_col[mapped_rows, mapped_cols]
-                ]
-
-            # 处理 Ia 的 nodata → 当作无值，对应 Dn 保持 0
-            ia_is_nodata = _nodata_mask(ia_values, ia_nodata)
-            # Ia 有效 = 在映射范围内 & 不是 nodata & 值 > 0
-            ia_is_usable = mapped_mask & (~ia_is_nodata) & (ia_values > 0)
-
-            ia_usable_count = int(np.sum(ia_is_usable))
-            logger.info(
-                "Ia 数据统计: 映射像素=%d, 可用像素(>0)=%d",
-                int(np.sum(mapped_mask)), ia_usable_count
-            )
-            if ia_usable_count > 0:
-                logger.info(
-                    "Ia 可用值范围: min=%.6f, max=%.6f",
-                    float(np.min(ia_values[ia_is_usable])),
-                    float(np.max(ia_values[ia_is_usable]))
-                )
-
             # ----------------------------------------------------------
-            # 8. 向量化计算 Dn
+            # 12. 向量化计算 Dn（在 UTM/30m 网格上，ac 与 Ia 已对齐）
             # ----------------------------------------------------------
             # 公式: log10(Dn) = 1.299 + 1.076*log10(Ia) - 12.197*a_c + 5.434*a_c*log10(Ia)
             #   Ia 单位: m/s
             #   a_c 单位: g (已转换)
             #   Dn 单位: cm
             #
-            # 计算掩码: ac 有值 & Ia 可用 (在范围内 & 非nodata & >0)
+            # 计算掩码: ac 有值 & Ia 可用（非nodata & >0）
             calc_mask = ac_is_valid & ia_is_usable
 
             if np.any(calc_mask):
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    log_ia = np.log10(ia_values[calc_mask])
+                    log_ia = np.log10(ia_data_utm[calc_mask])
                     ac_g = ac_data_g[calc_mask]
 
                     log_dn = (
@@ -660,15 +764,17 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
                     "所有 ac 有值处 Dn 保持为 0"
                 )
 
-            # ★ 此时赋值状态:
-            #   ac nodata 位置  → NODATA_VALUE (-9999)
-            #   ac有值 & (Ia超范围 | Ia=nodata | Ia<=0) → 0
-            #   ac有值 & Ia>0 → 公式计算值
+        # ★ 此时赋值状态:
+        #   ac nodata 位置  → NODATA_VALUE (-9999)
+        #   ac有值 & (Ia=nodata | Ia<=0) → 0
+        #   ac有值 & Ia>0   → 公式计算值
 
         # ----------------------------------------------------------
-        # 9. 写入输出文件
+        # 13. 写入输出文件（UTM 投影，30m 像元）
         # ----------------------------------------------------------
-        logger.info("开始写入输出文件: %s", output_path)
+        logger.info(
+            "开始写入输出文件（%s，30m 像元）: %s", utm_srs_str, output_path
+        )
 
         output_dir = os.path.dirname(output_path)
         if output_dir and not os.path.exists(output_dir):
@@ -685,8 +791,8 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
 
         out_dataset = driver.Create(
             output_path,
-            read_width,
-            read_height,
+            utm_width,
+            utm_height,
             1,
             gdal.GDT_Float64,
             options=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=YES']
@@ -695,8 +801,13 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
         if out_dataset is None:
             raise IOError(f"无法创建输出文件: {output_path}")
 
-        out_dataset.SetGeoTransform(tuple(out_geotransform))
-        out_dataset.SetProjection(ac_projection)
+        # 输出投影使用 UTM EPSG
+        utm_srs_obj = osr.SpatialReference()
+        utm_srs_obj.ImportFromEPSG(utm_epsg)
+        utm_wkt = utm_srs_obj.ExportToWkt()
+
+        out_dataset.SetGeoTransform(ac_utm_gt)
+        out_dataset.SetProjection(utm_wkt)
 
         out_band = out_dataset.GetRasterBand(1)
         out_band.WriteArray(dn_data)
@@ -708,14 +819,24 @@ def _calculate_dn_optimized_impl(ac_tif_path, ia_tif_path, output_path,
         except Exception as stat_exc:
             logger.warning("计算栅格统计信息失败（不影响数据）: %s", stat_exc)
 
-        logger.info("Dn.tif 已成功输出到: %s", output_path)
+        logger.info(
+            "Dn.tif 已成功输出到: %s（UTM EPSG:%d，像元 30m）", output_path, utm_epsg
+        )
 
     finally:
         # ----------------------------------------------------------
-        # 10. 确保 GDAL 资源释放
+        # 14. 确保 GDAL 资源释放
         # ----------------------------------------------------------
         if out_dataset is not None:
             out_dataset = None
+        if ia_utm_ds is not None:
+            ia_utm_ds = None
+        if ac_utm_ds is not None:
+            ac_utm_ds = None
+        if ia_mem_ds is not None:
+            ia_mem_ds = None
+        if ac_mem_ds is not None:
+            ac_mem_ds = None
         if ia_dataset is not None:
             ia_dataset = None
         if ac_dataset is not None:
