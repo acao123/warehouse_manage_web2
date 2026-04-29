@@ -911,9 +911,15 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
                     kml_coords_wgs84 = outermost_item["coords"]
                     kml_intensity = outermost_item["intensity"]
                     print(f"[信息] KML最外圈（最小烈度值{kml_intensity}度）解析成功，将以其外包矩形为统计范围")
+                else:
+                    logger.warning('KML解析结果为空，面积统计回退为extent矩形范围: kml=%s', kml_path)
+                    print(f"[警告] KML解析结果为空，将使用extent范围统计: {kml_path}")
             except Exception as kml_parse_err:
+                logger.warning('KML解析失败，面积统计回退为extent矩形范围: kml=%s, err=%s', kml_path, kml_parse_err)
                 print(f"[警告] KML解析失败: {kml_parse_err}，将使用extent范围统计")
                 kml_coords_wgs84 = None
+        else:
+            logger.warning('未提供烈度KML文件，面积统计将使用矩形extent范围（非烈度圈多边形）')
 
         # 确定统计范围：提供了KML时使用最外圈包围盒，否则使用extent参数
         if kml_coords_wgs84 is not None:
@@ -1084,6 +1090,13 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
             class_pixel_counts[value] = count
             total_valid_pixels += count
 
+        # 计算统计范围内全部像素数（含无值/nodata像素），用于百分比分母，确保百分比以多边形总面积为基准
+        # total_polygon_pixels = KML掩膜内全部像素数（有值+无值），而非仅有值像素
+        if kml_mask is not None:
+            total_polygon_pixels = int(np.sum(kml_mask))
+        else:
+            total_polygon_pixels = read_width * read_height
+
         # 计算面积和占比
         # 若有逐行面积数组，则对每个等级按行累加面积
         if pixel_area_km2_per_row is not None:
@@ -1096,17 +1109,23 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
                 # 每行中符合条件的像素数 × 该行单像素面积
                 row_counts = np.sum(mask_val, axis=1)  # shape: (read_height,)
                 class_area_km2[value] = float(np.dot(row_counts, pixel_area_km2_per_row))
-            total_area_km2 = sum(class_area_km2.values())
+            # 总面积 = 统计范围（多边形或extent）内所有像素的面积之和
+            if kml_mask is not None:
+                kml_row_counts = np.sum(kml_mask, axis=1)  # shape: (read_height,)
+                total_area_km2 = float(np.dot(kml_row_counts, pixel_area_km2_per_row))
+            else:
+                total_area_km2 = float(read_width * np.sum(pixel_area_km2_per_row))
         else:
             class_area_km2 = {cls["value"]: class_pixel_counts[cls["value"]] * pixel_area_km2
                               for cls in LANDSLIDE_CLASSES}
-            total_area_km2 = total_valid_pixels * pixel_area_km2
+            total_area_km2 = total_polygon_pixels * pixel_area_km2
 
         for cls in LANDSLIDE_CLASSES:
             value = cls["value"]
             count = class_pixel_counts[value]
             area_km2 = class_area_km2[value]
-            percentage = (count / total_valid_pixels * 100.0) if total_valid_pixels > 0 else 0.0
+            # 百分比 = 该等级面积 / 烈度圈最外圈多边形覆盖的总面积（含无值像素）
+            percentage = (area_km2 / total_area_km2 * 100.0) if total_area_km2 > 0 else 0.0
             stats_result.append({
                 "value": value,
                 "label": cls["label"],
@@ -1116,7 +1135,8 @@ def compute_landslide_area_statistics(tif_path, extent, kml_path=None):
             })
             print(f"[统计] {cls['label']}: {count}像素, {area_km2:.2f}km², {percentage:.2f}%")
 
-        print(f"[信息] 统计完成，有效像素总数: {total_valid_pixels}, 总面积: {total_area_km2:.2f}km²")
+        print(f"[信息] 统计完成，有效类别像素总数: {total_valid_pixels}, "
+              f"统计范围总像素: {total_polygon_pixels}, 总面积: {total_area_km2:.2f}km²")
         return stats_result
 
     except Exception as e:
