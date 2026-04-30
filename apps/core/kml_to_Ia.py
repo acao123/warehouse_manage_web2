@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.5）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.6）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,23 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.5）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.6 相较 v3.5）：
+    1. scipy_tin 插值方法平滑效果深度优化，消除同心环状条带（banding）：
+       - 自适应混合带距离阈值：当 scipy_tin_blend_safe_dist / scipy_tin_blend_far_dist
+         为 None 时，不再用固定像素倍数（2×/10×resolution），而是基于 KD-Tree
+         k-近邻距离中位数（d_typical）自适应计算；d_safe = density_safe_factor *
+         d_typical，d_blend = density_far_factor * d_typical，能随采样密度自动
+         缩放混合带宽度，彻底解决 30m 分辨率下混合带过窄问题。
+         在日志中输出 d_typical、d_safe、d_blend 实际米数与计算模式。
+       - 混合权重由线性插值改为 smoothstep（S 曲线）：
+         t = clip((d − d_safe) / (d_blend − d_safe), 0, 1)，alpha = t²(3 − 2t)；
+         过渡更柔和，彻底消除混合带边界的视觉棱线。
+       - 强制对所有 TIN 有效像素执行混合（移除 alpha > 0 门槛），smoothstep
+         在 t=0 时精确为 0，不影响极近像素，代码更简洁。
+       - IDW 默认邻域数从 12 增大到 24，幂次从 2.0 降为 1.5，让趋势面更平滑。
+       新增参数：scipy_tin_density_safe_factor（默认 0.25）、
+                scipy_tin_density_far_factor（默认 1.5）。
 
 主要改进（v3.5 相较 v3.4）：
     1. scipy_tin 插值方法全面升级：三角网外部 NaN 填充由 k=1 最近邻改为
@@ -65,9 +82,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.5）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.5)
+作者: acao (重构版 v3.6)
 日期: 2026-04-30
-版本: 3.5
+版本: 3.6
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -193,7 +210,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.5）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.6）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -211,8 +228,9 @@ class KmlToIaConverter:
 
     支持的插值方法:
         - 'scipy_tin'（默认/推荐）：scipy Delaunay三角网插值，C1/C0连续；
-          三角网外部用局部 IDW（k=scipy_tin_idw_neighbors 邻居）平滑填充；
-          三角网边界混合带（d_safe~d_blend）内 TIN 与 IDW 线性融合，无突变
+          三角网外部用局部 IDW（k=scipy_tin_idw_neighbors 邻居，默认 24）平滑填充；
+          三角网内部混合带（d_safe~d_blend）用 smoothstep 曲线在 TIN 与 IDW
+          结果间自适应融合（d_safe/d_blend 按采样点局部密度自动计算），消除环带
         - 'radial'     ：径向距离1D插值，专为同心圈优化，完美单调递增
         - 'scipy_idw'  ：scipy RBF插值，速度快，支持邻近点限制，需安装scipy
         - 'kriging'    ：真正对齐 ArcGIS EBK 的子集化克里金，支持多次模拟
@@ -226,7 +244,9 @@ class KmlToIaConverter:
             ia_output_path="path/to/Ia.tif",
             interp_method='scipy_tin',
             scipy_tin_smooth=True,
-            scipy_tin_idw_neighbors=12,
+            scipy_tin_idw_neighbors=24,
+            scipy_tin_density_safe_factor=0.25,
+            scipy_tin_density_far_factor=1.5,
             sample_interval=5,
             max_sample_points=50000,
         )
@@ -268,11 +288,13 @@ class KmlToIaConverter:
         # ---- scipy TIN 参数 ----
         scipy_tin_smooth: bool = True,
 
-        # ---- scipy TIN 混合平滑参数（v3.5 新增）----
-        scipy_tin_blend_safe_dist: Optional[float] = None,  # TIN 纯用区距离阈值（米），None 时自动设为 2*resolution
-        scipy_tin_blend_far_dist: Optional[float] = None,   # IDW 纯用区距离阈值（米），None 时自动设为 10*resolution
-        scipy_tin_idw_neighbors: int = 12,                  # TIN 外部/混合带 IDW 邻近点数，默认 12
-        scipy_tin_idw_power: float = 2.0,                   # TIN 外部/混合带 IDW 幂次，默认 2.0
+        # ---- scipy TIN 混合平滑参数（v3.5 新增，v3.6 扩展）----
+        scipy_tin_blend_safe_dist: Optional[float] = None,  # TIN 纯用区距离阈值（米），None 时自动按采样点密度计算
+        scipy_tin_blend_far_dist: Optional[float] = None,   # IDW 纯用区距离阈值（米），None 时自动按采样点密度计算
+        scipy_tin_idw_neighbors: int = 24,                  # TIN 外部/混合带 IDW 邻近点数，默认 24（v3.6 由12改为24）
+        scipy_tin_idw_power: float = 1.5,                   # TIN 外部/混合带 IDW 幂次，默认 1.5（v3.6 由2.0改为1.5）
+        scipy_tin_density_safe_factor: float = 0.25,        # 自适应 d_safe 倍率：d_safe = factor * d_typical（v3.6 新增）
+        scipy_tin_density_far_factor: float = 1.5,          # 自适应 d_blend 倍率：d_blend = factor * d_typical（v3.6 新增）
 
         # ---- 径向插值参数 ----
         radial_kind: str = 'cubic',
@@ -330,11 +352,13 @@ class KmlToIaConverter:
         self.scipy_neighbors = scipy_neighbors
         # scipy TIN 参数
         self.scipy_tin_smooth = scipy_tin_smooth
-        # scipy TIN 混合平滑参数（v3.5）
+        # scipy TIN 混合平滑参数（v3.5 / v3.6）
         self.scipy_tin_blend_safe_dist = scipy_tin_blend_safe_dist
         self.scipy_tin_blend_far_dist = scipy_tin_blend_far_dist
         self.scipy_tin_idw_neighbors = scipy_tin_idw_neighbors
         self.scipy_tin_idw_power = scipy_tin_idw_power
+        self.scipy_tin_density_safe_factor = scipy_tin_density_safe_factor  # v3.6 新增
+        self.scipy_tin_density_far_factor = scipy_tin_density_far_factor    # v3.6 新增
         # 径向插值参数
         self.radial_kind = radial_kind
         # 克里金参数
@@ -1242,16 +1266,27 @@ class KmlToIaConverter:
         output_tif_path: str,
     ) -> None:
         """
-        使用 scipy Delaunay 三角网插值，分块并行写入 GeoTIFF（v3.5 升级版）。
+        使用 scipy Delaunay 三角网插值，分块并行写入 GeoTIFF（v3.6 升级版）。
 
-        优化说明：
+        优化说明（v3.6 新增）：
+            - 自适应混合带距离阈值：当 scipy_tin_blend_safe_dist / scipy_tin_blend_far_dist
+              为 None（默认）时，基于 KD-Tree k-近邻距离中位数（d_typical）自适应
+              计算 d_safe / d_blend，使混合带宽度随采样点密度自动缩放，彻底解决
+              30m 分辨率下固定阈值过窄导致环带残留的问题。
+            - 混合权重改为 smoothstep（S 曲线）：
+              t = clip((d − d_safe) / (d_blend − d_safe), 0, 1)，
+              alpha = t²(3 − 2t)；过渡更柔和，消除混合带边界视觉棱线。
+            - 对所有 TIN 有效像素均执行混合（smoothstep 在 t=0 时精确为 0，
+              不影响极近像素，代码更简洁）。
+            - IDW 默认邻域数增至 24，幂次降为 1.5，趋势面更平滑。
+            - 日志新增 d_typical 实际值及自适应/用户指定模式标识。
+
+        优化说明（v3.5）：
             - CloughTocher/Linear 插值器启用 rescale=True（对UTM米坐标做归一化，
               提升数值稳定性）和显式 fill_value=np.nan。
             - CloughTocher 增加 tol=1e-6, maxiter=400。
-            - 三角网外部的 NaN 像素改为 IDW（k=scipy_tin_idw_neighbors 个邻居，
-              默认 12）平滑插值，消除最近邻阶梯状硬边界。
-            - 三角网内部距最近采样点较远的像素（混合带：d_safe~d_blend），
-              TIN 结果与 IDW 结果按距离线性融合，消除三角面片棱边突变。
+            - 三角网外部的 NaN 像素改为 IDW（k=scipy_tin_idw_neighbors 个邻居）
+              平滑插值，消除最近邻阶梯状硬边界。
             - KD-Tree 只构建一次并在线程间共享；混合带 IDW 与外部填充 IDW
               共用同一次 cKDTree.query 结果，避免重复计算。
             - 使用 ThreadPoolExecutor（max_interp_workers 线程）并行处理分块。
@@ -1303,25 +1338,61 @@ class KmlToIaConverter:
             n_idw_neighbors = min(self.scipy_tin_idw_neighbors, len(x_arr))
             idw_power = self.scipy_tin_idw_power
 
-            # 混合带距离阈值（米），None 时按 resolution 自动设定
-            d_safe = (
-                self.scipy_tin_blend_safe_dist
-                if self.scipy_tin_blend_safe_dist is not None
-                else 2.0 * self.resolution
-            )
-            d_blend = (
-                self.scipy_tin_blend_far_dist
-                if self.scipy_tin_blend_far_dist is not None
-                else 10.0 * self.resolution
-            )
+            # 混合带距离阈值（米）
+            # 用户显式指定时直接使用；否则基于 k-近邻距离中位数自适应计算（v3.6）
+            if self.scipy_tin_blend_safe_dist is not None and self.scipy_tin_blend_far_dist is not None:
+                # 用户指定模式（向后兼容）
+                d_safe = float(self.scipy_tin_blend_safe_dist)
+                d_blend = float(self.scipy_tin_blend_far_dist)
+                d_typical = None
+                blend_mode = "用户指定"
+            else:
+                # 自适应模式：用 KD-Tree 查询每个采样点到其第 k 个最近邻的距离
+                # k = n_idw_neighbors，代表局部采样密度
+                k_density = min(n_idw_neighbors, len(x_arr))
+                # query 返回到 k 个邻居的距离，取第 k 个（最远邻）代表局部间距
+                sample_pts = np.column_stack([x_arr, y_arr])
+                knn_dists, _ = nn_tree.query(sample_pts, k=k_density)
+                del sample_pts
+                # 每个采样点取到第 k 个最近邻的距离（最后一列），再取所有点的中位数
+                # 当 k_density=1 时，query 返回 1D 数组；统一处理为取最后一列
+                last_knn_dist = knn_dists[:, -1] if knn_dists.ndim > 1 else knn_dists
+                d_typical = float(np.median(last_knn_dist))
+                del knn_dists, last_knn_dist
+                gc.collect()
+
+                # 用户可单独覆盖其中一个阈值
+                safe_factor = self.scipy_tin_density_safe_factor   # 默认 0.25
+                far_factor = self.scipy_tin_density_far_factor      # 默认 1.5
+                d_safe = (
+                    float(self.scipy_tin_blend_safe_dist)
+                    if self.scipy_tin_blend_safe_dist is not None
+                    else safe_factor * d_typical
+                )
+                d_blend = (
+                    float(self.scipy_tin_blend_far_dist)
+                    if self.scipy_tin_blend_far_dist is not None
+                    else far_factor * d_typical
+                )
+                blend_mode_parts = []
+                if self.scipy_tin_blend_safe_dist is not None:
+                    blend_mode_parts.append("d_safe=用户指定")
+                if self.scipy_tin_blend_far_dist is not None:
+                    blend_mode_parts.append("d_blend=用户指定")
+                blend_mode = (
+                    "，".join(blend_mode_parts) + "，其余自适应（d_typical=%.1f m）" % d_typical
+                    if blend_mode_parts
+                    else "自适应（d_typical=%.1f m）" % d_typical
+                )
+
             # 确保 d_blend > d_safe，避免除零
             if d_blend <= d_safe:
-                d_blend = d_safe + self.resolution
+                d_blend = d_safe + max(self.resolution, 1.0)
 
             logger.info(
-                "scipy_tin 混合参数: IDW邻近点数=%d, IDW幂次=%.1f, "
+                "scipy_tin 混合参数[%s]: IDW邻近点数=%d, IDW幂次=%.1f, "
                 "混合带 d_safe=%.1f m, d_blend=%.1f m",
-                n_idw_neighbors, idw_power, d_safe, d_blend,
+                blend_mode, n_idw_neighbors, idw_power, d_safe, d_blend,
             )
 
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
@@ -1395,34 +1466,29 @@ class KmlToIaConverter:
                     sum_nn_dist_chunk += float(nearest_dist[nan_mask].sum())
                     chunk_vals_tin[nan_mask] = chunk_vals_idw[nan_mask]
 
-                # 混合带：TIN 有效但距最近采样点较远 → 线性融合
-                # d < d_safe  : alpha=0 → 纯 TIN
-                # d > d_blend : alpha=1 → 纯 IDW
-                # 中间 : alpha 线性插值
+                # 混合带：TIN 有效像素按 smoothstep 曲线在 TIN 与 IDW 之间融合（v3.6）
+                # d < d_safe  : t=0  → alpha=0 → 纯 TIN（不变）
+                # d > d_blend : t=1  → alpha=1 → 纯 IDW
+                # 中间         : alpha = t²(3 - 2t)，S 曲线，过渡更柔和
+                alpha_tin_valid = None  # 复用于统计，避免重复计算
                 if tin_valid.any():
                     d_near = nearest_dist[tin_valid]
                     blend_range = d_blend - d_safe
-                    alpha = np.clip((d_near - d_safe) / blend_range, 0.0, 1.0)
-                    blend_mask_local = alpha > 0.0
-                    if blend_mask_local.any():
-                        # 全局索引
-                        tin_valid_indices = np.where(tin_valid)[0]
-                        blend_global = tin_valid_indices[blend_mask_local]
-                        a = alpha[blend_mask_local]
-                        chunk_vals_tin[blend_global] = (
-                            (1.0 - a) * chunk_vals_tin[blend_global]
-                            + a * chunk_vals_idw[blend_global]
-                        )
+                    t = np.clip((d_near - d_safe) / blend_range, 0.0, 1.0)
+                    alpha_tin_valid = t * t * (3.0 - 2.0 * t)   # smoothstep（复用于后续统计）
+                    # 对所有 TIN 有效像素执行融合（alpha=0 时等价于纯 TIN，无副作用）
+                    tin_valid_indices = np.where(tin_valid)[0]
+                    chunk_vals_tin[tin_valid_indices] = (
+                        (1.0 - alpha_tin_valid) * chunk_vals_tin[tin_valid_indices]
+                        + alpha_tin_valid * chunk_vals_idw[tin_valid_indices]
+                    )
 
                 del pts, dists_nn, idxs_nn, chunk_vals_idw
 
-                # 统计
+                # 统计：复用上方已计算的 alpha_tin_valid，避免重复 smoothstep 计算
                 n_pure_idw = int(nan_mask.sum())
-                if tin_valid.any():
-                    alpha_all = np.clip(
-                        (nearest_dist[tin_valid] - d_safe) / (d_blend - d_safe), 0.0, 1.0
-                    )
-                    n_blend = int((alpha_all > 0.0).sum())
+                if alpha_tin_valid is not None:
+                    n_blend = int((alpha_tin_valid > 0.0).sum())
                     n_pure_tin = int(tin_valid.sum()) - n_blend
                 else:
                     n_blend = 0
@@ -2393,7 +2459,7 @@ class KmlToIaConverter:
     def _run_impl(self) -> bool:
         """run() 的实际实现。"""
         logger.info("=" * 60)
-        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.5）")
+        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.6）")
         logger.info("插值方法: %s", self.interp_method)
         logger.info("采样间隔: %d，最大采样点数: %d",
                      self.sample_interval, self.max_sample_points)
@@ -2517,10 +2583,12 @@ if __name__ == "__main__":
 
         # scipy TIN 参数（仅 interp_method='scipy_tin' 时有效，需安装scipy）
         scipy_tin_smooth=True,  # True=CloughTocher(C1最平滑), False=Linear(C0更快)
-        # scipy_tin_blend_safe_dist=60,   # (v3.5) TIN 纯用距离阈值（米），None=2*resolution
-        # scipy_tin_blend_far_dist=300,   # (v3.5) IDW 纯用距离阈值（米），None=10*resolution
-        scipy_tin_idw_neighbors=12,      # (v3.5) TIN 外部/混合带 IDW 邻近点数，默认12
-        # scipy_tin_idw_power=2.0,        # (v3.5) TIN 外部/混合带 IDW 幂次，默认2.0
+        # scipy_tin_blend_safe_dist=None,  # (v3.5/v3.6) TIN 纯用距离阈值（米），None=自适应计算
+        # scipy_tin_blend_far_dist=None,   # (v3.5/v3.6) IDW 纯用距离阈值（米），None=自适应计算
+        scipy_tin_idw_neighbors=24,      # (v3.6 默认24) TIN 外部/混合带 IDW 邻近点数，越大越平滑
+        # scipy_tin_idw_power=1.5,        # (v3.6 默认1.5) TIN 外部/混合带 IDW 幂次，越小越平滑
+        scipy_tin_density_safe_factor=0.25,  # (v3.6 新增) 自适应 d_safe 倍率：d_safe = factor * d_typical
+        scipy_tin_density_far_factor=1.5,    # (v3.6 新增) 自适应 d_blend 倍率：d_blend = factor * d_typical
 
         # 径向插值参数（仅 interp_method='radial' 时有效，需安装scipy）
         radial_kind='cubic',  # 1D插值类型: 'linear'(快), 'cubic'(更平滑)
