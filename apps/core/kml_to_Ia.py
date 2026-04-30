@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.4）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.5）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,26 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.4）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.5 相较 v3.4）：
+    1. scipy_tin 插值方法全面升级：三角网外部 NaN 填充由 k=1 最近邻改为
+       IDW（k=scipy_tin_idw_neighbors 个邻居，默认 12）平滑插值；新增三角网
+       边界混合带——在 TIN 有效但距最近采样点较远的像素上，按距离在 TIN 与 IDW
+       结果之间线性融合（d_safe~d_blend 可由参数控制），消除三角面片棱边突变；
+       扩展 NaN 统计日志（纯 TIN / 混合带 / 纯 IDW 像素计数与占比）。
+       新增参数：scipy_tin_blend_safe_dist、scipy_tin_blend_far_dist、
+       scipy_tin_idw_neighbors、scipy_tin_idw_power。
+    2. kriging (EBK) 方法对齐 ArcGIS EBK 原理：
+       - ebk_n_simulations 默认改为 100，真正实现多次模拟——对每个子集重复
+         n_simulations 次（每次对 sill/range 加入 ±ebk_simulation_noise 高斯
+         扰动），预测时取所有模拟均值；n_simulations=1 退化为原有行为。
+       - overlap_factor 显式钳制到 [1.0, 3.0] 区间并给 warning。
+       - 预测权重改为二次平滑核 w = max(0,(1-(d/r)²))²（r 为子集 KNN 半径），
+         与 ArcGIS EBK 论文一致；全为 0 时退回 1/(1+d²)。
+       - k_predict（每像素参与加权的子集数）由新参数 ebk_predict_neighbors
+         控制，默认 4（与 ArcGIS EBK 重叠区平均覆盖数一致）。
+       - 子集建模阶段加入 ThreadPoolExecutor 并行（并行度 = max_interp_workers）。
+       新增参数：ebk_predict_neighbors、ebk_simulation_noise。
 
 主要改进（v3.4 相较 v3.3）：
     1. 使用 UTM 投影替代 EPSG:4326 经纬度投影，使插值算法在等距米制坐标系下进行，
@@ -45,9 +65,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.4）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.4)
+作者: acao (重构版 v3.5)
 日期: 2026-04-30
-版本: 3.4
+版本: 3.5
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -173,7 +193,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.4）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.5）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -190,10 +210,13 @@ class KmlToIaConverter:
         - 所有关键方法添加try-except + logger日志 + 异常向上抛出
 
     支持的插值方法:
-        - 'scipy_tin'（默认/推荐）：scipy Delaunay三角网插值，C1/C0连续，平滑无突变
+        - 'scipy_tin'（默认/推荐）：scipy Delaunay三角网插值，C1/C0连续；
+          三角网外部用局部 IDW（k=scipy_tin_idw_neighbors 邻居）平滑填充；
+          三角网边界混合带（d_safe~d_blend）内 TIN 与 IDW 线性融合，无突变
         - 'radial'     ：径向距离1D插值，专为同心圈优化，完美单调递增
         - 'scipy_idw'  ：scipy RBF插值，速度快，支持邻近点限制，需安装scipy
-        - 'kriging'    ：简化版 EBK（子集化克里金），与 ArcGIS EBK 对齐，需安装 scipy + pykrige
+        - 'kriging'    ：真正对齐 ArcGIS EBK 的子集化克里金，支持多次模拟
+                        （ebk_n_simulations 默认 100），需安装 scipy + pykrige
         - 'qgis_idw'   ：KD-Tree 局部反距离权重插值，与 ArcGIS IDW 对齐，需安装 scipy
         - 'qgis_tin'   ：QGIS三角网插值，基于Delaunay三角剖分，无需额外依赖
 
@@ -203,6 +226,7 @@ class KmlToIaConverter:
             ia_output_path="path/to/Ia.tif",
             interp_method='scipy_tin',
             scipy_tin_smooth=True,
+            scipy_tin_idw_neighbors=12,
             sample_interval=5,
             max_sample_points=50000,
         )
@@ -244,6 +268,12 @@ class KmlToIaConverter:
         # ---- scipy TIN 参数 ----
         scipy_tin_smooth: bool = True,
 
+        # ---- scipy TIN 混合平滑参数（v3.5 新增）----
+        scipy_tin_blend_safe_dist: Optional[float] = None,  # TIN 纯用区距离阈值（米），None 时自动设为 2*resolution
+        scipy_tin_blend_far_dist: Optional[float] = None,   # IDW 纯用区距离阈值（米），None 时自动设为 10*resolution
+        scipy_tin_idw_neighbors: int = 12,                  # TIN 外部/混合带 IDW 邻近点数，默认 12
+        scipy_tin_idw_power: float = 2.0,                   # TIN 外部/混合带 IDW 幂次，默认 2.0
+
         # ---- 径向插值参数 ----
         radial_kind: str = 'cubic',
 
@@ -269,9 +299,11 @@ class KmlToIaConverter:
 
         # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
         ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
-        ebk_overlap_factor: float = 1.0,      # 子集重叠因子（>=1.0；<1.0时按1.0处理），越大子集越多
+        ebk_overlap_factor: float = 1.0,      # 子集重叠因子（钳制到[1.0,3.0]），越大子集越多
         ebk_variogram: str = 'power',         # 变差函数，与 ArcGIS EBK 默认一致
-        ebk_n_simulations: int = 1,           # 保留参数（预留扩展），简化版固定为1，设为其他值无效
+        ebk_n_simulations: int = 100,         # 每个子集的模拟次数，与 ArcGIS EBK 默认一致
+        ebk_predict_neighbors: int = 4,       # 每像素参与加权的子集数，默认4（v3.5 新增）
+        ebk_simulation_noise: float = 0.1,    # 变差函数参数扰动幅度，n_simulations>1 时生效（v3.5 新增）
     ):
         self.kml_path = kml_path
         self.ia_output_path = ia_output_path
@@ -298,6 +330,11 @@ class KmlToIaConverter:
         self.scipy_neighbors = scipy_neighbors
         # scipy TIN 参数
         self.scipy_tin_smooth = scipy_tin_smooth
+        # scipy TIN 混合平滑参数（v3.5）
+        self.scipy_tin_blend_safe_dist = scipy_tin_blend_safe_dist
+        self.scipy_tin_blend_far_dist = scipy_tin_blend_far_dist
+        self.scipy_tin_idw_neighbors = scipy_tin_idw_neighbors
+        self.scipy_tin_idw_power = scipy_tin_idw_power
         # 径向插值参数
         self.radial_kind = radial_kind
         # 克里金参数
@@ -320,11 +357,8 @@ class KmlToIaConverter:
         self.ebk_overlap_factor = ebk_overlap_factor
         self.ebk_variogram = ebk_variogram
         self.ebk_n_simulations = ebk_n_simulations
-        if ebk_n_simulations != 1:
-            logger.warning(
-                "ebk_n_simulations=%d 被忽略：当前简化版 EBK 固定使用 1 次模拟，"
-                "多次模拟功能预留待扩展。", ebk_n_simulations
-            )
+        self.ebk_predict_neighbors = ebk_predict_neighbors
+        self.ebk_simulation_noise = ebk_simulation_noise
 
         # 运行时数据（由 run() 过程填充）
         self._contours: List[dict] = []
@@ -1208,15 +1242,20 @@ class KmlToIaConverter:
         output_tif_path: str,
     ) -> None:
         """
-        使用 scipy Delaunay 三角网插值，分块并行写入 GeoTIFF。
+        使用 scipy Delaunay 三角网插值，分块并行写入 GeoTIFF（v3.5 升级版）。
 
         优化说明：
             - CloughTocher/Linear 插值器启用 rescale=True（对UTM米坐标做归一化，
               提升数值稳定性）和显式 fill_value=np.nan。
             - CloughTocher 增加 tol=1e-6, maxiter=400。
-            - 三角网外部的 NaN 像素用 cKDTree 真正最近邻填充（替代 RBFInterpolator）。
-            - 汇报 NaN 像素统计（数量、占比、到最近采样点最大/平均距离）。
+            - 三角网外部的 NaN 像素改为 IDW（k=scipy_tin_idw_neighbors 个邻居，
+              默认 12）平滑插值，消除最近邻阶梯状硬边界。
+            - 三角网内部距最近采样点较远的像素（混合带：d_safe~d_blend），
+              TIN 结果与 IDW 结果按距离线性融合，消除三角面片棱边突变。
+            - KD-Tree 只构建一次并在线程间共享；混合带 IDW 与外部填充 IDW
+              共用同一次 cKDTree.query 结果，避免重复计算。
             - 使用 ThreadPoolExecutor（max_interp_workers 线程）并行处理分块。
+            - 扩展 NaN 统计日志：纯TIN/混合带/纯IDW像素计数与占比。
 
         参数:
             x_arr: 采样点X坐标（UTM easting，米）
@@ -1258,9 +1297,32 @@ class KmlToIaConverter:
             del points
             gc.collect()
 
-            # 用 cKDTree 真正的最近邻替代 RBFInterpolator(neighbors=1)
+            # 构建 KD-Tree（一次构建，所有分块共享）
             nn_tree = _cKDTree(np.column_stack([x_arr, y_arr]))
             nn_values = values.astype(np.float64)
+            n_idw_neighbors = min(self.scipy_tin_idw_neighbors, len(x_arr))
+            idw_power = self.scipy_tin_idw_power
+
+            # 混合带距离阈值（米），None 时按 resolution 自动设定
+            d_safe = (
+                self.scipy_tin_blend_safe_dist
+                if self.scipy_tin_blend_safe_dist is not None
+                else 2.0 * self.resolution
+            )
+            d_blend = (
+                self.scipy_tin_blend_far_dist
+                if self.scipy_tin_blend_far_dist is not None
+                else 10.0 * self.resolution
+            )
+            # 确保 d_blend > d_safe，避免除零
+            if d_blend <= d_safe:
+                d_blend = d_safe + self.resolution
+
+            logger.info(
+                "scipy_tin 混合参数: IDW邻近点数=%d, IDW幂次=%.1f, "
+                "混合带 d_safe=%.1f m, d_blend=%.1f m",
+                n_idw_neighbors, idw_power, d_safe, d_blend,
+            )
 
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
             self._ensure_file_writable(output_tif_path)
@@ -1281,49 +1343,106 @@ class KmlToIaConverter:
             chunk_rows = self.chunk_size
             chunk_starts = list(range(0, n_rows, chunk_rows))
 
-            # 辅助函数：在线程中计算单个分块的 TIN 插值结果
-            # 返回 (row_start, result, nan_count, max_nn_dist, sum_nn_dist)
+            # 辅助函数：在线程中计算单个分块（TIN + IDW + 混合）
+            # 返回 (row_start, result, n_pure_tin, n_blend, n_pure_idw, max_nn_dist, sum_nn_dist)
             def _compute_chunk_tin(
                 row_start: int,
-            ) -> Tuple[int, np.ndarray, int, float, float]:
+            ) -> Tuple[int, np.ndarray, int, int, int, float, float]:
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
                 xx, yy = np.meshgrid(grid_x, grid_y)
                 pts = np.column_stack([xx.ravel(), yy.ravel()])
                 del xx, yy
+                n_pts = pts.shape[0]
 
-                chunk_vals = interp(pts)
+                # TIN 插值（三角网外部像素返回 NaN）
+                chunk_vals_tin = interp(pts)
 
-                # 用 cKDTree 最近邻填充三角网外部的 NaN 像素
-                nan_mask = np.isnan(chunk_vals)
-                nan_count = int(nan_mask.sum())
-                max_nn_dist = 0.0
+                # 一次性查询所有像素的 N 个最近邻（TIN 外部填充 + 混合带共用）
+                dists_nn, idxs_nn = nn_tree.query(pts, k=n_idw_neighbors)
+                if n_idw_neighbors == 1:
+                    dists_nn = dists_nn.reshape(-1, 1)
+                    idxs_nn = idxs_nn.reshape(-1, 1)
+
+                # 计算最近采样点距离（k=1 的结果就是第一列）
+                nearest_dist = dists_nn[:, 0]  # (n_pts,)
+                max_nn_dist = float(nearest_dist.max())
                 sum_nn_dist_chunk = 0.0
-                if nan_mask.any():
-                    try:
-                        nan_pts = pts[nan_mask]
-                        nn_dists, nn_idxs = nn_tree.query(nan_pts, k=1)
-                        nn_dists = np.atleast_1d(nn_dists)
-                        nn_idxs = np.atleast_1d(nn_idxs)
-                        chunk_vals[nan_mask] = nn_values[nn_idxs]
-                        max_nn_dist = float(nn_dists.max())
-                        sum_nn_dist_chunk = float(nn_dists.sum())
-                    except Exception as exc:
-                        logger.warning("NaN填充失败（row_start=%d），使用0填充: %s",
-                                       row_start, exc)
-                        chunk_vals[nan_mask] = 0.0
 
-                del pts
-                chunk_vals = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
-                np.maximum(chunk_vals, 0.0, out=chunk_vals)
-                return row_start, chunk_vals, nan_count, max_nn_dist, sum_nn_dist_chunk
+                # IDW 计算（全局，用于外部填充和混合带）
+                exact_mask_idw = nearest_dist == 0.0
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    weights_idw = np.where(dists_nn > 0.0, 1.0 / (dists_nn ** idw_power), 0.0)
+                weight_sum_idw = weights_idw.sum(axis=1)
+
+                chunk_vals_idw = np.full(n_pts, 0.0, dtype=np.float64)
+                valid_idw = (~exact_mask_idw) & (weight_sum_idw > 0.0)
+                if valid_idw.any():
+                    w = weights_idw[valid_idw]
+                    v = nn_values[idxs_nn[valid_idw]]
+                    chunk_vals_idw[valid_idw] = (w * v).sum(axis=1) / weight_sum_idw[valid_idw]
+                if exact_mask_idw.any():
+                    chunk_vals_idw[exact_mask_idw] = nn_values[idxs_nn[exact_mask_idw, 0]]
+                del weights_idw, weight_sum_idw
+
+                # 分类：TIN 有效 vs TIN 外部（NaN）
+                nan_mask = np.isnan(chunk_vals_tin)
+                tin_valid = ~nan_mask
+
+                # 三角网外部：纯 IDW 填充
+                if nan_mask.any():
+                    sum_nn_dist_chunk += float(nearest_dist[nan_mask].sum())
+                    chunk_vals_tin[nan_mask] = chunk_vals_idw[nan_mask]
+
+                # 混合带：TIN 有效但距最近采样点较远 → 线性融合
+                # d < d_safe  : alpha=0 → 纯 TIN
+                # d > d_blend : alpha=1 → 纯 IDW
+                # 中间 : alpha 线性插值
+                if tin_valid.any():
+                    d_near = nearest_dist[tin_valid]
+                    blend_range = d_blend - d_safe
+                    alpha = np.clip((d_near - d_safe) / blend_range, 0.0, 1.0)
+                    blend_mask_local = alpha > 0.0
+                    if blend_mask_local.any():
+                        # 全局索引
+                        tin_valid_indices = np.where(tin_valid)[0]
+                        blend_global = tin_valid_indices[blend_mask_local]
+                        a = alpha[blend_mask_local]
+                        chunk_vals_tin[blend_global] = (
+                            (1.0 - a) * chunk_vals_tin[blend_global]
+                            + a * chunk_vals_idw[blend_global]
+                        )
+
+                del pts, dists_nn, idxs_nn, chunk_vals_idw
+
+                # 统计
+                n_pure_idw = int(nan_mask.sum())
+                if tin_valid.any():
+                    alpha_all = np.clip(
+                        (nearest_dist[tin_valid] - d_safe) / (d_blend - d_safe), 0.0, 1.0
+                    )
+                    n_blend = int((alpha_all > 0.0).sum())
+                    n_pure_tin = int(tin_valid.sum()) - n_blend
+                else:
+                    n_blend = 0
+                    n_pure_tin = 0
+
+                chunk_vals_tin = chunk_vals_tin.reshape(actual_rows, self._n_cols).astype(np.float32)
+                np.maximum(chunk_vals_tin, 0.0, out=chunk_vals_tin)
+                return (
+                    row_start, chunk_vals_tin,
+                    n_pure_tin, n_blend, n_pure_idw,
+                    max_nn_dist, sum_nn_dist_chunk,
+                )
 
             start_time = time.time()
             logger.info("scipy_tin 插值开始，分块数=%d，并行线程数=%d",
                         len(chunk_starts), self.max_interp_workers)
 
-            total_nan = 0
+            total_pure_tin = 0
+            total_blend = 0
+            total_pure_idw = 0
             max_nn_dist_global = 0.0
             sum_nn_dist = 0.0
 
@@ -1343,9 +1462,8 @@ class KmlToIaConverter:
                         executor.shutdown(wait=False, cancel_futures=True)
                         raise TaskCancelledException("任务已被取消")
                     try:
-                        row_start_res, chunk_vals, nan_count, max_nn_dist, sum_nn_dist_chunk = (
-                            pending.pop(rs).result()
-                        )
+                        (row_start_res, chunk_vals, n_pure_tin, n_blend, n_pure_idw,
+                         max_nn_dist, sum_nn_dist_chunk) = pending.pop(rs).result()
                     except Exception as exc:
                         logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
                         raise
@@ -1353,12 +1471,13 @@ class KmlToIaConverter:
                     band.WriteArray(chunk_vals, 0, row_start_res)
                     del chunk_vals
 
-                    # 累计 NaN 统计
-                    total_nan += nan_count
-                    if nan_count > 0:
-                        if max_nn_dist > max_nn_dist_global:
-                            max_nn_dist_global = max_nn_dist
-                        sum_nn_dist += sum_nn_dist_chunk
+                    # 累计统计
+                    total_pure_tin += n_pure_tin
+                    total_blend += n_blend
+                    total_pure_idw += n_pure_idw
+                    if max_nn_dist > max_nn_dist_global:
+                        max_nn_dist_global = max_nn_dist
+                    sum_nn_dist += sum_nn_dist_chunk
 
                     gc.collect()
 
@@ -1376,14 +1495,16 @@ class KmlToIaConverter:
             band.ComputeStatistics(False)
             band.FlushCache()
 
-            # 汇报 NaN 填充统计
+            # 扩展 NaN 统计日志
             total_pixels = self._n_rows * self._n_cols
-            ratio = total_nan / total_pixels if total_pixels > 0 else 0.0
-            mean_nn = sum_nn_dist / total_nan if total_nan > 0 else 0.0
+            mean_nn = sum_nn_dist / total_pure_idw if total_pure_idw > 0 else 0.0
             logger.info(
-                "scipy_tin NaN 像素填充统计: 总 NaN 像素=%d (占比 %.2f%%), "
-                "到最近采样点最大距离=%.1f m, 平均距离=%.1f m",
-                total_nan, ratio * 100, max_nn_dist_global, mean_nn,
+                "scipy_tin 像素统计: 纯TIN=%d (%.2f%%), 混合带=%d (%.2f%%), "
+                "纯IDW填充=%d (%.2f%%); IDW填充最大距离=%.1f m, 平均距离=%.1f m",
+                total_pure_tin, 100.0 * total_pure_tin / total_pixels,
+                total_blend,    100.0 * total_blend / total_pixels,
+                total_pure_idw, 100.0 * total_pure_idw / total_pixels,
+                max_nn_dist_global, mean_nn,
             )
 
             total_time = time.time() - start_time
@@ -1677,22 +1798,22 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        简化版 EBK（Empirical Bayesian Kriging）插值，与 ArcGIS EBK 原理对齐。
+        对齐 ArcGIS EBK 原理的子集化克里金插值（v3.5 升级版）。
 
-        算法说明（简化版 EBK）：
+        算法说明（v3.5 EBK）：
             1. 子集划分：使用 cKDTree 将采样点划分为多个重叠子集
-               （每个子集约 ebk_subset_size 个点，通过随机种子 + KNN 构成）。
-            2. 每个子集建立局部 OrdinaryKriging 模型
-               （变差函数默认 'power'，与 ArcGIS EBK 默认值一致）。
-            3. 逐分块预测：每个像素查询最近的若干子集，
-               以 1/(1+d²) 为权重对各局部模型预测值加权平均。
-
-        性能优势：模型构建复杂度从全局 O(n³) 降为 N×O(K³)，
-                  当 n_samples > 500 时模型构建加速显著。
+               （每个子集约 ebk_subset_size 个点）。overlap_factor 钳制到 [1.0, 3.0]。
+            2. 子集建模（并行）：ThreadPoolExecutor 并行构建局部 OrdinaryKriging 模型。
+               每个子集执行 ebk_n_simulations 次模拟：每次对变差函数 sill/range 参数
+               加入 ±ebk_simulation_noise 高斯扰动，建立 OK 模型；
+               ebk_n_simulations=1 时退化为无扰动的原有行为。
+            3. 逐分块预测：每个像素查询最近的 ebk_predict_neighbors 个子集，
+               权重使用二次平滑核 w = max(0, (1-(d/r)²))²（r 为子集KNN半径），
+               全为 0 时退回 1/(1+d²)；各模拟的预测值取均值后再做子集加权。
 
         参数:
-            x_arr: 采样点X坐标(经度)
-            y_arr: 采样点Y坐标(纬度)
+            x_arr: 采样点X坐标（UTM easting，米）
+            y_arr: 采样点Y坐标（UTM northing，米）
             values: 采样点对应值（Ia）
             output_tif_path: 输出 GeoTIFF 文件路径
         """
@@ -1713,7 +1834,22 @@ class KmlToIaConverter:
         try:
             n_samples = len(x_arr)
             subset_size = self.ebk_subset_size
+            n_simulations = max(1, self.ebk_n_simulations)
+            sim_noise = self.ebk_simulation_noise
+            k_predict_cfg = self.ebk_predict_neighbors
+
+            # overlap_factor 钳制到 [1.0, 3.0]
             overlap_factor = self.ebk_overlap_factor
+            if overlap_factor < 1.0:
+                logger.warning(
+                    "ebk_overlap_factor=%.2f 小于 1.0，已钳制为 1.0", overlap_factor
+                )
+                overlap_factor = 1.0
+            elif overlap_factor > 3.0:
+                logger.warning(
+                    "ebk_overlap_factor=%.2f 大于 3.0，已钳制为 3.0", overlap_factor
+                )
+                overlap_factor = 3.0
 
             # 向后兼容：若 ebk_variogram 仍是默认值 'power' 且
             # 用户设置了非默认的 kriging_variogram（!= 'linear'），则使用旧值
@@ -1722,9 +1858,20 @@ class KmlToIaConverter:
                 variogram = self.kriging_variogram
                 logger.info("EBK 向后兼容：使用 kriging_variogram='%s'", variogram)
 
+            # ArcGIS EBK 默认 n_closest_points=15；保持向后兼容不改 __init__ 默认值
+            n_closest = min(15, self.kriging_neighbors, subset_size)
+            if self.kriging_neighbors < 15:
+                logger.info(
+                    "EBK 搜索邻域: 使用 kriging_neighbors=%d（ArcGIS EBK 默认 15）",
+                    self.kriging_neighbors,
+                )
+
             logger.info(
-                "EBK 插值: 采样点数=%d, 子集大小=%d, 重叠因子=%.1f, 变差函数=%s",
+                "EBK 插值: 采样点数=%d, 子集大小=%d, 重叠因子=%.1f, 变差函数=%s, "
+                "模拟次数=%d, 扰动幅度=%.2f, 预测邻近子集数=%d",
                 n_samples, subset_size, overlap_factor, variogram,
+                n_simulations, sim_noise if n_simulations > 1 else 0.0,
+                k_predict_cfg,
             )
 
             # ---- 1. 子集划分 ----
@@ -1733,72 +1880,129 @@ class KmlToIaConverter:
             vals_f64 = values.astype(np.float64)
             k_per_subset = min(subset_size, n_samples)
 
-            # 确定子集种子数量（overlap_factor < 1.0 时按 1.0 处理）
-            n_subsets = max(1, int(
-                np.ceil(n_samples / subset_size * max(1.0, overlap_factor))
-            ))
-            # 子集数不超过采样点数（避免重复种子导致重复子集）
+            n_subsets = max(1, int(np.ceil(n_samples / subset_size * overlap_factor)))
             n_subsets = min(n_subsets, n_samples)
 
-            # 固定随机种子保证可复现；n_subsets <= n_samples 故 replace=False
             rng = np.random.default_rng(seed=42)
             seed_indices = rng.choice(n_samples, size=n_subsets, replace=False)
 
-            logger.info("EBK 子集划分: 计划建立 %d 个子集（每个约 %d 点）",
-                        n_subsets, k_per_subset)
+            logger.info("EBK 子集划分: 计划建立 %d 个子集（每个约 %d 点），每个子集 %d 次模拟",
+                        n_subsets, k_per_subset, n_simulations)
 
-            # ---- 2. 建立局部克里金模型 ----
-            local_models = []  # list of (ok_model, center_x, center_y, radius)
+            # ---- 2. 并行建立局部克里金模型（每个子集含 n_simulations 个模型）----
+            # local_models: list of (models_list, center_x, center_y, radius)
+            # models_list: list of OrdinaryKriging 对象（长度 = n_simulations）
+            local_models = []
             report_interval = max(1, n_subsets // 10)
 
-            for i, seed_idx in enumerate(seed_indices):
-                # 每 50 个子集检查一次取消信号
-                if i % 50 == 0:
-                    self._check_cancelled()
+            def _build_subset(args):
+                """在线程中构建单个子集的所有模拟模型。"""
+                i, seed_idx = args
+                # 每 50 个子集在主线程外检查取消（直接访问 event 是线程安全的）
+                if i % 50 == 0 and self._cancel_event is not None and self._cancel_event.is_set():
+                    raise TaskCancelledException("任务已被取消")
 
                 seed_pt = pts_train[seed_idx]
-                # 查询 k_per_subset 个最近邻构成子集
-                dists_k, idxs_k = tree_train.query(
-                    seed_pt.reshape(1, -1), k=k_per_subset
-                )
-                dists_k = dists_k[0]  # shape: (k_per_subset,)
-                idxs_k  = idxs_k[0]  # shape: (k_per_subset,)
+                dists_k, idxs_k = tree_train.query(seed_pt.reshape(1, -1), k=k_per_subset)
+                dists_k = dists_k[0]
+                idxs_k  = idxs_k[0]
 
                 sub_x = x_arr[idxs_k].astype(np.float64)
                 sub_y = y_arr[idxs_k].astype(np.float64)
                 sub_v = vals_f64[idxs_k]
 
-                # 跳过点数不足的子集（OrdinaryKriging 至少需要 3 个点）
                 if len(idxs_k) < 3:
-                    logger.debug("子集 %d/%d 点数不足(%d)，跳过",
-                                 i + 1, n_subsets, len(idxs_k))
-                    continue
-
-                # 跳过值无变化的子集（避免克里金奇异矩阵）
+                    return None
                 if np.std(sub_v) < 1e-10:
-                    logger.debug("子集 %d/%d 值无变化，跳过", i + 1, n_subsets)
-                    continue
+                    return None
 
+                radius = float(np.max(dists_k))
+                center_x = float(seed_pt[0])
+                center_y = float(seed_pt[1])
+
+                sim_models = []
+                # 以子集为基础建立基础模型，获取变差函数参数
                 try:
-                    ok = _OrdinaryKriging(
+                    ok_base = _OrdinaryKriging(
                         sub_x, sub_y, sub_v,
                         variogram_model=variogram,
                         nlags=self.kriging_nlags,
                         verbose=False,
                         enable_plotting=False,
                     )
-                    radius = float(np.max(dists_k))
-                    local_models.append(
-                        (ok, float(seed_pt[0]), float(seed_pt[1]), radius)
-                    )
                 except Exception as exc:
-                    logger.warning("EBK 子集 %d/%d 建模失败: %s",
-                                   i + 1, n_subsets, exc)
-                    continue
+                    logger.debug("EBK 子集 %d 基础建模失败: %s", i + 1, exc)
+                    return None
 
-                if (i + 1) % report_interval == 0 or i + 1 == n_subsets:
-                    logger.info("EBK 建模进度: %d/%d，已建立 %d 个模型",
-                                i + 1, n_subsets, len(local_models))
+                if n_simulations == 1:
+                    # 退化为原有行为：单模型无扰动
+                    sim_models.append(ok_base)
+                else:
+                    # 从基础模型读取变差函数参数（pykrige 存储在 variogram_model_parameters）
+                    try:
+                        base_params = ok_base.variogram_model_parameters
+                    except AttributeError:
+                        base_params = None
+
+                    sim_rng = np.random.default_rng(seed=seed_idx + 1000)
+                    for _s in range(n_simulations):
+                        if base_params is not None and sim_noise > 0.0:
+                            try:
+                                # 对所有参数加入高斯扰动（±sim_noise 相对幅度）
+                                perturbed = [
+                                    max(p * (1.0 + sim_rng.normal(0.0, sim_noise)), 1e-12)
+                                    for p in base_params
+                                ]
+                                ok_sim = _OrdinaryKriging(
+                                    sub_x, sub_y, sub_v,
+                                    variogram_model=variogram,
+                                    variogram_parameters=perturbed,
+                                    nlags=self.kriging_nlags,
+                                    verbose=False,
+                                    enable_plotting=False,
+                                )
+                                sim_models.append(ok_sim)
+                            except Exception:
+                                # 扰动建模失败时使用基础模型
+                                sim_models.append(ok_base)
+                        else:
+                            sim_models.append(ok_base)
+
+                return (sim_models, center_x, center_y, radius)
+
+            logger.info("EBK 开始并行建模（线程数=%d）...", self.max_interp_workers)
+            build_start = time.time()
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.max_interp_workers
+            ) as executor:
+                futures = {
+                    executor.submit(_build_subset, (i, seed_idx)): i
+                    for i, seed_idx in enumerate(seed_indices)
+                }
+                completed = 0
+                for future in concurrent.futures.as_completed(futures):
+                    # 取消检查
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise TaskCancelledException("任务已被取消")
+                    i = futures[future]
+                    try:
+                        result = future.result()
+                    except TaskCancelledException:
+                        raise
+                    except Exception as exc:
+                        logger.warning("EBK 子集 %d 建模失败: %s", i + 1, exc)
+                        result = None
+                    completed += 1
+                    if result is not None:
+                        local_models.append(result)
+                    if completed % report_interval == 0 or completed == n_subsets:
+                        logger.info("EBK 建模进度: %d/%d，已建立 %d 个模型",
+                                    completed, n_subsets, len(local_models))
+
+            build_elapsed = time.time() - build_start
+            logger.info("EBK 建模完成，耗时 %.1fs，共 %d 个局部子集模型", build_elapsed, len(local_models))
 
             if not local_models:
                 raise RuntimeError(
@@ -1807,14 +2011,14 @@ class KmlToIaConverter:
                 )
 
             n_models = len(local_models)
-            logger.info("EBK 共建立 %d 个局部子集克里金模型", n_models)
 
             # 子集中心的 KD-Tree（用于快速查找每个像素的最近子集）
             centers = np.array(
                 [[m[1], m[2]] for m in local_models], dtype=np.float64
             )
+            radii = np.array([m[3] for m in local_models], dtype=np.float64)
             tree_centers = _cKDTree(centers)
-            k_predict = min(3, n_models)  # 每个像素使用最近 k_predict 个子集预测
+            k_predict = min(k_predict_cfg, n_models)
 
             # ---- 3. 输出栅格准备 ----
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
@@ -1833,7 +2037,6 @@ class KmlToIaConverter:
             grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
             n_rows_total = self._n_rows
             chunk_rows = self.chunk_size
-            n_closest = min(self.kriging_neighbors, k_per_subset)
             start_time = time.time()
 
             # ---- 4. 逐分块预测（串行，进度完整报告）----
@@ -1851,48 +2054,67 @@ class KmlToIaConverter:
                 n_pts = pts_query.shape[0]
 
                 # 查询每个像素最近的 k_predict 个子集
-                dists_to_centers, subset_idxs = tree_centers.query(
-                    pts_query, k=k_predict
-                )
+                dists_to_centers, subset_idxs = tree_centers.query(pts_query, k=k_predict)
                 if k_predict == 1:
                     dists_to_centers = dists_to_centers.reshape(-1, 1)
                     subset_idxs      = subset_idxs.reshape(-1, 1)
 
-                # 权重：w = 1 / (1 + d²)（基于子集中心到像素的距离）
-                weights_pred = 1.0 / (1.0 + dists_to_centers ** 2)
+                # 二次平滑核权重 w = max(0, (1-(d/r)²))²（r 为该子集 KNN 半径）
+                radii_per_pixel = radii[subset_idxs]  # (n_pts, k_predict)
+                # 避免 r=0 导致除零
+                safe_radii = np.where(radii_per_pixel > 0.0, radii_per_pixel, 1.0)
+                d_over_r = dists_to_centers / safe_radii
+                weights_pred = np.maximum(0.0, 1.0 - d_over_r ** 2) ** 2  # (n_pts, k_predict)
 
-                # 展平为列表，方便按模型分组
+                # 若所有权重为 0（像素在所有子集 KNN 半径之外），退回 1/(1+d²)
+                weight_row_sum = weights_pred.sum(axis=1)  # (n_pts,)
+                fallback_mask = weight_row_sum == 0.0
+                if fallback_mask.any():
+                    fallback_weights = 1.0 / (1.0 + dists_to_centers[fallback_mask] ** 2)
+                    weights_pred[fallback_mask] = fallback_weights
+
+                # 展平，方便按模型分组批量预测
                 all_model_idxs = subset_idxs.ravel()                     # (n_pts * k_predict,)
                 all_pixel_idxs = np.repeat(np.arange(n_pts), k_predict)  # (n_pts * k_predict,)
                 all_weights    = weights_pred.ravel()                     # (n_pts * k_predict,)
 
-                # 初始化加权累积数组
                 weighted_sum = np.zeros(n_pts, dtype=np.float64)
                 weight_total = np.zeros(n_pts, dtype=np.float64)
 
-                # 按模型批量预测：每个唯一子集只调用一次 ok.execute
+                # 按模型批量预测（每个唯一子集只调用一次 ok.execute 或均值预测）
                 for m_idx in np.unique(all_model_idxs):
-                    sel          = all_model_idxs == m_idx
-                    px_idxs_sel  = all_pixel_idxs[sel]
-                    w_sel        = all_weights[sel]
-                    px_coords    = pts_query[px_idxs_sel, 0].astype(np.float64)
-                    py_coords    = pts_query[px_idxs_sel, 1].astype(np.float64)
+                    sel         = all_model_idxs == m_idx
+                    px_idxs_sel = all_pixel_idxs[sel]
+                    w_sel       = all_weights[sel]
+                    px_coords   = pts_query[px_idxs_sel, 0].astype(np.float64)
+                    py_coords   = pts_query[px_idxs_sel, 1].astype(np.float64)
 
-                    try:
-                        z, _ = local_models[m_idx][0].execute(
-                            'points', px_coords, py_coords,
-                            n_closest_points=n_closest,
-                            backend='loop',
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "EBK 子集 %d 块 %d 预测失败，跳过: %s",
-                            m_idx, chunk_idx, exc,
-                        )
+                    sim_models_list = local_models[m_idx][0]  # list of OrdinaryKriging
+
+                    # 对每个模拟的预测值累加，最终取均值
+                    sim_sum = np.zeros(len(px_idxs_sel), dtype=np.float64)
+                    sim_cnt = 0
+                    for ok_sim in sim_models_list:
+                        try:
+                            z_sim, _ = ok_sim.execute(
+                                'points', px_coords, py_coords,
+                                n_closest_points=n_closest,
+                                backend='loop',
+                            )
+                            sim_sum += np.asarray(z_sim, dtype=np.float64)
+                            sim_cnt += 1
+                        except Exception as exc:
+                            logger.debug(
+                                "EBK 子集 %d 块 %d 模拟预测失败，跳过: %s",
+                                m_idx, chunk_idx, exc,
+                            )
+                            continue
+
+                    if sim_cnt == 0:
                         continue
+                    z_mean = sim_sum / sim_cnt
 
-                    np.add.at(weighted_sum, px_idxs_sel,
-                              w_sel * np.asarray(z, dtype=np.float64))
+                    np.add.at(weighted_sum, px_idxs_sel, w_sel * z_mean)
                     np.add.at(weight_total, px_idxs_sel, w_sel)
 
                 del pts_query, dists_to_centers, subset_idxs, weights_pred
@@ -2171,7 +2393,7 @@ class KmlToIaConverter:
     def _run_impl(self) -> bool:
         """run() 的实际实现。"""
         logger.info("=" * 60)
-        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.4）")
+        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.5）")
         logger.info("插值方法: %s", self.interp_method)
         logger.info("采样间隔: %d，最大采样点数: %d",
                      self.sample_interval, self.max_sample_points)
@@ -2295,14 +2517,21 @@ if __name__ == "__main__":
 
         # scipy TIN 参数（仅 interp_method='scipy_tin' 时有效，需安装scipy）
         scipy_tin_smooth=True,  # True=CloughTocher(C1最平滑), False=Linear(C0更快)
+        # scipy_tin_blend_safe_dist=60,   # (v3.5) TIN 纯用距离阈值（米），None=2*resolution
+        # scipy_tin_blend_far_dist=300,   # (v3.5) IDW 纯用距离阈值（米），None=10*resolution
+        scipy_tin_idw_neighbors=12,      # (v3.5) TIN 外部/混合带 IDW 邻近点数，默认12
+        # scipy_tin_idw_power=2.0,        # (v3.5) TIN 外部/混合带 IDW 幂次，默认2.0
 
         # 径向插值参数（仅 interp_method='radial' 时有效，需安装scipy）
         radial_kind='cubic',  # 1D插值类型: 'linear'(快), 'cubic'(更平滑)
 
         # EBK 参数（仅 interp_method='kriging' 时有效，需安装scipy+pykrige）
-        ebk_subset_size=100,        # 子集大小；默认100与ArcGIS EBK一致
-        ebk_overlap_factor=1.0,     # 子集重叠因子；越大子集数越多
-        ebk_variogram='power',      # 变差函数；默认'power'与ArcGIS EBK一致
+        ebk_subset_size=100,         # 子集大小；默认100与ArcGIS EBK一致
+        ebk_overlap_factor=1.0,      # 子集重叠因子；[1.0, 3.0]，越大子集数越多
+        ebk_variogram='power',       # 变差函数；默认'power'与ArcGIS EBK一致
+        ebk_n_simulations=100,       # (v3.5) 每个子集的模拟次数；默认100与ArcGIS EBK一致
+        ebk_predict_neighbors=4,     # (v3.5) 每像素参与加权的子集数；默认4
+        ebk_simulation_noise=0.1,    # (v3.5) 变差函数参数扰动幅度；n_simulations>1 时生效
         # 旧版 kriging 参数（保留向后兼容）
         kriging_variogram='linear',  # 变差函数: 旧参数，ebk_variogram优先生效
         kriging_nlags=6,             # 半变差函数滞后数
