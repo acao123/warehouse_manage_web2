@@ -1416,15 +1416,20 @@ class KmlToIaConverter:
                         _r = float(r_sorted[i])
                         _v = float(v_sorted[i])
                         if _r - last_r < tol_bin:
+                            # Accumulate within bin; average written on bin close
                             running_sum += _v
                             running_cnt += 1
-                            merged_v[-1] = running_sum / running_cnt
                         else:
+                            # Close current bin: write final average once
+                            merged_v[-1] = running_sum / running_cnt
+                            # Start new bin
                             merged_r.append(_r)
                             merged_v.append(_v)
                             last_r = _r
                             running_sum = _v
                             running_cnt = 1
+                    # Close the last bin
+                    merged_v[-1] = running_sum / running_cnt
                     del r_sorted, v_sorted, sorted_idx
                     gc.collect()
 
@@ -1461,6 +1466,7 @@ class KmlToIaConverter:
                     logger.warning(
                         "径向辅助场构建失败（%s），回退到 v3.7 行为", _e
                     )
+                    # 异常时回退：使用原始值，use_radial_assist 已为 False
                     tin_values = values.astype(np.float64)
                     use_radial_assist = False
 
