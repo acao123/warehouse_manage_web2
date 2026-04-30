@@ -1282,7 +1282,7 @@ class KmlToIaConverter:
             chunk_starts = list(range(0, n_rows, chunk_rows))
 
             # 辅助函数：在线程中计算单个分块的 TIN 插值结果
-            # 返回 (row_start, result, nan_count, max_nn_dist, mean_nn_dist)
+            # 返回 (row_start, result, nan_count, max_nn_dist, sum_nn_dist)
             def _compute_chunk_tin(
                 row_start: int,
             ) -> Tuple[int, np.ndarray, int, float, float]:
@@ -1299,7 +1299,7 @@ class KmlToIaConverter:
                 nan_mask = np.isnan(chunk_vals)
                 nan_count = int(nan_mask.sum())
                 max_nn_dist = 0.0
-                mean_nn_dist = 0.0
+                sum_nn_dist_chunk = 0.0
                 if nan_mask.any():
                     try:
                         nan_pts = pts[nan_mask]
@@ -1308,7 +1308,7 @@ class KmlToIaConverter:
                         nn_idxs = np.atleast_1d(nn_idxs)
                         chunk_vals[nan_mask] = nn_values[nn_idxs]
                         max_nn_dist = float(nn_dists.max())
-                        mean_nn_dist = float(nn_dists.mean())
+                        sum_nn_dist_chunk = float(nn_dists.sum())
                     except Exception as exc:
                         logger.warning("NaN填充失败（row_start=%d），使用0填充: %s",
                                        row_start, exc)
@@ -1317,7 +1317,7 @@ class KmlToIaConverter:
                 del pts
                 chunk_vals = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
                 np.maximum(chunk_vals, 0.0, out=chunk_vals)
-                return row_start, chunk_vals, nan_count, max_nn_dist, mean_nn_dist
+                return row_start, chunk_vals, nan_count, max_nn_dist, sum_nn_dist_chunk
 
             start_time = time.time()
             logger.info("scipy_tin 插值开始，分块数=%d，并行线程数=%d",
@@ -1326,7 +1326,6 @@ class KmlToIaConverter:
             total_nan = 0
             max_nn_dist_global = 0.0
             sum_nn_dist = 0.0
-            total_nan_pts = 0
 
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.max_interp_workers
@@ -1344,7 +1343,7 @@ class KmlToIaConverter:
                         executor.shutdown(wait=False, cancel_futures=True)
                         raise TaskCancelledException("任务已被取消")
                     try:
-                        row_start_res, chunk_vals, nan_count, max_nn_dist, mean_nn_dist = (
+                        row_start_res, chunk_vals, nan_count, max_nn_dist, sum_nn_dist_chunk = (
                             pending.pop(rs).result()
                         )
                     except Exception as exc:
@@ -1359,8 +1358,7 @@ class KmlToIaConverter:
                     if nan_count > 0:
                         if max_nn_dist > max_nn_dist_global:
                             max_nn_dist_global = max_nn_dist
-                        sum_nn_dist += mean_nn_dist * nan_count
-                        total_nan_pts += nan_count
+                        sum_nn_dist += sum_nn_dist_chunk
 
                     gc.collect()
 
@@ -1381,7 +1379,7 @@ class KmlToIaConverter:
             # 汇报 NaN 填充统计
             total_pixels = self._n_rows * self._n_cols
             ratio = total_nan / total_pixels if total_pixels > 0 else 0.0
-            mean_nn = sum_nn_dist / total_nan_pts if total_nan_pts > 0 else 0.0
+            mean_nn = sum_nn_dist / total_nan if total_nan > 0 else 0.0
             logger.info(
                 "scipy_tin NaN 像素填充统计: 总 NaN 像素=%d (占比 %.2f%%), "
                 "到最近采样点最大距离=%.1f m, 平均距离=%.1f m",
@@ -2197,9 +2195,12 @@ class KmlToIaConverter:
                 return False
 
             # 3. 计算数据中心经度，自动选择 UTM 投影带
-            all_lons = [lon for c in self._contours for lon, lat in c['coordinates']]
-            center_lon = float(np.mean(all_lons)) if all_lons else 105.0
-            del all_lons
+            all_lons_iter = (
+                lon for c in self._contours for lon, lat in c['coordinates']
+            )
+            all_lons_arr = np.fromiter(all_lons_iter, dtype=np.float64)
+            center_lon = float(all_lons_arr.mean()) if all_lons_arr.size > 0 else 105.0
+            del all_lons_arr
             self._setup_output_crs(center_lon)
 
             # 4. 准备采样点（坐标转换为 UTM 米坐标）
