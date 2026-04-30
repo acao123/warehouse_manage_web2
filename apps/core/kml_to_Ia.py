@@ -1390,7 +1390,6 @@ class KmlToIaConverter:
             # ==================================================================
             use_radial_assist = False
             cx = cy = 0.0
-            f_radial = None
             tin_values = values.astype(np.float64)  # TIN 使用的值（原始值或残差）
 
             if self.scipy_tin_radial_assist and len(x_arr) >= 3:
@@ -1412,16 +1411,18 @@ class KmlToIaConverter:
                     merged_v = [float(v_sorted[0])]
                     running_sum = float(v_sorted[0])
                     running_cnt = 1
-                    for _r, _v in zip(r_sorted[1:], v_sorted[1:]):
-                        _r = float(_r)
-                        _v = float(_v)
-                        if _r - merged_r[-1] < tol_bin:
+                    last_r = merged_r[0]
+                    for i in range(1, len(r_sorted)):
+                        _r = float(r_sorted[i])
+                        _v = float(v_sorted[i])
+                        if _r - last_r < tol_bin:
                             running_sum += _v
                             running_cnt += 1
                             merged_v[-1] = running_sum / running_cnt
                         else:
                             merged_r.append(_r)
                             merged_v.append(_v)
+                            last_r = _r
                             running_sum = _v
                             running_cnt = 1
                     del r_sorted, v_sorted, sorted_idx
@@ -1436,7 +1437,7 @@ class KmlToIaConverter:
                         f_radial = _PchipInterpolator(r_knots, v_knots, extrapolate=True)
                         n_knots = len(r_knots)
 
-                        # 5. 计算残差：au = ia - f_radial(r)
+                        # 5. 计算残差：tin_values = ia - f_radial(r)
                         radial_at_samples = f_radial(r_arr)
                         tin_values = values.astype(np.float64) - radial_at_samples
                         del radial_at_samples, r_arr, r_knots, v_knots
