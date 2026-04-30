@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.3）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.4）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,15 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.3）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.4 相较 v3.3）：
+    1. 使用 UTM 投影替代 EPSG:4326 经纬度投影，使插值算法在等距米制坐标系下进行，
+       结果更精确；根据数据中心经度自动选择 UTM 带号（北半球 WGS84 UTM 43N–53N，
+       EPSG:32643–32653），超出范围时按通用公式计算并记录 warning 日志。
+    2. 优化 scipy TIN 插值：CloughTocher/Linear 插值器启用 rescale=True 和显式
+       fill_value=np.nan；CloughTocher 增加 tol=1e-6, maxiter=400；
+       NaN 填充由 RBFInterpolator(neighbors=1) 改为真正的 cKDTree 最近邻，
+       并在日志中汇报 NaN 像素统计（数量、占比、到最近采样点最大/平均距离）。
 
 主要改进（v3.3 相较 v3.2）：
     1. qgis_idw 改为 KD-Tree 局部 IDW，与 ArcGIS IDW 默认参数对齐
@@ -36,9 +45,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.3）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.3)
-日期: 2026-04-29
-版本: 3.3
+作者: acao (重构版 v3.4)
+日期: 2026-04-30
+版本: 3.4
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -54,9 +63,12 @@ QGIS版本: 3.40.15
     固定分辨率：30米 × 30米
 
 投影说明：
-    输出坐标系为 EPSG:4326 (WGS 84) 经纬度坐标。
-    经度方向分辨率根据数据中心纬度修正：res_lon = resolution / (111000 * cos(center_lat))
-    纬度方向分辨率：res_lat = resolution / 111000
+    输出坐标系根据数据中心经度自动选择对应的 UTM 投影带（北半球 WGS84 UTM）。
+    中国区域使用 EPSG:32643–32653（UTM 43N–53N，覆盖东经 72°–138°）。
+    所有采样点坐标从 EPSG:4326 (WGS84) 转换到 UTM 投影后再做插值，
+    像素宽高均等于 resolution（米），无需 cos(lat) 修正。
+    UTM 带号通用公式：zone = int((center_lon + 180) / 6) + 1，
+    EPSG = 32600 + zone（北半球）。
 
 内存优化说明（运行环境 32G，占用不超过 10G）：
     - 使用生成器迭代采样点，避免一次性构建大型中间列表
@@ -161,16 +173,16 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.2）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.4）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
 
-    输出坐标系: EPSG:4326 (WGS 84)
+    输出坐标系: 根据数据中心经度自动选择的 UTM 投影（北半球 WGS84 UTM）。
 
     主要特性:
         - 只对Ia进行插值，PGA.tif使用等值线矢量栅格化生成
-        - 经纬度分辨率区分方向，修正纬度对经度距离的影响
+        - 所有插值在 UTM 米制坐标系下进行，距离权重更准确
         - 采样点数量可控（sample_interval + max_sample_points），避免内存溢出
         - 支持6种插值方法（scipy_tin推荐，平滑无突变）
         - 严格内存控制（<10GB）：生成器、分批转换、分块写入、及时释放
@@ -253,7 +265,7 @@ class KmlToIaConverter:
 
         # ---- ArcGIS IDW 对齐参数（qgis_idw 方法专用）----
         idw_num_neighbors: int = 12,          # KD-Tree 局部搜索邻近点数，与 ArcGIS 默认一致
-        idw_max_distance: Optional[float] = None,  # 最大搜索距离（EPSG:4326度），None 表示不限制
+        idw_max_distance: Optional[float] = None,  # 最大搜索距离（米，UTM坐标），None 表示不限制
 
         # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
         ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
@@ -318,6 +330,8 @@ class KmlToIaConverter:
         self._contours: List[dict] = []
         self._utm_epsg: int = 0
         self._utm_srs: Optional[osr.SpatialReference] = None
+        self._wgs84_srs: Optional[osr.SpatialReference] = None
+        self._coord_transform = None
         self._geo_transform: Optional[tuple] = None
         self._n_cols: int = 0
         self._n_rows: int = 0
@@ -325,8 +339,9 @@ class KmlToIaConverter:
         self._x_max: float = 0.0
         self._y_min: float = 0.0
         self._y_max: float = 0.0
-        self._res_lon: float = 0.0   # 经度方向分辨率（度），考虑纬度余弦
-        self._res_lat: float = 0.0   # 纬度方向分辨率（度）
+        self._res_lon: float = 0.0   # X 方向像素大小（米）
+        self._res_lat: float = 0.0   # Y 方向像素大小（米）
+        self._pixel_size: float = 0.0  # 像素大小（米）
 
     # ==================== KML 解析 ====================
 
@@ -480,21 +495,55 @@ class KmlToIaConverter:
 
     # ==================== 投影与坐标系设置 ====================
 
-    def _setup_output_crs(self):
+    def _setup_output_crs(self, center_lon: float):
         """
-        设置输出坐标系为 EPSG:4326 (WGS 84) 并创建空间参考对象。
+        根据数据中心经度自动选择 UTM 投影带，设置输出坐标系。
 
-        输出直接使用经纬度坐标系，无需坐标转换。
+        UTM 带号通用公式：zone = int((center_lon + 180) / 6) + 1
+        EPSG = 32600 + zone（北半球 WGS84 UTM）
+
+        中国区域覆盖带号 43–53（东经 72°–138°），超出范围时仍按通用公式计算
+        并记录 warning 日志，而不是失败。
+
+        参数:
+            center_lon (float): 数据中心经度（度，WGS84）
+
+        副作用:
+            - self._utm_epsg：UTM EPSG 代码
+            - self._utm_srs：UTM 空间参考对象
+            - self._wgs84_srs：WGS84 空间参考对象
+            - self._coord_transform：WGS84 → UTM 坐标变换对象
         """
         try:
-            self._utm_epsg = 4326
+            zone = int((center_lon + 180) / 6) + 1
+            if not (43 <= zone <= 53):
+                logger.warning(
+                    "中心经度 %.4f° 超出中国区域 UTM 43N–53N 范围（zone=%d），"
+                    "仍按通用公式计算 EPSG=%d",
+                    center_lon, zone, 32600 + zone,
+                )
+            self._utm_epsg = 32600 + zone
+            central_meridian = -180 + (zone - 1) * 6 + 3
 
-            srs = osr.SpatialReference()
-            srs.ImportFromEPSG(4326)
-            srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-            self._utm_srs = srs
+            # UTM 空间参考
+            utm_srs = osr.SpatialReference()
+            utm_srs.ImportFromEPSG(self._utm_epsg)
+            utm_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            self._utm_srs = utm_srs
 
-            logger.info("输出坐标系: EPSG:4326 (WGS 84)")
+            # WGS84 空间参考
+            wgs84_srs = osr.SpatialReference()
+            wgs84_srs.ImportFromEPSG(4326)
+            wgs84_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            self._wgs84_srs = wgs84_srs
+
+            # 坐标变换：WGS84 → UTM（输入 (lon, lat)，输出 (easting, northing)）
+            self._coord_transform = osr.CoordinateTransformation(wgs84_srs, utm_srs)
+
+            logger.info(
+                "UTM 投影: 带号=%d, EPSG=%d, 中央经线=%.0f°E",
+                zone, self._utm_epsg, central_meridian,
+            )
         except Exception as exc:
             logger.error("设置输出坐标系失败: %s", exc, exc_info=True)
             raise
@@ -528,10 +577,11 @@ class KmlToIaConverter:
         处理流程:
             1. 使用生成器按 sample_interval 间隔采样
             2. 若采样点数超过 max_sample_points，随机抽样到该数量
-            3. 去除完全重叠的坐标点（防止插值奇异矩阵）
+            3. 将 (lon, lat) 坐标批量转换为 UTM (x, y) 米坐标
+            4. 去除完全重叠的坐标点（防止插值奇异矩阵）
 
         返回:
-            tuple: (x_arr, y_arr, ia_values)，经纬度坐标和Ia值数组
+            tuple: (x_arr, y_arr, ia_values)，UTM 米坐标和Ia值数组
 
         异常:
             ValueError: 没有有效的采样点
@@ -557,13 +607,17 @@ class KmlToIaConverter:
             del rows
             gc.collect()
 
-            # EPSG:4326 无需坐标转换，直接使用经纬度作为x/y
-            x_out = lons_arr
-            y_out = lats_arr
+            # 使用 coord_transform 将 (lon, lat) 批量转换为 UTM (x, y) 米坐标
+            pts_lonlat = list(zip(lons_arr.tolist(), lats_arr.tolist()))
+            transformed = self._coord_transform.TransformPoints(pts_lonlat)
+            x_out = np.array([p[0] for p in transformed], dtype=np.float64)
+            y_out = np.array([p[1] for p in transformed], dtype=np.float64)
+            del lons_arr, lats_arr, transformed, pts_lonlat
+            gc.collect()
 
             # -------- 去重处理 --------
-            # 四舍五入到0.00001度精度（约1m）后去重
-            coords_rounded = np.round(np.column_stack([x_out, y_out]), decimals=5)
+            # UTM 是米单位，四舍五入到整米（decimals=0）后去重
+            coords_rounded = np.round(np.column_stack([x_out, y_out]), decimals=0)
             _, unique_idx = np.unique(coords_rounded, axis=0, return_index=True)
             del coords_rounded
             unique_idx.sort()
@@ -589,54 +643,42 @@ class KmlToIaConverter:
 
     def _build_grid(self, x_arr: np.ndarray, y_arr: np.ndarray):
         """
-        根据采样点范围构建输出栅格网格参数（EPSG:4326，经纬度坐标）
+        根据采样点范围构建输出栅格网格参数（UTM 米坐标）
 
-        经纬度分辨率区分方向:
-            - 纬度方向: res_lat = resolution / 111000
-            - 经度方向: res_lon = resolution / (111000 * cos(center_lat))
-
-        在数据范围外扩展 10 个像素作为缓冲区。
+        UTM 是等距米坐标，直接使用 resolution（米）作为像素宽高，
+        无需 cos(lat) 修正。在数据范围外扩展 10 个像素作为缓冲区。
 
         参数:
-            x_arr (np.ndarray): 采样点经度坐标（度）
-            y_arr (np.ndarray): 采样点纬度坐标（度）
+            x_arr (np.ndarray): 采样点 UTM X 坐标（米，easting）
+            y_arr (np.ndarray): 采样点 UTM Y 坐标（米，northing）
         """
         try:
-            # 计算数据中心纬度，用于修正经度方向分辨率
-            center_lat = float(np.mean(y_arr))
-            cos_lat = math.cos(math.radians(center_lat))
-            # 避免极端情况（极地附近cos接近0）
-            if cos_lat < 0.01:
-                cos_lat = 0.01
-                logger.warning("数据中心纬度 %.4f° 接近极地，经度分辨率修正受限", center_lat)
+            self._pixel_size = self.resolution
+            self._res_lon = self.resolution   # X 方向像素大小（米）
+            self._res_lat = self.resolution   # Y 方向像素大小（米）
 
-            # 纬度方向分辨率（度）
-            self._res_lat = self.resolution / self.METERS_PER_DEGREE
-            # 经度方向分辨率（度），考虑纬度对经度距离的影响
-            self._res_lon = self.resolution / (self.METERS_PER_DEGREE * cos_lat)
-
-            buffer_x = self._res_lon * 10
-            buffer_y = self._res_lat * 10
+            buffer_x = self.resolution * 10
+            buffer_y = self.resolution * 10
 
             x_min = float(x_arr.min()) - buffer_x
             x_max = float(x_arr.max()) + buffer_x
             y_min = float(y_arr.min()) - buffer_y
             y_max = float(y_arr.max()) + buffer_y
 
-            self._n_cols = int(np.ceil((x_max - x_min) / self._res_lon))
-            self._n_rows = int(np.ceil((y_max - y_min) / self._res_lat))
+            self._n_cols = int(np.ceil((x_max - x_min) / self.resolution))
+            self._n_rows = int(np.ceil((y_max - y_min) / self.resolution))
 
             # 防止栅格尺寸为0
             if self._n_cols <= 0 or self._n_rows <= 0:
                 raise ValueError(
                     f"计算得到的栅格尺寸无效: {self._n_cols} 列 × {self._n_rows} 行，"
-                    f"数据范围: X[{x_min:.6f}, {x_max:.6f}] Y[{y_min:.6f}, {y_max:.6f}]"
+                    f"数据范围: X[{x_min:.1f}, {x_max:.1f}] Y[{y_min:.1f}, {y_max:.1f}]"
                 )
 
             # GeoTIFF 仿射变换参数:
             # (左上角X, 像素宽度, 旋转, 左上角Y, 旋转, 像素高度负值)
-            self._geo_transform = (x_min, self._res_lon, 0.0,
-                                   y_max, 0.0, -self._res_lat)
+            self._geo_transform = (x_min, self.resolution, 0.0,
+                                   y_max, 0.0, -self.resolution)
 
             self._x_min = x_min
             self._x_max = x_max
@@ -644,12 +686,10 @@ class KmlToIaConverter:
             self._y_max = y_max
 
             logger.info("栅格网格信息:")
-            logger.info("  中心纬度: %.4f°, cos(lat)=%.6f", center_lat, cos_lat)
-            logger.info("  经度方向分辨率: %.1fm ≈ %.6f°", self.resolution, self._res_lon)
-            logger.info("  纬度方向分辨率: %.1fm ≈ %.6f°", self.resolution, self._res_lat)
+            logger.info("  像素大小: %.1f m", self.resolution)
             logger.info("  网格大小: %d 列 × %d 行", self._n_cols, self._n_rows)
-            logger.info("  经度范围: %.6f° ~ %.6f°", x_min, x_max)
-            logger.info("  纬度范围: %.6f° ~ %.6f°", y_min, y_max)
+            logger.info("  X 范围: %.1f m ~ %.1f m", x_min, x_max)
+            logger.info("  Y 范围: %.1f m ~ %.1f m", y_min, y_max)
             logger.info("  总像素数: %s", f"{self._n_cols * self._n_rows:,}")
 
             # 估算内存使用
@@ -848,15 +888,15 @@ class KmlToIaConverter:
             - 使用 scipy.spatial.cKDTree 对每个像素查询最近的 N 个采样点
               （默认 N=12，与 ArcGIS IDW 默认 Search Neighborhood 一致）。
             - 反距离权重 w_i = 1 / d_i^power；当 d_i = 0 时直接取该点的值。
-            - 支持可选最大搜索距离 idw_max_distance（单位：度）。
+            - 支持可选最大搜索距离 idw_max_distance（单位：米，UTM坐标）。
 
         性能：cKDTree.query 在 C 扩展层释放 GIL，可通过 ThreadPoolExecutor 多线程加速；
               局部搜索复杂度 O(n_pixels × log(n_samples) × N)，
               远优于全局 IDW 的 O(n_pixels × n_samples)。
 
         参数:
-            x_arr: 采样点X坐标(经度)
-            y_arr: 采样点Y坐标(纬度)
+            x_arr: 采样点X坐标（UTM easting，米）
+            y_arr: 采样点Y坐标（UTM northing，米）
             values: 采样点对应值（Ia）
             output_tif_path: 输出 GeoTIFF 文件路径
         """
@@ -884,7 +924,7 @@ class KmlToIaConverter:
             logger.info(
                 "ArcGIS IDW (KD-Tree) 插值: 邻近点数=%d, 幂次=%.1f, 最大距离=%s",
                 n_neighbors, power,
-                f"{max_dist:.6f}°" if max_dist is not None else "无限制",
+                f"{max_dist:.1f} m" if max_dist is not None else "无限制",
             )
 
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
@@ -1170,13 +1210,17 @@ class KmlToIaConverter:
         """
         使用 scipy Delaunay 三角网插值，分块并行写入 GeoTIFF。
 
-        优化说明：使用 ThreadPoolExecutor（max_interp_workers 线程）并行处理分块。
-        scipy TIN 插值在 C 扩展层处理三角剖分查找，不修改内部状态，线程安全可复用。
-        三角网外部的 NaN 像素用最近邻 RBFInterpolator（neighbors=1）填充。
+        优化说明：
+            - CloughTocher/Linear 插值器启用 rescale=True（对UTM米坐标做归一化，
+              提升数值稳定性）和显式 fill_value=np.nan。
+            - CloughTocher 增加 tol=1e-6, maxiter=400。
+            - 三角网外部的 NaN 像素用 cKDTree 真正最近邻填充（替代 RBFInterpolator）。
+            - 汇报 NaN 像素统计（数量、占比、到最近采样点最大/平均距离）。
+            - 使用 ThreadPoolExecutor（max_interp_workers 线程）并行处理分块。
 
         参数:
-            x_arr: 采样点X坐标(经度)
-            y_arr: 采样点Y坐标(纬度)
+            x_arr: 采样点X坐标（UTM easting，米）
+            y_arr: 采样点Y坐标（UTM northing，米）
             values: 采样点对应值（Ia）
             output_tif_path: 输出 GeoTIFF 文件路径
         """
@@ -1187,7 +1231,7 @@ class KmlToIaConverter:
             )
 
         interp = None
-        nn_rbf = None
+        nn_tree = None
         out_ds = None
         band = None
 
@@ -1195,22 +1239,28 @@ class KmlToIaConverter:
             points = np.column_stack([x_arr, y_arr])
 
             if self.scipy_tin_smooth:
-                interp = _CloughTocher2DInterpolator(points, values.astype(np.float64))
-                logger.info("使用 scipy CloughTocher TIN 插值（C1连续，最平滑）")
+                interp = _CloughTocher2DInterpolator(
+                    points, values.astype(np.float64),
+                    fill_value=np.nan,
+                    tol=1e-6,
+                    maxiter=400,
+                    rescale=True,
+                )
+                logger.info("使用 scipy CloughTocher TIN 插值（C1连续，最平滑，rescale=True）")
             else:
-                interp = _LinearNDInterpolator(points, values.astype(np.float64))
-                logger.info("使用 scipy Linear TIN 插值（C0连续，更快）")
+                interp = _LinearNDInterpolator(
+                    points, values.astype(np.float64),
+                    fill_value=np.nan,
+                    rescale=True,
+                )
+                logger.info("使用 scipy Linear TIN 插值（C0连续，更快，rescale=True）")
 
             del points
             gc.collect()
 
-            # 预先计算用于NaN填充的最近邻插值器（三角网外部区域）
-            nn_rbf = _RBFInterpolator(
-                np.column_stack([x_arr, y_arr]),
-                values.astype(np.float64),
-                kernel='linear',
-                neighbors=1,
-            )
+            # 用 cKDTree 真正的最近邻替代 RBFInterpolator(neighbors=1)
+            nn_tree = _cKDTree(np.column_stack([x_arr, y_arr]))
+            nn_values = values.astype(np.float64)
 
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
             self._ensure_file_writable(output_tif_path)
@@ -1232,7 +1282,10 @@ class KmlToIaConverter:
             chunk_starts = list(range(0, n_rows, chunk_rows))
 
             # 辅助函数：在线程中计算单个分块的 TIN 插值结果
-            def _compute_chunk_tin(row_start: int) -> Tuple[int, np.ndarray]:
+            # 返回 (row_start, result, nan_count, max_nn_dist, mean_nn_dist)
+            def _compute_chunk_tin(
+                row_start: int,
+            ) -> Tuple[int, np.ndarray, int, float, float]:
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
@@ -1242,11 +1295,20 @@ class KmlToIaConverter:
 
                 chunk_vals = interp(pts)
 
-                # 用最近邻值填充三角网外部的 NaN 像素
+                # 用 cKDTree 最近邻填充三角网外部的 NaN 像素
                 nan_mask = np.isnan(chunk_vals)
+                nan_count = int(nan_mask.sum())
+                max_nn_dist = 0.0
+                mean_nn_dist = 0.0
                 if nan_mask.any():
                     try:
-                        chunk_vals[nan_mask] = nn_rbf(pts[nan_mask])
+                        nan_pts = pts[nan_mask]
+                        nn_dists, nn_idxs = nn_tree.query(nan_pts, k=1)
+                        nn_dists = np.atleast_1d(nn_dists)
+                        nn_idxs = np.atleast_1d(nn_idxs)
+                        chunk_vals[nan_mask] = nn_values[nn_idxs]
+                        max_nn_dist = float(nn_dists.max())
+                        mean_nn_dist = float(nn_dists.mean())
                     except Exception as exc:
                         logger.warning("NaN填充失败（row_start=%d），使用0填充: %s",
                                        row_start, exc)
@@ -1255,44 +1317,53 @@ class KmlToIaConverter:
                 del pts
                 chunk_vals = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
                 np.maximum(chunk_vals, 0.0, out=chunk_vals)
-                return row_start, chunk_vals
+                return row_start, chunk_vals, nan_count, max_nn_dist, mean_nn_dist
 
             start_time = time.time()
             logger.info("scipy_tin 插值开始，分块数=%d，并行线程数=%d",
                         len(chunk_starts), self.max_interp_workers)
 
-            # 使用字典映射 row_start → Future，按顺序消费、并行计算
-            # 每次最多保留 max_interp_workers 个未消费的 Future 在内存中
+            total_nan = 0
+            max_nn_dist_global = 0.0
+            sum_nn_dist = 0.0
+            total_nan_pts = 0
+
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.max_interp_workers
             ) as executor:
-                # pending: row_start → Future（只包含已提交但未消费的分块）
                 pending: dict = {}
-                submit_ptr = 0  # 下一个待提交分块的索引
+                submit_ptr = 0
 
-                # 预先提交前 max_interp_workers 个分块
                 while submit_ptr < len(chunk_starts) and submit_ptr < self.max_interp_workers:
                     rs = chunk_starts[submit_ptr]
                     pending[rs] = executor.submit(_compute_chunk_tin, rs)
                     submit_ptr += 1
 
                 for chunk_idx, rs in enumerate(chunk_starts):
-                    # 检查取消信号；若已取消，立即取消未提交分块并退出
                     if self._cancel_event is not None and self._cancel_event.is_set():
                         executor.shutdown(wait=False, cancel_futures=True)
                         raise TaskCancelledException("任务已被取消")
-                    # 等待当前分块的计算结果（一定在 pending 中）
                     try:
-                        row_start_res, chunk_vals = pending.pop(rs).result()
+                        row_start_res, chunk_vals, nan_count, max_nn_dist, mean_nn_dist = (
+                            pending.pop(rs).result()
+                        )
                     except Exception as exc:
                         logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
                         raise
 
                     band.WriteArray(chunk_vals, 0, row_start_res)
                     del chunk_vals
+
+                    # 累计 NaN 统计
+                    total_nan += nan_count
+                    if nan_count > 0:
+                        if max_nn_dist > max_nn_dist_global:
+                            max_nn_dist_global = max_nn_dist
+                        sum_nn_dist += mean_nn_dist * nan_count
+                        total_nan_pts += nan_count
+
                     gc.collect()
 
-                    # 提交下一个分块（维持滑动窗口大小）
                     if submit_ptr < len(chunk_starts):
                         next_rs = chunk_starts[submit_ptr]
                         pending[next_rs] = executor.submit(_compute_chunk_tin, next_rs)
@@ -1307,6 +1378,16 @@ class KmlToIaConverter:
             band.ComputeStatistics(False)
             band.FlushCache()
 
+            # 汇报 NaN 填充统计
+            total_pixels = self._n_rows * self._n_cols
+            ratio = total_nan / total_pixels if total_pixels > 0 else 0.0
+            mean_nn = sum_nn_dist / total_nan_pts if total_nan_pts > 0 else 0.0
+            logger.info(
+                "scipy_tin NaN 像素填充统计: 总 NaN 像素=%d (占比 %.2f%%), "
+                "到最近采样点最大距离=%.1f m, 平均距离=%.1f m",
+                total_nan, ratio * 100, max_nn_dist_global, mean_nn,
+            )
+
             total_time = time.time() - start_time
             logger.info("scipy_tin 插值完成，总耗时: %.1fs, 已保存: %s",
                         total_time, output_tif_path)
@@ -1319,7 +1400,9 @@ class KmlToIaConverter:
         finally:
             out_ds = None
             band = None
-            del interp, nn_rbf
+            del interp
+            if nn_tree is not None:
+                del nn_tree
             gc.collect()
 
     # ==================== 径向距离插值方法 ====================
@@ -1334,9 +1417,11 @@ class KmlToIaConverter:
         """
         径向距离插值 —— 专为同心环状等值线优化。
 
+        UTM 是等距米坐标，直接使用欧氏距离 sqrt(dx² + dy²)，无需 cos(lat) 修正。
+
         参数:
-            x_arr: 采样点X坐标(经度)
-            y_arr: 采样点Y坐标(纬度)
+            x_arr: 采样点X坐标（UTM easting，米）
+            y_arr: 采样点Y坐标（UTM northing，米）
             values: 采样点对应值（Ia）
             output_tif_path: 输出 GeoTIFF 文件路径
         """
@@ -1351,15 +1436,13 @@ class KmlToIaConverter:
         band = None
 
         try:
-            # 计算震中（几何中心）
+            # 计算震中（几何中心，UTM 米坐标）
             center_x = float(np.mean(x_arr))
             center_y = float(np.mean(y_arr))
-            logger.info("震中坐标（经纬度）: (%.6f°, %.6f°)", center_x, center_y)
+            logger.info("震中坐标（UTM m）: (%.1f, %.1f)", center_x, center_y)
 
-            # 计算距离时考虑经纬度的不等距性
-            # 使用加权欧氏距离：经度方向乘以 cos(center_lat)
-            cos_lat = math.cos(math.radians(center_y))
-            dx = (x_arr - center_x) * cos_lat
+            # UTM 等距坐标，直接使用欧氏距离
+            dx = x_arr - center_x
             dy = y_arr - center_y
             distances = np.sqrt(dx ** 2 + dy ** 2)
 
@@ -1369,8 +1452,8 @@ class KmlToIaConverter:
             del distances, sorted_idx, dx, dy
             gc.collect()
 
-            # 对距离去重：将距离相差不超过 _res_lat/2 的点合并取均值
-            tol = self._res_lat / 2.0
+            # 对距离去重：将距离相差不超过 resolution/2 的点合并取均值
+            tol = self.resolution / 2.0
             merged_dists = [float(dist_sorted[0])]
             merged_vals = [float(val_sorted[0])]
             running_sum = float(val_sorted[0])
@@ -1396,7 +1479,7 @@ class KmlToIaConverter:
             val_arr = np.array(merged_vals, dtype=np.float64)
             del merged_dists, merged_vals
 
-            logger.info("距离范围: %.6f° ~ %.6f°，合并��控制点数: %d",
+            logger.info("距离范围: %.1f m ~ %.1f m，合并控制点数: %d",
                         dist_arr[0], dist_arr[-1], len(dist_arr))
 
             interp_func = _interp1d(
@@ -1435,8 +1518,8 @@ class KmlToIaConverter:
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
                 xx, yy = np.meshgrid(grid_x, grid_y)
 
-                # 计算距离时同样考虑经纬度不等距性
-                pixel_dx = (xx - center_x) * cos_lat
+                # UTM 等距坐标，直接使用欧氏距离
+                pixel_dx = xx - center_x
                 pixel_dy = yy - center_y
                 pixel_dists = np.sqrt(pixel_dx ** 2 + pixel_dy ** 2)
                 del xx, yy, pixel_dx, pixel_dy
@@ -1937,7 +2020,10 @@ class KmlToIaConverter:
 
                 ring = ogr.Geometry(ogr.wkbLinearRing)
                 for lon, lat in coords:
-                    ring.AddPoint(float(lon), float(lat))
+                    x, y, _ = self._coord_transform.TransformPoint(
+                        float(lon), float(lat)
+                    )
+                    ring.AddPoint(x, y)
 
                 if ring.GetPointCount() >= 3:
                     first_pt = ring.GetPoint(0)
@@ -2046,6 +2132,8 @@ class KmlToIaConverter:
         logger.info("清理临时资源...")
         self._contours.clear()
         self._utm_srs = None
+        self._wgs84_srs = None
+        self._coord_transform = None
         gc.collect()
         logger.info("资源清理完成")
 
@@ -2057,9 +2145,9 @@ class KmlToIaConverter:
 
         流程:
             1. 解析KML文件
-            2. 设置 EPSG:4326 输出坐标系
-            3. 准备采样点（生成器下采样 + 随机抽样 + 去重）
-            4. 构建输出栅格网格（经纬度坐标，经度分辨率修正纬度余弦）
+            2. 计算数据中心经度，自动选择 UTM 投影带
+            3. 准备采样点（生成器下采样 + 随机抽样 + UTM坐标转换 + 去重）
+            4. 构建输出栅格网格（UTM 米坐标，直接使用 resolution 作为像素大小）
             5. （可选）PGA等值线矢量栅格化并输出PGA.tif
             6. 使用选定的插值方法计算并输出Ia.tif
             7. 打印耗时统计
@@ -2085,7 +2173,7 @@ class KmlToIaConverter:
     def _run_impl(self) -> bool:
         """run() 的实际实现。"""
         logger.info("=" * 60)
-        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.1）")
+        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.4）")
         logger.info("插值方法: %s", self.interp_method)
         logger.info("采样间隔: %d，最大采样点数: %d",
                      self.sample_interval, self.max_sample_points)
@@ -2108,13 +2196,16 @@ class KmlToIaConverter:
                 logger.error("未找到有效的PGA等值线")
                 return False
 
-            # 3. 设置 EPSG:4326 输出���标系
-            self._setup_output_crs()
+            # 3. 计算数据中心经度，自动选择 UTM 投影带
+            all_lons = [lon for c in self._contours for lon, lat in c['coordinates']]
+            center_lon = float(np.mean(all_lons)) if all_lons else 105.0
+            del all_lons
+            self._setup_output_crs(center_lon)
 
-            # 4. 准备采样点（坐标保持经纬度）
+            # 4. 准备采样点（坐标转换为 UTM 米坐标）
             x_arr, y_arr, ia_values = self._prepare_sample_points()
 
-            # 5. 构建栅格网格（经纬度坐标，分辨率按度计算，经度修正纬度余弦）
+            # 5. 构建栅格网格（UTM 米坐标，直接使用 resolution 作为像素大小）
             self._build_grid(x_arr, y_arr)
 
             # 6. PGA矢量栅格化（可选）
@@ -2191,7 +2282,8 @@ if __name__ == "__main__":
         # ArcGIS IDW 参数（仅 interp_method='qgis_idw' 时有效，需安装scipy）
         qgis_idw_power=2.0,         # IDW幂次；推荐1.0~4.0，越大近点主导（与ArcGIS默认一致）
         idw_num_neighbors=12,        # 局部搜索邻近点数；默认12与ArcGIS一致，越大结果越平滑
-        # idw_max_distance=0.5,      # 最大搜索距离（度），None表示不限制（与ArcGIS默认一致）
+        # idw_max_distance=50000,    # 最大搜索距离（米，UTM坐标），None表示不限制（与ArcGIS默认一致）
+        #                            # 例如 50000 表示 50 km
 
         # QGIS TIN 参数（仅 interp_method='qgis_tin' 时有效）
         qgis_tin_method=0,  # TIN子方法: 0=线性（快）, 1=Clough-Tocher（平滑）
