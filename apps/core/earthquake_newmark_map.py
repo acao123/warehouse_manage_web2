@@ -18,6 +18,12 @@ Newmark位移图例说明：
 - 使用GDAL的虚拟栅格(VRT)技术实现按需裁剪
 - 显著减少内存占用和处理时间
 - 只加载天地图矢量注记图层（放置在最上层），不加载矢量底图
+
+CRS支持说明：
+- 支持任意投影的 Dn.tif（地理坐标 EPSG:4326 或投影坐标 EPSG:326xx UTM 等）
+- 动态获取输入栅格 CRS，不再硬编码假定 EPSG:4326
+- 地图范围（extent）始终在 EPSG:4326 下计算，通过坐标转换后再进行栅格裁剪和像素读取
+- QGIS 利用 on-the-fly reprojection 将 UTM 栅格渲染到 EPSG:4326 地图中
 """
 
 import os
@@ -260,10 +266,128 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 # 在目标范围外增加缓冲区，确保边缘数据完整
 CLIP_BUFFER_DEGREES = 0.1
 
+# 1度对应的米数（近似），用于将度数缓冲区转换为投影坐标系（米）下的缓冲区
+METERS_PER_DEGREE = 111000.0
+
 # === 图例布局和字体设置 ===
 LEGEND_ROW_COUNT = 2  # 图例行数
 LEGEND_COLUMN_COUNT = 3  # 图例列数
 LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"  # 数字标签字体和Newmark英文字体
+
+# EPSG:4326 空间参考（模块级常量，避免重复创建）
+if GDAL_AVAILABLE:
+    _SRS_EPSG4326 = osr.SpatialReference()
+    _SRS_EPSG4326.ImportFromEPSG(4326)
+else:
+    _SRS_EPSG4326 = None
+
+
+# ============================================================
+# 栅格 CRS 辅助函数（支持任意投影的 Dn.tif）
+# ============================================================
+
+def get_raster_srs(tif_path):
+    """
+    动态获取栅格文件的空间参考系统（SRS）。
+
+    参数:
+        tif_path (str): TIF文件路径（绝对路径）
+
+    返回:
+        osr.SpatialReference: 栅格的空间参考，若无投影信息则fallback到EPSG:4326
+    """
+    srs = osr.SpatialReference()
+    if not GDAL_AVAILABLE:
+        srs.ImportFromEPSG(4326)
+        return srs
+
+    try:
+        ds = gdal.Open(tif_path, gdal.GA_ReadOnly)
+        if ds is None:
+            logger.warning('get_raster_srs: 无法打开栅格文件 %s，fallback到EPSG:4326', tif_path)
+            srs.ImportFromEPSG(4326)
+            return srs
+
+        wkt = ds.GetProjection()
+        ds = None
+
+        if wkt:
+            srs.ImportFromWkt(wkt)
+            srs.AutoIdentifyEPSG()
+            auth = srs.GetAuthorityCode(None)
+            logger.info('get_raster_srs: 栅格 %s CRS = %s:%s', tif_path,
+                        srs.GetAuthorityName(None), auth)
+        else:
+            logger.warning('get_raster_srs: 栅格 %s 无投影信息，fallback到EPSG:4326', tif_path)
+            srs.ImportFromEPSG(4326)
+    except Exception as exc:
+        logger.warning('get_raster_srs: 读取CRS异常 %s，fallback到EPSG:4326: %s', tif_path, exc)
+        srs.ImportFromEPSG(4326)
+
+    return srs
+
+
+def transform_extent_to_raster_crs(extent_4326, raster_srs):
+    """
+    将 EPSG:4326 下的地图范围（QgsRectangle）转换为栅格自身 CRS 下的范围。
+
+    当栅格已是 EPSG:4326 时直接返回原始 extent；
+    当栅格为投影坐标系（UTM 等）时，对四个角点及边中点进行坐标变换并取外接矩形，
+    确保转换后的范围覆盖原始范围。
+
+    参数:
+        extent_4326 (QgsRectangle): WGS84 地图范围
+        raster_srs (osr.SpatialReference): 栅格的空间参考
+
+    返回:
+        QgsRectangle: 栅格 CRS 下的范围
+    """
+    # 判断是否为 EPSG:4326（使用模块级常量，避免重复创建）
+    if _SRS_EPSG4326 is not None and raster_srs.IsSame(_SRS_EPSG4326):
+        return extent_4326
+    # GDAL不可用时也无法变换，直接返回
+    if _SRS_EPSG4326 is None:
+        return extent_4326
+
+    # 使用 QgsCoordinateTransform 进行转换
+    raster_crs_qgs = QgsCoordinateReferenceSystem()
+    wkt = raster_srs.ExportToWkt()
+    raster_crs_qgs.createFromWkt(wkt)
+
+    transform = QgsCoordinateTransform(CRS_WGS84, raster_crs_qgs, QgsProject.instance())
+
+    xmin = extent_4326.xMinimum()
+    xmax = extent_4326.xMaximum()
+    ymin = extent_4326.yMinimum()
+    ymax = extent_4326.yMaximum()
+    xmid = (xmin + xmax) / 2.0
+    ymid = (ymin + ymax) / 2.0
+
+    sample_points = [
+        QgsPointXY(xmin, ymin), QgsPointXY(xmin, ymax),
+        QgsPointXY(xmax, ymin), QgsPointXY(xmax, ymax),
+        QgsPointXY(xmin, ymid), QgsPointXY(xmax, ymid),
+        QgsPointXY(xmid, ymin), QgsPointXY(xmid, ymax),
+    ]
+
+    xs = []
+    ys = []
+    for pt in sample_points:
+        try:
+            pt_transformed = transform.transform(pt)
+            xs.append(pt_transformed.x())
+            ys.append(pt_transformed.y())
+        except Exception as exc:
+            logger.warning('transform_extent_to_raster_crs: 坐标变换失败 %s: %s', pt, exc)
+
+    if not xs:
+        logger.warning('transform_extent_to_raster_crs: 所有点变换失败，返回原始extent')
+        return extent_4326
+
+    result = QgsRectangle(min(xs), min(ys), max(xs), max(ys))
+    logger.info('transform_extent_to_raster_crs: WGS84 %s -> 栅格CRS %s',
+                extent_4326.toString(), result.toString())
+    return result
 
 
 # ============================================================
@@ -599,6 +723,10 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
     该函数针对大文件进行优化，只读取和输出需要的区域数据，
     显著减少内存占用和处理时间。
 
+    支持任意投影的输入栅格（地理坐标 EPSG:4326 或投影坐标 UTM 等）：
+    动态获取栅格 CRS 后，将传入的 EPSG:4326 范围转换为栅格 CRS 下的范围，
+    再调用 gdal.Translate 进行裁剪。
+
     参数:
         input_path (str): 输入栅格文件路径
         output_path (str): 输出裁剪后的栅格文件路径
@@ -632,17 +760,38 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
         logger.info('源栅格信息: %dx%d, %d波段', src_width, src_height, src_bands)
         print(f"[信息] 源栅格信息: {src_width}x{src_height}, {src_bands}波段")
 
-        clip_xmin = extent.xMinimum() - buffer_degrees
-        clip_xmax = extent.xMaximum() + buffer_degrees
-        clip_ymin = extent.yMinimum() - buffer_degrees
-        clip_ymax = extent.yMaximum() + buffer_degrees
+        # 动态获取栅格 CRS 并将 extent 从 WGS84 转换到栅格 CRS
+        raster_srs = get_raster_srs(input_path)
+        extent_in_raster_crs = transform_extent_to_raster_crs(extent, raster_srs)
+        logger.info('clip_raster_to_extent: 栅格CRS extent=%s', extent_in_raster_crs.toString())
 
-        logger.info('裁剪范围: (%.4f, %.4f) - (%.4f, %.4f)', clip_xmin, clip_ymin, clip_xmax, clip_ymax)
-        print(f"[信息] 裁剪范围: ({clip_xmin:.4f}, {clip_ymin:.4f}) - ({clip_xmax:.4f}, {clip_ymax:.4f})")
+        # 为转换后的 extent 增加缓冲区
+        # 当栅格为投影坐标系（米）时，buffer_degrees 实际代表度数，
+        # 需要转换为米（粗略按 buffer_degrees * METERS_PER_DEGREE 估算）
+        if raster_srs.IsProjected():
+            buffer_units = buffer_degrees * METERS_PER_DEGREE
+        else:
+            buffer_units = buffer_degrees
+
+        clip_xmin = extent_in_raster_crs.xMinimum() - buffer_units
+        clip_xmax = extent_in_raster_crs.xMaximum() + buffer_units
+        clip_ymin = extent_in_raster_crs.yMinimum() - buffer_units
+        clip_ymax = extent_in_raster_crs.yMaximum() + buffer_units
+
+        logger.info('裁剪范围(栅格CRS): (%.4f, %.4f) - (%.4f, %.4f)',
+                    clip_xmin, clip_ymin, clip_xmax, clip_ymax)
+        print(f"[信息] 裁剪范围(栅格CRS): ({clip_xmin:.4f}, {clip_ymin:.4f}) - ({clip_xmax:.4f}, {clip_ymax:.4f})")
+
+        # 获取栅格的投影 WKT 字符串，传给 projWinSRS
+        src_proj_wkt = src_ds.GetProjection()
+        if src_proj_wkt:
+            proj_win_srs = src_proj_wkt
+        else:
+            proj_win_srs = 'EPSG:4326'
 
         translate_options = gdal.TranslateOptions(
             projWin=[clip_xmin, clip_ymax, clip_xmax, clip_ymin],
-            projWinSRS='EPSG:4326',
+            projWinSRS=proj_win_srs,
             format='GTiff',
             creationOptions=[
                 'COMPRESS=LZW',
@@ -690,6 +839,9 @@ def create_vrt_for_extent(input_path, output_vrt_path, extent, buffer_degrees=CL
 
     备用函数：当前主流程使用 clip_raster_to_extent 进行裁剪，此函数保留作为备用方案。
 
+    支持任意投影的输入栅格：动态获取栅格 CRS 后，将传入的 EPSG:4326 范围
+    转换为栅格 CRS 下的范围，再调用 gdal.BuildVRT。
+
     参数:
         input_path (str): 输入栅格文件路径
         output_vrt_path (str): 输出VRT文件路径
@@ -708,14 +860,29 @@ def create_vrt_for_extent(input_path, output_vrt_path, extent, buffer_degrees=CL
         return None
 
     try:
-        clip_xmin = extent.xMinimum() - buffer_degrees
-        clip_xmax = extent.xMaximum() + buffer_degrees
-        clip_ymin = extent.yMinimum() - buffer_degrees
-        clip_ymax = extent.yMaximum() + buffer_degrees
+        # 动态获取栅格 CRS 并将 extent 从 WGS84 转换到栅格 CRS
+        raster_srs = get_raster_srs(input_path)
+        extent_in_raster_crs = transform_extent_to_raster_crs(extent, raster_srs)
+
+        if raster_srs.IsProjected():
+            buffer_units = buffer_degrees * METERS_PER_DEGREE
+        else:
+            buffer_units = buffer_degrees
+
+        clip_xmin = extent_in_raster_crs.xMinimum() - buffer_units
+        clip_xmax = extent_in_raster_crs.xMaximum() + buffer_units
+        clip_ymin = extent_in_raster_crs.yMinimum() - buffer_units
+        clip_ymax = extent_in_raster_crs.yMaximum() + buffer_units
+
+        src_proj_wkt = None
+        ds_tmp = gdal.Open(input_path, gdal.GA_ReadOnly)
+        if ds_tmp is not None:
+            src_proj_wkt = ds_tmp.GetProjection()
+            ds_tmp = None
 
         vrt_options = gdal.BuildVRTOptions(
             outputBounds=[clip_xmin, clip_ymin, clip_xmax, clip_ymax],
-            outputSRS='EPSG:4326'
+            outputSRS=src_proj_wkt if src_proj_wkt else 'EPSG:4326'
         )
 
         vrt_ds = gdal.BuildVRT(output_vrt_path, [input_path], options=vrt_options)
@@ -819,6 +986,9 @@ def get_raster_max_value_in_extent(tif_path, extent, buffer_degrees=CLIP_BUFFER_
     该函数针对大文件优化，只读取需要范围内的数据计算最大值，
     不会将整个文件加载到内存。
 
+    支持任意投影的输入栅格：动态获取栅格 CRS 后，将传入的 EPSG:4326 范围
+    转换为栅格 CRS 下的范围，再将地理坐标转换为像素坐标进行读取。
+
     参数:
         tif_path (str): TIF文件路径
         extent (QgsRectangle): 目标范围（WGS84坐标）
@@ -847,23 +1017,28 @@ def get_raster_max_value_in_extent(tif_path, extent, buffer_degrees=CLIP_BUFFER_
 
         # 获取栅格地理变换参数
         gt = ds.GetGeoTransform()
-        # gt[0]: 左上角X坐标（经度）
-        # gt[1]: X方向像素分辨率
-        # gt[2]: 旋转参数（通常为0）
-        # gt[3]: 左上角Y坐标（纬度）
-        # gt[4]: 旋转参数（通常为0）
-        # gt[5]: Y方向像素分辨率（负值）
 
         raster_width = ds.RasterXSize
         raster_height = ds.RasterYSize
 
-        # 计算裁剪范围（带缓冲区）
-        clip_xmin = extent.xMinimum() - buffer_degrees
-        clip_xmax = extent.xMaximum() + buffer_degrees
-        clip_ymin = extent.yMinimum() - buffer_degrees
-        clip_ymax = extent.yMaximum() + buffer_degrees
+        # 动态获取栅格 CRS，将 WGS84 extent 转换为栅格 CRS 下的 extent
+        raster_srs = get_raster_srs(abs_path)
+        extent_in_raster_crs = transform_extent_to_raster_crs(extent, raster_srs)
+        logger.debug('get_raster_max_value_in_extent: extent_in_raster_crs=%s',
+                     extent_in_raster_crs.toString())
 
-        # 将地理坐标转换为像素坐标
+        if raster_srs.IsProjected():
+            buffer_units = buffer_degrees * METERS_PER_DEGREE
+        else:
+            buffer_units = buffer_degrees
+
+        # 计算裁剪范围（带缓冲区，在栅格CRS坐标下）
+        clip_xmin = extent_in_raster_crs.xMinimum() - buffer_units
+        clip_xmax = extent_in_raster_crs.xMaximum() + buffer_units
+        clip_ymin = extent_in_raster_crs.yMinimum() - buffer_units
+        clip_ymax = extent_in_raster_crs.yMaximum() + buffer_units
+
+        # 将栅格CRS坐标转换为像素坐标
         px_xmin = int((clip_xmin - gt[0]) / gt[1])
         px_xmax = int((clip_xmax - gt[0]) / gt[1])
         px_ymin = int((clip_ymax - gt[3]) / gt[5])  # 注意Y方向是反的

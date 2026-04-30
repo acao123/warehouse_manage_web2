@@ -20,6 +20,15 @@
 - 显著减少内存占用和处理时间
 - 只加载天地图矢量注记图层（放置在最上层），不加载矢量底图
 - 支持通过烈度.kml文件定义统计范围（最外圈烈度圈）
+
+CRS支持说明：
+- 支持任意投影的 Dn.tif（地理坐标 EPSG:4326 或投影坐标 EPSG:326xx UTM 等）
+- 动态获取输入栅格 CRS，不再硬编码假定 EPSG:4326
+- 面积统计方式根据 CRS 类型自动切换：
+  - 投影坐标（米）：直接用像素物理面积 abs(pixel_width * pixel_height)
+  - 地理坐标（度）：按 cos(纬度) 换算为平方千米
+- 烈度多边形坐标（EPSG:4326）在投影栅格下自动 reproject 到栅格 CRS
+- 保持向后兼容：当 Dn.tif 仍是 EPSG:4326 时，所有功能行为不变
 """
 
 import os
@@ -254,8 +263,166 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 # === 裁剪缓冲区（度） ===
 CLIP_BUFFER_DEGREES = 0.1   # 在目标范围外增加缓冲区（度），确保边缘数据完整
 
+# 1度对应的米数（近似），用于将度数缓冲区转换为投影坐标系（米）下的缓冲区
+METERS_PER_DEGREE = 111000.0
+
 # === 图例字体 ===
 LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"  # 数字标签字体
+
+# EPSG:4326 空间参考（模块级常量，避免重复创建）
+if GDAL_AVAILABLE:
+    _SRS_EPSG4326 = osr.SpatialReference()
+    _SRS_EPSG4326.ImportFromEPSG(4326)
+else:
+    _SRS_EPSG4326 = None
+
+
+# ============================================================
+# 栅格 CRS 辅助函数（支持任意投影的 Dn.tif）
+# ============================================================
+
+def get_raster_srs(tif_path):
+    """
+    动态获取栅格文件的空间参考系统（SRS）。
+
+    参数:
+        tif_path (str): TIF文件路径（绝对路径）
+
+    返回:
+        osr.SpatialReference: 栅格的空间参考，若无投影信息则fallback到EPSG:4326
+    """
+    srs = osr.SpatialReference()
+    if not GDAL_AVAILABLE:
+        srs.ImportFromEPSG(4326)
+        return srs
+
+    try:
+        ds = gdal.Open(tif_path, gdal.GA_ReadOnly)
+        if ds is None:
+            logger.warning('get_raster_srs: 无法打开栅格文件 %s，fallback到EPSG:4326', tif_path)
+            srs.ImportFromEPSG(4326)
+            return srs
+
+        wkt = ds.GetProjection()
+        ds = None
+
+        if wkt:
+            srs.ImportFromWkt(wkt)
+            srs.AutoIdentifyEPSG()
+            auth = srs.GetAuthorityCode(None)
+            logger.info('get_raster_srs: 栅格 %s CRS = %s:%s', tif_path,
+                        srs.GetAuthorityName(None), auth)
+        else:
+            logger.warning('get_raster_srs: 栅格 %s 无投影信息，fallback到EPSG:4326', tif_path)
+            srs.ImportFromEPSG(4326)
+    except Exception as exc:
+        logger.warning('get_raster_srs: 读取CRS异常 %s，fallback到EPSG:4326: %s', tif_path, exc)
+        srs.ImportFromEPSG(4326)
+
+    return srs
+
+
+def transform_extent_to_raster_crs(extent_4326, raster_srs):
+    """
+    将 EPSG:4326 下的地图范围（QgsRectangle）转换为栅格自身 CRS 下的范围。
+
+    当栅格已是 EPSG:4326 时直接返回原始 extent；
+    当栅格为投影坐标系（UTM 等）时，对四个角点及边中点进行坐标变换并取外接矩形。
+
+    参数:
+        extent_4326 (QgsRectangle): WGS84 地图范围
+        raster_srs (osr.SpatialReference): 栅格的空间参考
+
+    返回:
+        QgsRectangle: 栅格 CRS 下的范围
+    """
+    if _SRS_EPSG4326 is not None and raster_srs.IsSame(_SRS_EPSG4326):
+        return extent_4326
+    if _SRS_EPSG4326 is None:
+        return extent_4326
+
+    raster_crs_qgs = QgsCoordinateReferenceSystem()
+    wkt = raster_srs.ExportToWkt()
+    raster_crs_qgs.createFromWkt(wkt)
+
+    transform = QgsCoordinateTransform(CRS_WGS84, raster_crs_qgs, QgsProject.instance())
+
+    xmin = extent_4326.xMinimum()
+    xmax = extent_4326.xMaximum()
+    ymin = extent_4326.yMinimum()
+    ymax = extent_4326.yMaximum()
+    xmid = (xmin + xmax) / 2.0
+    ymid = (ymin + ymax) / 2.0
+
+    sample_points = [
+        QgsPointXY(xmin, ymin), QgsPointXY(xmin, ymax),
+        QgsPointXY(xmax, ymin), QgsPointXY(xmax, ymax),
+        QgsPointXY(xmin, ymid), QgsPointXY(xmax, ymid),
+        QgsPointXY(xmid, ymin), QgsPointXY(xmid, ymax),
+    ]
+
+    xs = []
+    ys = []
+    for pt in sample_points:
+        try:
+            pt_transformed = transform.transform(pt)
+            xs.append(pt_transformed.x())
+            ys.append(pt_transformed.y())
+        except Exception as exc:
+            logger.warning('transform_extent_to_raster_crs: 坐标变换失败 %s: %s', pt, exc)
+
+    if not xs:
+        logger.warning('transform_extent_to_raster_crs: 所有点变换失败，返回原始extent')
+        return extent_4326
+
+    result = QgsRectangle(min(xs), min(ys), max(xs), max(ys))
+    logger.info('transform_extent_to_raster_crs: WGS84 %s -> 栅格CRS %s',
+                extent_4326.toString(), result.toString())
+    return result
+
+
+def transform_polygon_coords_to_raster_crs(coords_lonlat, raster_srs):
+    """
+    将 EPSG:4326 经纬度多边形坐标列表转换为栅格 CRS 下的坐标列表。
+
+    当栅格已是 EPSG:4326 时直接返回原始坐标列表；
+    当栅格为投影坐标系时，逐点进行坐标变换。
+
+    参数:
+        coords_lonlat (list): EPSG:4326 坐标列表 [(lon, lat), ...]
+        raster_srs (osr.SpatialReference): 栅格的空间参考
+
+    返回:
+        list: 栅格 CRS 下的坐标列表 [(x, y), ...]
+    """
+    if not coords_lonlat:
+        return coords_lonlat
+
+    srs_4326_ref = _SRS_EPSG4326
+    if srs_4326_ref is None:
+        return coords_lonlat
+    if raster_srs.IsSame(srs_4326_ref):
+        return coords_lonlat
+
+    raster_crs_qgs = QgsCoordinateReferenceSystem()
+    wkt = raster_srs.ExportToWkt()
+    raster_crs_qgs.createFromWkt(wkt)
+
+    transform = QgsCoordinateTransform(CRS_WGS84, raster_crs_qgs, QgsProject.instance())
+
+    transformed_coords = []
+    for lon, lat in coords_lonlat:
+        try:
+            pt = transform.transform(QgsPointXY(lon, lat))
+            transformed_coords.append((pt.x(), pt.y()))
+        except Exception as exc:
+            logger.warning('transform_polygon_coords_to_raster_crs: 坐标 (%s,%s) 变换失败: %s',
+                           lon, lat, exc)
+            transformed_coords.append((lon, lat))  # fallback到原始坐标
+
+    logger.debug('transform_polygon_coords_to_raster_crs: %d个坐标点已转换到栅格CRS',
+                 len(transformed_coords))
+    return transformed_coords
 
 
 # ============================================================
@@ -1137,9 +1304,12 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
     读取Dn.tif，裁剪到目标范围，计算危险性概率并保存为新的GeoTIFF文件
 
     该函数是危险性评估图的核心处理函数：
-    1. 使用GDAL裁剪Dn.tif到目标范围（带缓冲区）
-    2. 逐像素按公式计算危险性概率
-    3. 将结果保存为GeoTIFF（Float32格式，NoData=-1）
+    1. 动态获取 Dn.tif 的 CRS，将 EPSG:4326 的 extent 转换为栅格 CRS 下的范围
+    2. 使用GDAL裁剪Dn.tif到目标范围（带缓冲区）
+    3. 逐像素按公式计算危险性概率
+    4. 将结果保存为GeoTIFF（Float32格式），保留原始 CRS 和 GeoTransform
+
+    支持任意投影的 Dn.tif（地理坐标 EPSG:4326 或投影坐标 EPSG:326xx UTM 等）。
 
     参数:
         dn_tif_path (str): Dn.tif文件绝对路径
@@ -1155,7 +1325,7 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
                - output_tif_path: 成功返回输出文件路径，失败返回None
                - max_dn_value: 范围内Dn最大值（float），失败返回None
                - prob_array_2d: 二维概率数组，用于后续统计
-               - geotransform: 地理变换参数元组
+               - geotransform: 地理变换参数元组（栅格CRS坐标系下）
     """
     if not GDAL_AVAILABLE:
         print("[错误] GDAL不可用，无法生成危险性栅格")
@@ -1174,18 +1344,27 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
 
         # 获取地理变换参数和基本信息
         gt = src_ds.GetGeoTransform()
-        # gt[0]: 左上角X(经度), gt[1]: X分辨率, gt[3]: 左上角Y(纬度), gt[5]: Y分辨率(负)
         src_proj = src_ds.GetProjection()
         src_width = src_ds.RasterXSize
         src_height = src_ds.RasterYSize
 
-        # 计算带缓冲区的裁剪范围
-        clip_xmin = extent.xMinimum() - buffer_degrees
-        clip_xmax = extent.xMaximum() + buffer_degrees
-        clip_ymin = extent.yMinimum() - buffer_degrees
-        clip_ymax = extent.yMaximum() + buffer_degrees
+        # 动态获取栅格 CRS，将 WGS84 extent 转换为栅格 CRS 下的范围
+        raster_srs = get_raster_srs(dn_tif_path)
+        extent_in_raster_crs = transform_extent_to_raster_crs(extent, raster_srs)
+        logger.info('generate_hazard_tif: 栅格CRS extent=%s', extent_in_raster_crs.toString())
 
-        # 将地理坐标转换为像素坐标
+        if raster_srs.IsProjected():
+            buffer_units = buffer_degrees * METERS_PER_DEGREE
+        else:
+            buffer_units = buffer_degrees
+
+        # 计算带缓冲区的裁剪范围（在栅格CRS坐标下）
+        clip_xmin = extent_in_raster_crs.xMinimum() - buffer_units
+        clip_xmax = extent_in_raster_crs.xMaximum() + buffer_units
+        clip_ymin = extent_in_raster_crs.yMinimum() - buffer_units
+        clip_ymax = extent_in_raster_crs.yMaximum() + buffer_units
+
+        # 将栅格CRS坐标转换为像素坐标
         px_xmin = int((clip_xmin - gt[0]) / gt[1])
         px_xmax = int((clip_xmax - gt[0]) / gt[1]) + 1
         px_ymin = int((clip_ymax - gt[3]) / gt[5])
@@ -1232,12 +1411,12 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
         print(f"[信息] 计算危险性概率，参数: a={a}, b={b}, c={c}")
         prob_array = compute_hazard_raster(dn_array, nodata_value, a, b, c)
 
-        # 计算输出栅格的地理变换参数（基于裁剪后的左上角坐标）
+        # 计算输出栅格的地理变换参数（基于裁剪后的左上角坐标，保留原始CRS）
         out_x_origin = gt[0] + px_xmin * gt[1]
         out_y_origin = gt[3] + px_ymin * gt[5]
         out_gt = (out_x_origin, gt[1], gt[2], out_y_origin, gt[4], gt[5])
 
-        # 创建输出GeoTIFF（Float32格式）
+        # 创建输出GeoTIFF（Float32格式），保留原始 CRS 和 GeoTransform
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
             output_tif_path,
@@ -1252,7 +1431,7 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
             return None, None, None, None
 
         out_ds.SetGeoTransform(out_gt)
-        # 使用源文件的投影坐标系
+        # 使用源文件的投影坐标系（保持原始CRS，不假定EPSG:4326）
         if src_proj:
             out_ds.SetProjection(src_proj)
         else:
@@ -1382,22 +1561,27 @@ def apply_hazard_renderer(raster_layer, breaks):
 # ============================================================
 
 def calculate_area_statistics_with_intensity(prob_array_2d, breaks, geotransform,
-                                              intensity_polygon_coords, extent):
+                                              intensity_polygon_coords, extent,
+                                              raster_srs=None):
     """
     统计各危险等级的面积（平方公里）和占比（百分比），基于烈度圈最外圈范围
 
-    面积计算方法：
-    - 仅统计落在烈度圈最外圈（烈度值最小的圈）内的像素
-    - 总面积 = 烈度圈最外圈范围内的有效像素面积
-    - 各危险等级面积 = 烈度圈内对应等级的像素面积
-    - 占比 = 各危险等级面积 / 总面积 * 100%
+    面积计算方式根据栅格 CRS 自动选择：
+    - 投影坐标（米，如 UTM）：pixel_area = abs(pixel_width * pixel_height)（单位 m²，转 km²）
+    - 地理坐标（度，如 EPSG:4326）：按 cos(纬度) × 111km/度 换算
+
+    当 raster_srs 为投影坐标系时，intensity_polygon_coords（EPSG:4326 经纬度）
+    会在 _create_polygon_mask 中自动 reproject 到栅格 CRS，再计算掩膜。
 
     参数:
         prob_array_2d (numpy.ndarray): 危险性概率二维数组
         breaks (list): 长度为6的危险等级边界值列表
         geotransform (tuple): 地理变换参数 (x_origin, x_res, 0, y_origin, 0, y_res)
-        intensity_polygon_coords (list): 烈度圈最外圈坐标列表 [(lon, lat), ...]
-        extent (QgsRectangle): 地图范围（用于计算纬度中心点）
+                              坐标系为栅格 CRS
+        intensity_polygon_coords (list): 烈度圈最外圈坐标列表 [(lon, lat), ...]（EPSG:4326）
+        extent (QgsRectangle): 地图范围（EPSG:4326，用于地理坐标系下计算纬度中心点）
+        raster_srs (osr.SpatialReference 或 None): 栅格的空间参考，
+            None 时默认为地理坐标系（保持向后兼容）
 
     返回:
         dict: 包含各危险等级面积和占比的字典，键为等级名称，值为字典 {area_km2, percent}
@@ -1412,20 +1596,32 @@ def calculate_area_statistics_with_intensity(prob_array_2d, breaks, geotransform
         return result
 
     try:
-        # 计算像素面积（平方公里）
-        x_res = abs(geotransform[1])  # 经度分辨率（度/像素）
-        y_res = abs(geotransform[5])  # 纬度分辨率（度/像素）
-        center_lat = (extent.yMinimum() + extent.yMaximum()) / 2.0
-        pixel_width_km = x_res * 111.0 * math.cos(math.radians(center_lat))
-        pixel_height_km = y_res * 111.0
-        pixel_area_km2 = pixel_width_km * pixel_height_km
-        print(f"[信息] 像素分辨率: {x_res:.6f}° x {y_res:.6f}°, 像素面积: {pixel_area_km2:.6f} km²")
+        # 根据栅格 CRS 选择面积计算方式
+        x_res = abs(geotransform[1])
+        y_res = abs(geotransform[5])
 
-        # 创建烈度圈多边形的掩膜
+        if raster_srs is not None and raster_srs.IsProjected():
+            # 投影坐标系（米）：直接用物理像素面积
+            pixel_area_m2 = x_res * y_res
+            pixel_area_km2 = pixel_area_m2 / 1e6
+            logger.info('calculate_area_statistics_with_intensity: 投影CRS，像素物理面积=%.2f m² (%.8f km²)',
+                        pixel_area_m2, pixel_area_km2)
+            print(f"[信息] 投影坐标系，像素分辨率: {x_res:.2f}m x {y_res:.2f}m, 像素面积: {pixel_area_km2:.8f} km²")
+        else:
+            # 地理坐标系（度）：按 cos(纬度) 换算
+            center_lat = (extent.yMinimum() + extent.yMaximum()) / 2.0
+            pixel_width_km = x_res * 111.0 * math.cos(math.radians(center_lat))
+            pixel_height_km = y_res * 111.0
+            pixel_area_km2 = pixel_width_km * pixel_height_km
+            logger.info('calculate_area_statistics_with_intensity: 地理CRS，像素分辨率=%.6f°x%.6f°，像素面积=%.6f km²',
+                        x_res, y_res, pixel_area_km2)
+            print(f"[信息] 地理坐标系，像素分辨率: {x_res:.6f}° x {y_res:.6f}°, 像素面积: {pixel_area_km2:.6f} km²")
+
+        # 创建烈度圈多边形的掩膜（传入 raster_srs 以支持自动坐标变换）
         if intensity_polygon_coords and len(intensity_polygon_coords) >= 3:
-            # 创建烈度圈多边形掩膜
             intensity_mask = _create_polygon_mask(
-                prob_array_2d.shape, geotransform, intensity_polygon_coords)
+                prob_array_2d.shape, geotransform, intensity_polygon_coords,
+                raster_srs=raster_srs)
             print(f"[信息] 烈度圈掩膜创建完成，圈内像素数: {np.sum(intensity_mask)}")
         else:
             # 无烈度圈时，使用所有像素
@@ -1491,16 +1687,21 @@ def calculate_area_statistics_with_intensity(prob_array_2d, breaks, geotransform
         return result
 
 
-def _create_polygon_mask(array_shape, geotransform, polygon_coords):
+def _create_polygon_mask(array_shape, geotransform, polygon_coords, raster_srs=None):
     """
     创建多边形掩膜数组（判断每个像素是否在多边形内）
 
-    使用 matplotlib.path.Path 进行点在多边形内的判断
+    使用 matplotlib.path.Path 进行点在多边形内的判断。
+
+    当 raster_srs 为投影坐标系（如 UTM）时，传入的 polygon_coords（EPSG:4326 经纬度）
+    会先自动 reproject 到栅格 CRS，再与像素中心点坐标进行比较。
 
     参数:
         array_shape (tuple): 数组形状 (rows, cols)
-        geotransform (tuple): 地理变换参数
-        polygon_coords (list): 多边形坐标列表 [(lon, lat), ...]
+        geotransform (tuple): 地理变换参数（栅格CRS坐标系下）
+        polygon_coords (list): 多边形坐标列表 [(lon, lat), ...]（EPSG:4326 经纬度）
+        raster_srs (osr.SpatialReference 或 None): 栅格的空间参考，
+            若为投影坐标系则将 polygon_coords 从 EPSG:4326 转换到栅格 CRS
 
     返回:
         numpy.ndarray: 布尔掩膜数组，True 表示像素在多边形内
@@ -1514,20 +1715,26 @@ def _create_polygon_mask(array_shape, geotransform, polygon_coords):
     rows, cols = array_shape
     x_origin, x_res, _, y_origin, _, y_res = geotransform
 
-    # 创建像素中心点坐标网格
+    # 当栅格为投影坐标系时，将 EPSG:4326 多边形坐标 reproject 到栅格 CRS
+    if raster_srs is not None and raster_srs.IsProjected():
+        polygon_coords_in_raster_crs = transform_polygon_coords_to_raster_crs(
+            polygon_coords, raster_srs)
+    else:
+        polygon_coords_in_raster_crs = polygon_coords
+
+    # 创建像素中心点坐标网格（在栅格CRS坐标系下）
     col_indices = np.arange(cols)
     row_indices = np.arange(rows)
-    # 像素中心点的经纬度
-    lons = x_origin + (col_indices + 0.5) * x_res
-    lats = y_origin + (row_indices + 0.5) * y_res
+    xs = x_origin + (col_indices + 0.5) * x_res
+    ys = y_origin + (row_indices + 0.5) * y_res
 
     # 创建网格
-    lon_grid, lat_grid = np.meshgrid(lons, lats)
+    x_grid, y_grid = np.meshgrid(xs, ys)
     # 展平为点列表
-    points = np.column_stack([lon_grid.ravel(), lat_grid.ravel()])
+    points = np.column_stack([x_grid.ravel(), y_grid.ravel()])
 
     # 创建多边形路径
-    polygon_path = Path(polygon_coords)
+    polygon_path = Path(polygon_coords_in_raster_crs)
 
     # 判断点是否在多边形内
     inside = polygon_path.contains_points(points)
@@ -1543,17 +1750,15 @@ def calculate_area_statistics(prob_array_flat, breaks, dn_tif_path, extent,
     """
     统计各危险等级的面积（平方公里）和占比（百分比）（原版本，不使用烈度圈）
 
-    面积计算方法：
-    - 根据TIF文件的像素分辨率（度/像素）估算每个像素的面积（平方公里）
-    - 纬度方向：1度 ≈ 111 km
-    - 经度方向：1度 ≈ 111 * cos(中心纬度) km
-    - 每个像素面积 = 像素高度km × 像素宽度km
+    面积计算方式根据栅格 CRS 自动选择：
+    - 投影坐标（米，如 UTM）：pixel_area = abs(pixel_width * pixel_height)（单位 m²，转 km²）
+    - 地理坐标（度，如 EPSG:4326）：按 cos(纬度) × 111km/度 换算
 
     参数:
         prob_array_flat (numpy.ndarray): 所有有效像素的概率值一维数组
         breaks (list): 长度为6的危险等级边界值列表
-        dn_tif_path (str): Dn.tif文件路径（用于获取像素分辨率）
-        extent (QgsRectangle): 地图范围（用于计算纬度中心点）
+        dn_tif_path (str): Dn.tif文件路径（用于获取像素分辨率和CRS）
+        extent (QgsRectangle): 地图范围（EPSG:4326，地理坐标系下用于计算纬度中心点）
         buffer_degrees (float): 裁剪缓冲区大小（度）
 
     返回:
@@ -1570,23 +1775,35 @@ def calculate_area_statistics(prob_array_flat, breaks, dn_tif_path, extent,
         return result
 
     try:
-        # 获取像素分辨率（度/像素）
+        # 获取像素分辨率和 CRS，根据 CRS 选择面积计算方式
         pixel_area_km2 = 1.0  # 默认值，将在下方被真实值覆盖
         if os.path.exists(dn_tif_path):
             ds = gdal.Open(dn_tif_path, gdal.GA_ReadOnly)
             if ds is not None:
                 gt = ds.GetGeoTransform()
-                # gt[1]: X方向分辨率（度/像素）, gt[5]: Y方向分辨率（负值，度/像素）
-                pixel_width_deg = abs(gt[1])
-                pixel_height_deg = abs(gt[5])
-                # 使用地图范围中心纬度计算像素面积
-                center_lat = (extent.yMinimum() + extent.yMaximum()) / 2.0
-                pixel_width_km = pixel_width_deg * 111.0 * math.cos(math.radians(center_lat))
-                pixel_height_km = pixel_height_deg * 111.0
-                pixel_area_km2 = pixel_width_km * pixel_height_km
+                pixel_width = abs(gt[1])
+                pixel_height = abs(gt[5])
                 ds = None
-                print(f"[信息] 像素分辨率: {pixel_width_deg:.6f}° x {pixel_height_deg:.6f}°, "
-                      f"像素面积: {pixel_area_km2:.6f} km²")
+
+                raster_srs = get_raster_srs(dn_tif_path)
+                if raster_srs.IsProjected():
+                    # 投影坐标系（米）：直接用物理像素面积
+                    pixel_area_m2 = pixel_width * pixel_height
+                    pixel_area_km2 = pixel_area_m2 / 1e6
+                    logger.info('calculate_area_statistics: 投影CRS，像素物理面积=%.2f m² (%.8f km²)',
+                                pixel_area_m2, pixel_area_km2)
+                    print(f"[信息] 投影坐标系，像素分辨率: {pixel_width:.2f}m x {pixel_height:.2f}m, "
+                          f"像素面积: {pixel_area_km2:.8f} km²")
+                else:
+                    # 地理坐标系（度）：按 cos(纬度) 换算
+                    center_lat = (extent.yMinimum() + extent.yMaximum()) / 2.0
+                    pixel_width_km = pixel_width * 111.0 * math.cos(math.radians(center_lat))
+                    pixel_height_km = pixel_height * 111.0
+                    pixel_area_km2 = pixel_width_km * pixel_height_km
+                    logger.info('calculate_area_statistics: 地理CRS，像素分辨率=%.6f°x%.6f°，像素面积=%.6f km²',
+                                pixel_width, pixel_height, pixel_area_km2)
+                    print(f"[信息] 地理坐标系，像素分辨率: {pixel_width:.6f}° x {pixel_height:.6f}°, "
+                          f"像素面积: {pixel_area_km2:.6f} km²")
 
         total_pixels = len(prob_array_flat)
         total_area_km2 = total_pixels * pixel_area_km2
@@ -3168,10 +3385,13 @@ def _generate_earthquake_hazard_map_impl(longitude, latitude, magnitude,
                                           for name in HAZARD_LEVEL_NAMES}
                             area_stats['total_valid_km2'] = 0.0
                         else:
+                            # 动态获取 Dn.tif 的 CRS，传入面积统计函数
+                            dn_raster_srs = get_raster_srs(abs_tif_path)
                             # 使用烈度圈范围进行统计（传入 compute_extent 保证坐标一致）
                             area_stats = calculate_area_statistics_with_intensity(
                                 prob_array_2d, breaks, geotransform,
-                                outermost_intensity_coords, compute_extent)
+                                outermost_intensity_coords, compute_extent,
+                                raster_srs=dn_raster_srs)
                     else:
                         # 无烈度圈时使用全部像素统计（原逻辑），面积基于矩形extent范围
                         logger.warning(
