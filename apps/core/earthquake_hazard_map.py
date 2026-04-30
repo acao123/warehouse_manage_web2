@@ -263,8 +263,18 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 # === 裁剪缓冲区（度） ===
 CLIP_BUFFER_DEGREES = 0.1   # 在目标范围外增加缓冲区（度），确保边缘数据完整
 
+# 1度对应的米数（近似），用于将度数缓冲区转换为投影坐标系（米）下的缓冲区
+METERS_PER_DEGREE = 111000.0
+
 # === 图例字体 ===
 LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"  # 数字标签字体
+
+# EPSG:4326 空间参考（模块级常量，避免重复创建）
+if GDAL_AVAILABLE:
+    _SRS_EPSG4326 = osr.SpatialReference()
+    _SRS_EPSG4326.ImportFromEPSG(4326)
+else:
+    _SRS_EPSG4326 = None
 
 
 # ============================================================
@@ -326,9 +336,9 @@ def transform_extent_to_raster_crs(extent_4326, raster_srs):
     返回:
         QgsRectangle: 栅格 CRS 下的范围
     """
-    srs_4326_check = osr.SpatialReference()
-    srs_4326_check.ImportFromEPSG(4326)
-    if raster_srs.IsSame(srs_4326_check):
+    if _SRS_EPSG4326 is not None and raster_srs.IsSame(_SRS_EPSG4326):
+        return extent_4326
+    if _SRS_EPSG4326 is None:
         return extent_4326
 
     raster_crs_qgs = QgsCoordinateReferenceSystem()
@@ -388,9 +398,10 @@ def transform_polygon_coords_to_raster_crs(coords_lonlat, raster_srs):
     if not coords_lonlat:
         return coords_lonlat
 
-    srs_4326_check = osr.SpatialReference()
-    srs_4326_check.ImportFromEPSG(4326)
-    if raster_srs.IsSame(srs_4326_check):
+    srs_4326_ref = _SRS_EPSG4326
+    if srs_4326_ref is None:
+        return coords_lonlat
+    if raster_srs.IsSame(srs_4326_ref):
         return coords_lonlat
 
     raster_crs_qgs = QgsCoordinateReferenceSystem()
@@ -1343,7 +1354,7 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
         logger.info('generate_hazard_tif: 栅格CRS extent=%s', extent_in_raster_crs.toString())
 
         if raster_srs.IsProjected():
-            buffer_units = buffer_degrees * 111000.0
+            buffer_units = buffer_degrees * METERS_PER_DEGREE
         else:
             buffer_units = buffer_degrees
 

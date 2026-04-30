@@ -266,10 +266,20 @@ CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 # 在目标范围外增加缓冲区，确保边缘数据完整
 CLIP_BUFFER_DEGREES = 0.1
 
+# 1度对应的米数（近似），用于将度数缓冲区转换为投影坐标系（米）下的缓冲区
+METERS_PER_DEGREE = 111000.0
+
 # === 图例布局和字体设置 ===
 LEGEND_ROW_COUNT = 2  # 图例行数
 LEGEND_COLUMN_COUNT = 3  # 图例列数
 LEGEND_FONT_TIMES_NEW_ROMAN = "Times New Roman"  # 数字标签字体和Newmark英文字体
+
+# EPSG:4326 空间参考（模块级常量，避免重复创建）
+if GDAL_AVAILABLE:
+    _SRS_EPSG4326 = osr.SpatialReference()
+    _SRS_EPSG4326.ImportFromEPSG(4326)
+else:
+    _SRS_EPSG4326 = None
 
 
 # ============================================================
@@ -332,10 +342,11 @@ def transform_extent_to_raster_crs(extent_4326, raster_srs):
     返回:
         QgsRectangle: 栅格 CRS 下的范围
     """
-    # 判断是否为 EPSG:4326
-    srs_4326_check = osr.SpatialReference()
-    srs_4326_check.ImportFromEPSG(4326)
-    if raster_srs.IsSame(srs_4326_check):
+    # 判断是否为 EPSG:4326（使用模块级常量，避免重复创建）
+    if _SRS_EPSG4326 is not None and raster_srs.IsSame(_SRS_EPSG4326):
+        return extent_4326
+    # GDAL不可用时也无法变换，直接返回
+    if _SRS_EPSG4326 is None:
         return extent_4326
 
     # 使用 QgsCoordinateTransform 进行转换
@@ -756,11 +767,9 @@ def clip_raster_to_extent(input_path, output_path, extent, buffer_degrees=CLIP_B
 
         # 为转换后的 extent 增加缓冲区
         # 当栅格为投影坐标系（米）时，buffer_degrees 实际代表度数，
-        # 需要转换为米（粗略按 buffer_degrees * 111000m 估算）
-        srs_4326_check = osr.SpatialReference()
-        srs_4326_check.ImportFromEPSG(4326)
+        # 需要转换为米（粗略按 buffer_degrees * METERS_PER_DEGREE 估算）
         if raster_srs.IsProjected():
-            buffer_units = buffer_degrees * 111000.0  # 度转米（近似）
+            buffer_units = buffer_degrees * METERS_PER_DEGREE
         else:
             buffer_units = buffer_degrees
 
@@ -856,7 +865,7 @@ def create_vrt_for_extent(input_path, output_vrt_path, extent, buffer_degrees=CL
         extent_in_raster_crs = transform_extent_to_raster_crs(extent, raster_srs)
 
         if raster_srs.IsProjected():
-            buffer_units = buffer_degrees * 111000.0
+            buffer_units = buffer_degrees * METERS_PER_DEGREE
         else:
             buffer_units = buffer_degrees
 
@@ -1019,7 +1028,7 @@ def get_raster_max_value_in_extent(tif_path, extent, buffer_degrees=CLIP_BUFFER_
                      extent_in_raster_crs.toString())
 
         if raster_srs.IsProjected():
-            buffer_units = buffer_degrees * 111000.0
+            buffer_units = buffer_degrees * METERS_PER_DEGREE
         else:
             buffer_units = buffer_degrees
 
