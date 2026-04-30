@@ -1003,7 +1003,7 @@ def compute_jenks_breaks(data_flat, num_classes):
     #   优化后：先均匀步长下采样 O(n)，再对小样本排序 O(m log m)，m << n，
     #   对百万像素级数据可提升性能一个数量级以上。
     # ----------------------------------------------------------------
-    MAX_SAMPLES = 10000  # 降低到10000；jenkspy 在此规模下已足够稳定，进一步减少排序开销
+    MAX_SAMPLES = 50000  # 最大采样点数50000
 
     original_n = n
     if n > MAX_SAMPLES:
