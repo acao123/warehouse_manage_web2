@@ -2061,7 +2061,7 @@ class KmlToIaConverter:
 
                 # 二次平滑核权重 w = max(0, (1-(d/r)²))²（r 为该子集 KNN 半径）
                 radii_per_pixel = radii[subset_idxs]  # (n_pts, k_predict)
-                # 避免 r=0 导致除零
+                # r=0 时用 1.0 代替（防除零；此时 d/r≥1 使权重=0，自动触发后续 fallback）
                 safe_radii = np.where(radii_per_pixel > 0.0, radii_per_pixel, 1.0)
                 d_over_r = dists_to_centers / safe_radii
                 weights_pred = np.maximum(0.0, 1.0 - d_over_r ** 2) ** 2  # (n_pts, k_predict)
