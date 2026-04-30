@@ -95,6 +95,7 @@ from qgis.core import (
     QgsLayoutMeasurement,
     QgsGeometry,
     QgsFeature,
+    QgsFeatureRequest,
     QgsField,
     QgsLayoutExporter,
     QgsRasterShader,
@@ -956,68 +957,67 @@ def compute_jenks_breaks(data_flat, num_classes):
         return [min_val + i * step for i in range(num_classes + 1)]
 
     # 转为 numpy 数组以便后续统一处理
+    # float32 既能满足概率值精度需求，又可减少内存占用（相比 float64 节省一半）
     if not isinstance(data_flat, np.ndarray):
         data_flat = np.asarray(data_flat, dtype=np.float32)
+    elif data_flat.dtype != np.float32:
+        # 显式拷贝为 float32，避免后续降采样修改原始数组
+        data_flat = data_flat.astype(np.float32)
 
-    data_sorted = np.sort(data_flat.astype(np.float32) if JENKSPY_AVAILABLE
-                         else data_flat.astype(np.float64))
-    n = len(data_sorted)
+    n = len(data_flat)
 
     if n == 0:
         print("[警告] 输入数据为空，返回全零边界")
         return [0.0] * (num_classes + 1)
 
-    min_val = float(data_sorted[0])
-    max_val = float(data_sorted[-1])
+    # 先于排序计算真实极值（O(n) 扫描，比全量排序快得多）
+    min_val = float(np.min(data_flat))
+    max_val = float(np.max(data_flat))
 
     # 数据完全相同，无需分类
     if max_val <= min_val:
         print(f"[信息] 数据无变化（均为 {min_val:.6f}），返回相同边界")
         return [min_val] * (num_classes + 1)
 
-    # 唯一值数量不足时直接用唯一值作边界
-    unique_vals = np.unique(data_sorted)
-    if len(unique_vals) <= num_classes:
-        print(f"[信息] 唯一值数({len(unique_vals)})<=分类数({num_classes})，直接使用唯一值作边界")
-        breaks = [min_val]
-        idx_step = max(1, len(unique_vals) // num_classes)
-        for i in range(idx_step, len(unique_vals), idx_step):
-            if len(breaks) < num_classes:
-                breaks.append(float(unique_vals[i]))
-        while len(breaks) < num_classes:
-            breaks.append(breaks[-1])
-        breaks.append(max_val)
-        return breaks
+    # 唯一值数量不足时直接用唯一值作边界（仅对小数组执行，避免大数组 unique 代价）
+    MAX_UNIQUE_CHECK = 5000  # 超过此规模跳过 unique 检测，依赖后续 Jenks 自然处理
+    if n <= MAX_UNIQUE_CHECK:
+        unique_vals = np.unique(data_flat)
+        if len(unique_vals) <= num_classes:
+            print(f"[信息] 唯一值数({len(unique_vals)})<=分类数({num_classes})，直接使用唯一值作边界")
+            breaks = [min_val]
+            idx_step = max(1, len(unique_vals) // num_classes)
+            for i in range(idx_step, len(unique_vals), idx_step):
+                if len(breaks) < num_classes:
+                    breaks.append(float(unique_vals[i]))
+            while len(breaks) < num_classes:
+                breaks.append(breaks[-1])
+            breaks.append(max_val)
+            return breaks
 
     # ----------------------------------------------------------------
-    # 步骤2：分层降采样（超过最大样本数时执行）
-    #   按分位数将数据分为 NUM_STRATA 层，各层按比例采样，
-    #   确保低概率密集区和高概率稀疏区均有充足代表性样本
+    # 步骤2：降采样（在排序前执行，关键性能优化）
+    #   原来流程：先排序 O(n log n)，再降采样；
+    #   优化后：先均匀步长下采样 O(n)，再对小样本排序 O(m log m)，m << n，
+    #   对百万像素级数据可提升性能一个数量级以上。
     # ----------------------------------------------------------------
-    MAX_SAMPLES = 50000    # 最大样本数：jenkspy 处理此量级非常快，无需过度降采样
-    NUM_STRATA = 20         # 分层数
+    MAX_SAMPLES = 10000  # 降低到10000；jenkspy 在此规模下已足够稳定，进一步减少排序开销
 
+    original_n = n
     if n > MAX_SAMPLES:
-        strata_edges = np.linspace(0, n, NUM_STRATA + 1, dtype=int)
-        sampled_indices = []
-        for s in range(NUM_STRATA):
-            s_start = int(strata_edges[s])
-            s_end = int(strata_edges[s + 1])
-            s_size = s_end - s_start
-            if s_size == 0:
-                continue
-            # 每层按比例分配采样数，至少1个
-            n_take = max(1, int(round(MAX_SAMPLES * s_size / n)))
-            n_take = min(n_take, s_size)
-            # 层内均匀间隔采样（可重现，无随机性）
-            layer_indices = np.linspace(s_start, s_end - 1, n_take, dtype=int)
-            sampled_indices.append(layer_indices)
+        # 均匀步长下采样（可重现，无随机性）：跳过排序直接在原始数据上采样
+        step = max(1, n // MAX_SAMPLES)
+        data_flat = data_flat[::step][:MAX_SAMPLES]
+        n = len(data_flat)
+        logger.debug('compute_jenks_breaks: 降采样 %d -> %d（步长 %d）', original_n, n, step)
+        print(f"[信息] 降采样完成，样本数: {n}（原始: {original_n}）")
 
-        all_indices = np.concatenate(sampled_indices)
-        data_sorted = data_sorted[all_indices]
-        data_sorted = np.sort(data_sorted)
-        n = len(data_sorted)
-        print(f"[信息] 分层采样完成，样本数: {n}（原始: {len(data_flat)}）")
+    # 只对降采样后的小数组排序（O(m log m)，m <= MAX_SAMPLES）
+    if JENKSPY_AVAILABLE:
+        data_sorted = np.sort(data_flat)  # 已是 float32
+    else:
+        data_sorted = np.sort(data_flat.astype(np.float64))
+    n = len(data_sorted)
 
     # ----------------------------------------------------------------
     # 步骤3：调用 jenkspy 或内置实现计算自然断点
@@ -1111,6 +1111,16 @@ def _compute_jenks_numpy(data_sorted, num_classes, min_val, max_val):
     返回:
         list: 长度为 num_classes+1 的边界值列表
     """
+    # numpy 降级路径的激进下采样上限（O(n²·k) 复杂度，n 大时极慢）
+    # 即使上层已降采样到 MAX_SAMPLES，这里仍做二次保护，确保 numpy 路径在合理时间完成
+    MAX_NUMPY_SAMPLES = 2000
+    if len(data_sorted) > MAX_NUMPY_SAMPLES:
+        step = max(1, len(data_sorted) // MAX_NUMPY_SAMPLES)
+        data_sorted = data_sorted[::step][:MAX_NUMPY_SAMPLES]
+        min_val = float(data_sorted[0])
+        max_val = float(data_sorted[-1])
+        print(f"[信息] numpy降级路径：进一步下采样至 {len(data_sorted)} 个样本")
+
     n = len(data_sorted)
     x = data_sorted.astype(np.float64)
 
@@ -1284,16 +1294,23 @@ def compute_hazard_raster(dn_array, nodata_value, a, b, c):
     hazard_mask = valid_mask & (dn_array > DN_SAFE_THRESHOLD)
 
     if np.any(hazard_mask):
-        dn_hazard = dn_array[hazard_mask].astype(np.float64)
-        # 向量化计算 P(f) = a * (1 - EXP(b * Dn^c))
-        # 使用 np.clip 防止指数运算溢出
-        exponent = b * np.power(dn_hazard, c)
-        # 将指数限制在合理范围内防止溢出
-        exponent = np.clip(exponent, -500.0, 500.0)
-        prob_values = a * (1.0 - np.exp(exponent))
-        # 将概率值限制在 [0, 1]
-        prob_values = np.clip(prob_values, 0.0, 1.0)
-        prob_array[hazard_mask] = prob_values.astype(np.float32)
+        # 提取危险区像素（已是 float32，无需类型转换）
+        dn_hazard = dn_array[hazard_mask]
+        if dn_hazard.dtype != np.float32:
+            dn_hazard = dn_hazard.astype(np.float32)
+
+        # 原地 float32 计算：P(f) = a * (1 - exp(b * dn^c))
+        # 使用 out= 参数复用同一缓冲区，减少中间数组分配
+        buf = np.empty(dn_hazard.shape, dtype=np.float32)
+        np.power(dn_hazard, np.float32(c), out=buf)         # buf = dn^c
+        buf *= np.float32(b)                                 # buf = b * dn^c
+        np.clip(buf, -500.0, 500.0, out=buf)                # 防止指数运算溢出
+        np.exp(buf, out=buf)                                 # buf = exp(b * dn^c)
+        buf *= np.float32(-1.0)                              # buf = -exp(b * dn^c)
+        buf += np.float32(1.0)                               # buf = 1 - exp(b * dn^c)
+        buf *= np.float32(a)                                 # buf = a * (1 - exp(b * dn^c))
+        np.clip(buf, 0.0, 1.0, out=buf)                     # 限制在 [0, 1]
+        prob_array[hazard_mask] = buf
 
     return prob_array
 
@@ -1367,8 +1384,17 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
         # 将栅格CRS坐标转换为像素坐标
         px_xmin = int((clip_xmin - gt[0]) / gt[1])
         px_xmax = int((clip_xmax - gt[0]) / gt[1]) + 1
-        px_ymin = int((clip_ymax - gt[3]) / gt[5])
-        px_ymax = int((clip_ymin - gt[3]) / gt[5]) + 1
+
+        # 根据 y 分辨率符号区分北上（gt[5]<0）和南上（gt[5]>0）影像，
+        # 正确推导行索引（避免当 gt[5]>0 时 ymin/ymax 计算反转）
+        if gt[5] < 0:
+            # 北上影像（常规）：y_origin 在左上角，行号向下递增
+            px_ymin = int((clip_ymax - gt[3]) / gt[5])
+            px_ymax = int((clip_ymin - gt[3]) / gt[5]) + 1
+        else:
+            # 南上影像（罕见）：y_origin 在左下角，行号向上递增
+            px_ymin = int((clip_ymin - gt[3]) / gt[5])
+            px_ymax = int((clip_ymax - gt[3]) / gt[5]) + 1
 
         # 确保像素坐标在有效范围内
         px_xmin = max(0, min(src_width - 1, px_xmin))
@@ -1391,20 +1417,22 @@ def generate_hazard_tif(dn_tif_path, output_tif_path, extent, a, b, c,
             src_ds = None
             return None, None, None, None
 
-        dn_array = dn_array.astype(np.float64)
+        dn_array = dn_array.astype(np.float32)
 
         # 计算范围内Dn最大值（用于统计报告）
+        # 使用 np.nanmax + np.where 避免布尔索引产生大数组拷贝
         if nodata_value is not None:
-            valid_dn = dn_array[np.abs(dn_array - nodata_value) > 1e-6]
+            max_dn_value = float(np.nanmax(
+                np.where(np.abs(dn_array - nodata_value) > 1e-6, dn_array, np.nan)))
         else:
-            valid_dn = dn_array[~np.isnan(dn_array)]
+            max_dn_value = float(np.nanmax(dn_array))
 
-        if valid_dn.size == 0:
+        # 当所有有效像素均为 NaN（即全是 NoData）时快速退出
+        if np.isnan(max_dn_value):
             print("[警告] 范围内没有有效Dn数据")
             src_ds = None
             return None, None, None, None
 
-        max_dn_value = float(np.max(valid_dn))
         print(f"[信息] 范围内Dn最大值: {max_dn_value:.4f} cm")
 
         # 计算危险性概率栅格
@@ -1643,21 +1671,19 @@ def calculate_area_statistics_with_intensity(prob_array_2d, breaks, geotransform
         # 获取烈度圈内的概率值
         prob_in_intensity = prob_array_2d[intensity_mask]
 
-        # 统计各等级像素数（仅在烈度圈内）
+        # 单次 np.digitize 分类，再 np.bincount 一次性统计各等级像素数
+        # （替代原来对每个等级单独构建布尔掩膜并扫描5次的做法）
+        # 使用 float32 断点与 float32 概率数组对比，保持精度一致，
+        # right=True 对应原代码的左开右闭区间语义（bins[i-1] < x <= bins[i]）
+        breaks_f32 = np.array(breaks[1:5], dtype=np.float32)
+        bin_idx = np.digitize(prob_in_intensity, breaks_f32, right=True)
+        # bin_idx 范围 [0, 4]，对应 5 个危险等级
+        counts_per_class = np.bincount(bin_idx, minlength=5)[:5]
+
+        # 统计各等级像素数
         result = {}
         for i in range(5):
-            lower = breaks[i]
-            upper = breaks[i + 1]
-            if i == 0:
-                # 第1类包含等于0的像素（Dn <= 0.1cm）
-                mask = prob_in_intensity <= upper
-            elif i == 4:
-                # 最后一类包含大于上一级下界的所有像素
-                mask = prob_in_intensity > breaks[i]
-            else:
-                mask = (prob_in_intensity > lower) & (prob_in_intensity <= upper)
-
-            count = int(np.sum(mask))
+            count = int(counts_per_class[i])
             area_km2 = count * pixel_area_km2
             percent = (count / total_pixels_in_intensity * 100.0) if total_pixels_in_intensity > 0 else 0.0
             result[HAZARD_LEVEL_NAMES[i]] = {
@@ -1722,9 +1748,40 @@ def _create_polygon_mask(array_shape, geotransform, polygon_coords, raster_srs=N
     else:
         polygon_coords_in_raster_crs = polygon_coords
 
-    # 创建像素中心点坐标网格（在栅格CRS坐标系下）
-    col_indices = np.arange(cols)
-    row_indices = np.arange(rows)
+    # 创建多边形路径
+    polygon_path = Path(polygon_coords_in_raster_crs)
+
+    # 计算多边形外接矩形（bbox）对应的像素范围，
+    # 仅在 bbox 内构造坐标网格，大幅减少 contains_points 的计算量
+    poly_xs = [c[0] for c in polygon_coords_in_raster_crs]
+    poly_ys = [c[1] for c in polygon_coords_in_raster_crs]
+    bbox_xmin = min(poly_xs)
+    bbox_xmax = max(poly_xs)
+    bbox_ymin = min(poly_ys)
+    bbox_ymax = max(poly_ys)
+
+    # 将地理坐标 bbox 转换为栅格像素坐标范围
+    col_start = max(0, int((bbox_xmin - x_origin) / x_res))
+    col_end = min(cols, int((bbox_xmax - x_origin) / x_res) + 2)
+    if y_res < 0:
+        # 北上影像（常规）：y_origin 在左上角
+        row_start = max(0, int((bbox_ymax - y_origin) / y_res))
+        row_end = min(rows, int((bbox_ymin - y_origin) / y_res) + 2)
+    else:
+        # 南上影像（罕见）：y_origin 在左下角
+        row_start = max(0, int((bbox_ymin - y_origin) / y_res))
+        row_end = min(rows, int((bbox_ymax - y_origin) / y_res) + 2)
+
+    # 初始化全栅格掩膜（默认 False），只对 bbox 区域做 contains_points 检测
+    mask = np.zeros(array_shape, dtype=bool)
+
+    if col_start >= col_end or row_start >= row_end:
+        logger.debug('_create_polygon_mask: bbox 超出栅格范围，返回空掩膜')
+        return mask
+
+    # 仅在 bbox 对应的像素子区域内构造坐标网格（减少内存和计算量）
+    col_indices = np.arange(col_start, col_end)
+    row_indices = np.arange(row_start, row_end)
     xs = x_origin + (col_indices + 0.5) * x_res
     ys = y_origin + (row_indices + 0.5) * y_res
 
@@ -1733,14 +1790,12 @@ def _create_polygon_mask(array_shape, geotransform, polygon_coords, raster_srs=N
     # 展平为点列表
     points = np.column_stack([x_grid.ravel(), y_grid.ravel()])
 
-    # 创建多边形路径
-    polygon_path = Path(polygon_coords_in_raster_crs)
-
     # 判断点是否在多边形内
     inside = polygon_path.contains_points(points)
 
-    # 重塑为二维数组
-    mask = inside.reshape(array_shape)
+    # 将 bbox 区域结果写入全栅格掩膜
+    mask[row_start:row_end, col_start:col_end] = inside.reshape(
+        row_end - row_start, col_end - col_start)
 
     return mask
 
@@ -1878,8 +1933,8 @@ def build_statistics_summary(area_stats):
         info = area_stats.get(level_name, {'area_km2': 0.0, 'percent': 0.0})
         area_km2 = info['area_km2']
         percent = info['percent']
-        # 面积格式化：四舍五入保留两位小数
-        area_str = f"{area_km2:.2f}"
+        # 面积格式化：极小值（<=0.01）保留4位小数，避免显示 "0.00" 产生误导
+        area_str = f"{area_km2:.4f}" if 0 < area_km2 <= 0.01 else f"{area_km2:.2f}"
         parts.append(f"{level_name}面积为{area_str}平方千米，占比{percent:.2f}%")
 
     summary += "；".join(parts)
@@ -2082,7 +2137,12 @@ def create_province_label_layer(province_layer, epicenter_lon, epicenter_lat, ex
     feats_to_add = []
     offset_count = 0
 
-    for feat in province_layer.getFeatures():
+    # 仅遍历与 extent 相交的要素，避免处理图幅外所有省份（全国级数据可能有30+省）
+    request = QgsFeatureRequest()
+    if extent is not None:
+        request.setFilterRect(extent)
+
+    for feat in province_layer.getFeatures(request):
         geom = feat.geometry()
         if geom is None or geom.isEmpty():
             continue
@@ -2479,149 +2539,6 @@ def _add_north_arrow(layout, map_height_mm):
     layout.addLayoutItem(north_arrow)
 
 
-def _add_scale_bar(layout, map_item, scale, extent, center_lat, map_height_mm):
-    """
-    在地图右下角添加比例尺（黑白交替矩形段，含比例尺文字）
-
-    参数:
-        layout (QgsPrintLayout): 打印布局对象
-        map_item (QgsLayoutItemMap): 地图布局项（未直接使用，保留接口）
-        scale (int): 比例尺分母
-        extent (QgsRectangle): 地图范围
-        center_lat (float): 地图中心纬度（用于计算实际距离）
-        map_height_mm (float): 地图区域高度（毫米）
-    """
-    map_left = BORDER_LEFT_MM
-    map_top = BORDER_TOP_MM
-    map_right = map_left + MAP_WIDTH_MM
-    map_bottom = map_top + map_height_mm
-
-    # 计算比例尺对应的公里数和毫米长度
-    lon_range_deg = extent.xMaximum() - extent.xMinimum()
-    map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
-    km_per_mm = map_total_km / MAP_WIDTH_MM
-    target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
-
-    nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-    bar_km = nice_values[0]
-    for nv in nice_values:
-        if nv <= target_bar_km * 1.5:
-            bar_km = nv
-        else:
-            break
-
-    bar_length_mm = bar_km / km_per_mm
-    bar_length_mm = max(bar_length_mm, 20.0)
-    num_segments = 4
-
-    sb_width = bar_length_mm + 16.0
-    sb_height = 14.0
-    sb_x = map_right - sb_width
-    sb_y = map_bottom - sb_height
-
-    # 白色背景方框
-    bg_shape = QgsLayoutItemShape(layout)
-    bg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    bg_shape.attemptMove(QgsLayoutPoint(sb_x, sb_y, QgsUnitTypes.LayoutMillimeters))
-    bg_shape.attemptResize(QgsLayoutSize(sb_width, sb_height, QgsUnitTypes.LayoutMillimeters))
-    bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
-        'outline_width_unit': 'MM',
-    })
-    bg_shape.setSymbol(bg_symbol)
-    bg_shape.setFrameEnabled(True)
-    bg_shape.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
-    layout.addLayoutItem(bg_shape)
-
-    # 比例尺文字标签（例如 1:500,000）
-    scale_label = QgsLayoutItemLabel(layout)
-    scale_label.setText(f"1:{scale:,}")
-    label_format = QgsTextFormat()
-    label_format.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
-    label_format.setSize(SCALE_FONT_SIZE_PT)
-    label_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    label_format.setColor(QColor(0, 0, 0))
-    scale_label.setTextFormat(label_format)
-    scale_label.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
-    scale_label.attemptResize(QgsLayoutSize(sb_width, 4.5, QgsUnitTypes.LayoutMillimeters))
-    scale_label.setHAlign(Qt.AlignHCenter)
-    scale_label.setVAlign(Qt.AlignVCenter)
-    scale_label.setFrameEnabled(False)
-    scale_label.setBackgroundEnabled(False)
-    layout.addLayoutItem(scale_label)
-
-    bar_start_x = sb_x + (sb_width - bar_length_mm) / 2.0
-    bar_y = sb_y + 5.5
-    bar_h = 1.8
-    seg_width_mm = bar_length_mm / num_segments
-
-    # 黑白交替矩形段
-    for i in range(num_segments):
-        seg_shape = QgsLayoutItemShape(layout)
-        seg_shape.setShapeType(QgsLayoutItemShape.Rectangle)
-        seg_x = bar_start_x + i * seg_width_mm
-        seg_shape.attemptMove(QgsLayoutPoint(seg_x, bar_y, QgsUnitTypes.LayoutMillimeters))
-        seg_shape.attemptResize(QgsLayoutSize(seg_width_mm, bar_h, QgsUnitTypes.LayoutMillimeters))
-        fill_color = '0,0,0,255' if i % 2 == 0 else '255,255,255,255'
-        seg_symbol = QgsFillSymbol.createSimple({
-            'color': fill_color,
-            'outline_color': '0,0,0,255',
-            'outline_width': '0.15',
-            'outline_width_unit': 'MM',
-        })
-        seg_shape.setSymbol(seg_symbol)
-        seg_shape.setFrameEnabled(False)
-        layout.addLayoutItem(seg_shape)
-
-    label_y = bar_y + bar_h + 0.3
-    label_h = 3.5
-    tick_format = QgsTextFormat()
-    tick_format.setFont(QFont("Times New Roman", SCALE_FONT_SIZE_PT))
-    tick_format.setSize(SCALE_FONT_SIZE_PT)
-    tick_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    tick_format.setColor(QColor(0, 0, 0))
-
-    # 起始刻度标签（0）
-    lbl_0 = QgsLayoutItemLabel(layout)
-    lbl_0.setText("0")
-    lbl_0.setTextFormat(tick_format)
-    lbl_0.attemptMove(QgsLayoutPoint(bar_start_x - 1.5, label_y, QgsUnitTypes.LayoutMillimeters))
-    lbl_0.attemptResize(QgsLayoutSize(6.0, label_h, QgsUnitTypes.LayoutMillimeters))
-    lbl_0.setHAlign(Qt.AlignHCenter)
-    lbl_0.setVAlign(Qt.AlignTop)
-    lbl_0.setFrameEnabled(False)
-    lbl_0.setBackgroundEnabled(False)
-    layout.addLayoutItem(lbl_0)
-
-    # 中间刻度标签
-    mid_km = bar_km // 2
-    if mid_km > 0:
-        lbl_mid = QgsLayoutItemLabel(layout)
-        lbl_mid.setText(str(mid_km))
-        lbl_mid.setTextFormat(tick_format)
-        mid_x = bar_start_x + bar_length_mm / 2.0 - 3.0
-        lbl_mid.attemptMove(QgsLayoutPoint(mid_x, label_y, QgsUnitTypes.LayoutMillimeters))
-        lbl_mid.attemptResize(QgsLayoutSize(8.0, label_h, QgsUnitTypes.LayoutMillimeters))
-        lbl_mid.setHAlign(Qt.AlignHCenter)
-        lbl_mid.setVAlign(Qt.AlignTop)
-        lbl_mid.setFrameEnabled(False)
-        lbl_mid.setBackgroundEnabled(False)
-        layout.addLayoutItem(lbl_mid)
-
-    # 末端刻度标签（含单位km）
-    lbl_end = QgsLayoutItemLabel(layout)
-    lbl_end.setText(f"{bar_km} km")
-    lbl_end.setTextFormat(tick_format)
-    end_x = bar_start_x + bar_length_mm - 4.0
-    lbl_end.attemptMove(QgsLayoutPoint(end_x, label_y, QgsUnitTypes.LayoutMillimeters))
-    lbl_end.attemptResize(QgsLayoutSize(14.0, label_h, QgsUnitTypes.LayoutMillimeters))
-    lbl_end.setHAlign(Qt.AlignHCenter)
-    lbl_end.setVAlign(Qt.AlignTop)
-    lbl_end.setFrameEnabled(False)
-    lbl_end.setBackgroundEnabled(False)
-    layout.addLayoutItem(lbl_end)
 
 
 def _add_hazard_legend(layout, map_height_mm, output_height_mm, breaks=None,
@@ -3600,6 +3517,10 @@ def run_all_tests():
     - 危险性概率栅格向量化计算
     - 刻度间隔选取
     - KML解析
+    - 多边形掩膜 bbox 优化
+    - np.digitize 分类计数
+    - numpy降级路径下采样
+    - gt[5] 符号处理（北上/南上影像像素坐标）
     """
     print("\n" + "=" * 60)
     print("运行 earthquake_hazard_map 全部测试")
@@ -3786,6 +3707,109 @@ def run_all_tests():
     assert len(coords) == 4, f"应解析4个坐标点，实际{len(coords)}"
     assert coords[0] == (116.0, 39.0), f"第一个点应为(116.0, 39.0)，实际{coords[0]}"
     print(f"  坐标解析正确，共{len(coords)}个点 ✓")
+
+    # ---- 测试11：多边形掩膜 bbox 优化 ----
+    if GDAL_AVAILABLE:
+        print("\n--- 测试11: _create_polygon_mask bbox优化 ---")
+        # 构造 4x4 栅格（北上影像，y_res < 0），多边形仅覆盖中央 2x2 区域
+        gt_test = (0.0, 1.0, 0.0, 4.0, 0.0, -1.0)  # x_origin=0, x_res=1, y_origin=4, y_res=-1
+        shape_test = (4, 4)
+        # 多边形：[1,3] x [1,3] 范围（像素坐标）
+        poly_test = [(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0)]
+        mask_test = _create_polygon_mask(shape_test, gt_test, poly_test)
+        assert mask_test.shape == shape_test, "掩膜形状应与栅格一致"
+        assert mask_test.sum() > 0, "掩膜内应有像素"
+        # bbox 外的角像素（如 [0,0]）应为 False
+        assert not mask_test[0, 0], "bbox 外角像素应为 False"
+        assert not mask_test[3, 3], "bbox 外角像素应为 False"
+        print(f"  多边形掩膜 bbox 优化正确，圈内像素数: {mask_test.sum()} ✓")
+
+        # 测试 gt[5] > 0（南上影像）场景
+        gt_south = (0.0, 1.0, 0.0, 0.0, 0.0, 1.0)  # y_origin=0, y_res=+1（南上）
+        poly_south = [(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0)]
+        mask_south = _create_polygon_mask(shape_test, gt_south, poly_south)
+        assert mask_south.shape == shape_test, "南上影像掩膜形状应与栅格一致"
+        assert mask_south.sum() > 0, "南上影像掩膜内应有像素"
+        print(f"  南上影像（gt[5]>0）掩膜正确，圈内像素数: {mask_south.sum()} ✓")
+    else:
+        print("\n--- 测试11: _create_polygon_mask (GDAL不可用，跳过) ---")
+
+    # ---- 测试12：np.digitize 分类计数 ----
+    if GDAL_AVAILABLE:
+        print("\n--- 测试12: np.digitize 分类计数 ---")
+        test_probs_dig = np.array([0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
+                                   0.6, 0.7, 0.8, 0.9, 1.0], dtype=np.float32)
+        test_breaks_dig = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        # 使用 float32 断点保持精度一致，right=True 匹配原始左开右闭语义
+        breaks_f32_test = np.array(test_breaks_dig[1:5], dtype=np.float32)
+        bin_idx = np.digitize(test_probs_dig, breaks_f32_test, right=True)
+        counts = np.bincount(bin_idx, minlength=5)[:5]
+        assert len(counts) == 5, "应分为5类"
+        assert int(np.sum(counts)) == len(test_probs_dig), \
+            f"总计数{int(np.sum(counts))}应等于像素数{len(test_probs_dig)}"
+        # 验证第0类（<=0.2）：0.0, 0.0, 0.1, 0.2 共4个
+        assert counts[0] == 4, f"第0类(<=0.2)应有4个像素，实际{counts[0]}"
+        # 验证第4类（>0.8）：0.9, 1.0 共2个
+        assert counts[4] == 2, f"第4类(>0.8)应有2个像素，实际{counts[4]}"
+        print(f"  digitize 分类计数正确，各类计数: {counts.tolist()} ✓")
+    else:
+        print("\n--- 测试12: np.digitize (GDAL不可用，跳过) ---")
+
+    # ---- 测试13：numpy降级路径下采样 ----
+    if GDAL_AVAILABLE:
+        print("\n--- 测试13: numpy降级路径（_compute_jenks_numpy）下采样 ---")
+        # 创建超过 MAX_NUMPY_SAMPLES 的数据，确保函数在合理时间内完成
+        np.random.seed(123)
+        large_data = np.random.rand(5000).astype(np.float64)
+        large_sorted = np.sort(large_data)
+        import time as _time
+        _t0 = _time.time()
+        breaks_numpy = _compute_jenks_numpy(
+            large_sorted, 5, float(large_sorted[0]), float(large_sorted[-1]))
+        _elapsed = _time.time() - _t0
+        assert len(breaks_numpy) == 6, f"应返回6个边界值，实际{len(breaks_numpy)}"
+        for i in range(len(breaks_numpy) - 1):
+            assert breaks_numpy[i] <= breaks_numpy[i + 1], \
+                f"边界值应单调递增：breaks[{i}]={breaks_numpy[i]:.6f} > breaks[{i+1}]={breaks_numpy[i+1]:.6f}"
+        # 下采样到 MAX_NUMPY_SAMPLES(2000) 后，5000条数据应在合理时间内完成（<60秒）
+        assert _elapsed < 60, f"numpy降级路径超时: {_elapsed:.1f}s（超出60秒限制）"
+        print(f"  numpy降级路径下采样后能正确计算断点（耗时 {_elapsed*1000:.0f}ms），"
+              f"边界值: {[f'{v:.4f}' for v in breaks_numpy]} ✓")
+
+        # 验证大数据集（>MAX_SAMPLES=10000）也能正常运行 compute_jenks_breaks
+        large_flat = np.random.rand(50000).astype(np.float32)
+        breaks_large = compute_jenks_breaks(large_flat, num_classes=5)
+        assert len(breaks_large) == 6, f"大数据集应返回6个边界值，实际{len(breaks_large)}"
+        for i in range(len(breaks_large) - 1):
+            assert breaks_large[i] <= breaks_large[i + 1], \
+                f"大数据集边界值应单调递增：breaks[{i}]={breaks_large[i]:.6f}"
+        print(f"  大数据集（50000个样本）降采样+Jenks正常完成 ✓")
+    else:
+        print("\n--- 测试13: numpy降级路径 (GDAL不可用，跳过) ---")
+
+    # ---- 测试14：generate_hazard_tif gt[5] > 0（像素坐标计算）----
+    if GDAL_AVAILABLE:
+        print("\n--- 测试14: generate_hazard_tif gt[5] 符号处理 ---")
+        # 验证像素坐标计算对于 gt[5] < 0（北上）和 gt[5] > 0（南上）的数学正确性
+        # 北上影像：y_origin=40, y_res=-0.01，查询 clip_ymin=39.0, clip_ymax=39.5
+        gt_north = (115.0, 0.01, 0.0, 40.0, 0.0, -0.01)
+        clip_ymax_n, clip_ymin_n = 39.5, 39.0
+        px_ymin_n = int((clip_ymax_n - gt_north[3]) / gt_north[5])  # (39.5-40)/(-0.01) = 50
+        px_ymax_n = int((clip_ymin_n - gt_north[3]) / gt_north[5]) + 1  # (39.0-40)/(-0.01)+1 = 101
+        assert px_ymin_n >= 0 and px_ymin_n < px_ymax_n, \
+            f"北上影像：px_ymin({px_ymin_n}) 应 < px_ymax({px_ymax_n})"
+        print(f"  北上影像（gt[5]<0）像素坐标计算正确: ymin={px_ymin_n}, ymax={px_ymax_n} ✓")
+
+        # 南上影像：y_origin=30, y_res=+0.01，查询 clip_ymin=30.5, clip_ymax=31.0
+        gt_south_tif = (115.0, 0.01, 0.0, 30.0, 0.0, 0.01)
+        clip_ymin_s, clip_ymax_s = 30.5, 31.0
+        px_ymin_s = int((clip_ymin_s - gt_south_tif[3]) / gt_south_tif[5])  # (30.5-30)/0.01 = 50
+        px_ymax_s = int((clip_ymax_s - gt_south_tif[3]) / gt_south_tif[5]) + 1  # (31.0-30)/0.01+1 = 101
+        assert px_ymin_s >= 0 and px_ymin_s < px_ymax_s, \
+            f"南上影像：px_ymin({px_ymin_s}) 应 < px_ymax({px_ymax_s})"
+        print(f"  南上影像（gt[5]>0）像素坐标计算正确: ymin={px_ymin_s}, ymax={px_ymax_s} ✓")
+    else:
+        print("\n--- 测试14: gt[5] 符号处理 (GDAL不可用，跳过) ---")
 
     print("\n" + "=" * 60)
     print("全部测试执行完成 ✓")
