@@ -158,7 +158,7 @@ def create_task_view(request):
 
     # 校验等值线采样间隔
     sample_interval = 1
-    if interp_method in ('scipy_idw', 'qgis_idw', 'kriging'):
+    if interp_method in ('scipy_idw', 'kriging'):
         sample_interval = 5
     if sample_interval_str:
         try:
@@ -169,7 +169,7 @@ def create_task_view(request):
             return JsonResponse({'code': 1, 'msg': '等值线采样间隔格式错误，请输入正整数'})
 
     # 校验最大采样点数
-    max_sample_points = 1000
+    max_sample_points = 10000
     if max_sample_points_str:
         try:
             max_sample_points = int(max_sample_points_str)

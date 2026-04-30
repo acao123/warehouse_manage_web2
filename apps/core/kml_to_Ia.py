@@ -2256,8 +2256,8 @@ class KmlToIaConverter:
 # ==================== 入口 ====================
 if __name__ == "__main__":
     converter = KmlToIaConverter(
-        kml_path="../../data/geology/kml/source.kml",  # 输入KML文件路径
-        ia_output_path="../../data/geology/ia/Ia.tif",  # Ia输出路径
+        kml_path="E:\\code\\python\\地质\\ia\\盈江ia\\PGA.kml",  # 输入KML文件路径
+        ia_output_path="E:\\code\\python\\地质\\ia\\盈江ia\\Ia2.tif",  # Ia输出路径
 
         # PGA输出（可选，使用矢量栅格化非插值）
         pga_output_path="../../data/geology/kml/PGA.tif",  # 不需要PGA时设为None
@@ -2267,7 +2267,7 @@ if __name__ == "__main__":
         resolution=30,  # 输出分辨率(米)；推荐10~100
 
         # 采样参数
-        sample_interval=5,  # 等值线采样间隔；推荐3~10，越小采样越密
+        sample_interval=1,  # 等值线采样间隔；推荐3~10，越小采样越密
         max_sample_points=10000,  # 最大采样点数；超过时随机抽样，避免内存溢出
 
         # ========== 选择插值方法 ==========

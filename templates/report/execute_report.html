@@ -200,8 +200,8 @@
                             <label class="layui-form-label" style="width:120px;">插值算法</label>
                             <div class="layui-input-inline" style="width:200px;">
                                 <select id="interp_method" class="layui-select">
-                                    <option value="scipy_tin" selected>不规则三角网(scipy)</option>
-                                    <option value="qgis_idw">反距离加权(qgis)</option>
+                                    <option value="qgis_idw" selected>反距离加权(qgis)</option>
+                                    <option value="scipy_tin">不规则三角网(scipy)</option>
                                     <option value="kriging">克里金</option>
                                     <option value="scipy_idw">反距离加权(scipy)</option>
                                 </select>
@@ -212,13 +212,13 @@
                         <div class="layui-inline">
                             <label class="layui-form-label" style="width:120px;">等值线采样间隔</label>
                             <div class="layui-input-inline" style="width:200px;">
-                                <input type="text" id="sample_interval" placeholder="不规则三角网为1，其他默认5" class="layui-input">
+                                <input type="text" id="sample_interval" placeholder="Qgis 反距离加权为1，其他默认5" class="layui-input">
                             </div>
                         </div>
                         <div class="layui-inline">
                             <label class="layui-form-label" style="width:120px;">最大采样点数</label>
                             <div class="layui-input-inline" style="width:200px;">
-                                <input type="text" id="max_sample_points" placeholder="选填，正整数，默认1000" class="layui-input">
+                                <input type="text" id="max_sample_points" placeholder="选填，正整数，默认10000" class="layui-input">
                             </div>
                         </div>
                     </div>
