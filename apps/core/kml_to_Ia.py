@@ -1172,11 +1172,13 @@ class KmlToIaConverter:
                     ).astype(np.float64)
                 trees.append(_cKDTree(pts_c))
 
+            max_dist_text = f"{max_dist:.1f} m" if max_dist is not None else "无限制"
             logger.info(
                 "ArcGIS IDW v3.12 (按区域分段，外圈 NoData): 等值线数=%d, "
                 "幂次=%.1f, 最大距离=%s",
-                N, power,
-                f"{max_dist:.1f} m" if max_dist is not None else "无限制",
+                N,
+                power,
+                max_dist_text,
             )
 
             # ---- 预计算区域索引栅格 ----
