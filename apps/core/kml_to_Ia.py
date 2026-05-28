@@ -343,7 +343,7 @@ def _select_arcgis_sector_neighbors(
         )
 
         col_ids = np.broadcast_to(
-            np.arange(sorted_cids.shape[1], dtype=np.int32),
+            np.arange(sorted_cids.shape[1], dtype=np.intp),
             sorted_cids.shape,
         )
         group_start_cols = np.maximum.accumulate(
@@ -1206,15 +1206,22 @@ class KmlToIaConverter:
             if contour_ids_arr is not None and contour_ids_arr.shape[0] != len(x_arr):
                 raise ValueError("contour_ids 数量必须与采样点数量一致")
 
-            n_contours = int(contour_ids_arr.max()) + 1 if use_contour_grouping else 0
+            n_contours = (
+                int(contour_ids_arr.max()) + 1
+                if use_contour_grouping and contour_ids_arr.size > 0
+                else 0
+            )
             contour_target = n_contours if max_contours is None else min(n_contours, max_contours)
             k_large = min(
                 len(x_arr),
                 max(
-                    n_neighbors * 4,
-                    target_neighbors * 3,
-                    200 if use_contour_grouping else 0,
-                    contour_target * max(8, max(1, per_contour_points) * 4),
+                    n_neighbors * 4,   # 基础安全余量：至少 4×目标邻居数
+                    target_neighbors * 3,  # 给扇区筛选保留足够候选
+                    200 if use_contour_grouping else 0,  # 分组模式下至少查询 200 个候选
+                    contour_target * max(
+                        8,  # 每条等值线至少预留 8 个候选窗口
+                        max(1, per_contour_points) * 4,  # 代表点数越多，候选窗口相应放大
+                    ),
                 ),
             )
             power = self.qgis_idw_power
