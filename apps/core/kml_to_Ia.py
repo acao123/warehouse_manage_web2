@@ -1212,14 +1212,16 @@ class KmlToIaConverter:
                 else 0
             )
             contour_target = n_contours if max_contours is None else min(n_contours, max_contours)
+            min_group_query_candidates = 200
+            min_candidates_per_contour = 8
             k_large = min(
                 len(x_arr),
                 max(
                     n_neighbors * 4,   # 基础安全余量：至少 4×目标邻居数
                     target_neighbors * 3,  # 给扇区筛选保留足够候选
-                    200 if use_contour_grouping else 0,  # 分组模式下至少查询 200 个候选
+                    min_group_query_candidates if use_contour_grouping else 0,
                     contour_target * max(
-                        8,  # 每条等值线至少预留 8 个候选窗口
+                        min_candidates_per_contour,
                         max(1, per_contour_points) * 4,  # 代表点数越多，候选窗口相应放大
                     ),
                 ),
