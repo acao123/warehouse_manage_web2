@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.10）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,20 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.10 相较 v3.9）：
+    1. qgis_idw（ArcGIS IDW）插值方法引入扇区搜索（Sector Search），与 ArcGIS IDW
+       工具默认行为对齐，彻底消除等值线采样点导致的同心环带/平台阶梯：
+       - 新策略：将每个像素周围划分为 idw_num_sectors 个扇区（默认 4），
+         每个扇区独立取最近 idw_points_per_sector 个邻居，保证邻居来自
+         不同方向、跨越多条等值线，加权平均后径向平滑过渡。
+       - 向量化实现：cKDTree 一次性查询 K_LARGE 个候选邻居，按
+         (sector_id, dist) 排序后用累计计数 mask 完成扇区筛选，
+         无 Python 循环，性能开销可控。
+       - 新增参数：idw_num_sectors（默认 4）、idw_points_per_sector（默认 None
+         自动 = idw_num_neighbors // idw_num_sectors）、idw_min_points（默认 1）。
+       - 保留所有现有参数（qgis_idw_power、idw_num_neighbors、idw_max_distance）
+         的语义；idw_num_neighbors 仍作为总目标邻居数参考。
 
 主要改进（v3.9 相较 v3.8）：
     1. scipy_tin 插值方法完全移除 KD-Tree IDW 填充逻辑：
@@ -131,9 +145,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.9)
-日期: 2026-04-30
-版本: 3.9
+作者: acao (重构版 v3.10)
+日期: 2026-05-28
+版本: 3.10
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -141,7 +155,7 @@ QGIS版本: 3.40.15
     - 'radial'    : 径向距离1D插值（专为同心圈优化，完美单调递增）
     - 'scipy_idw' : scipy RBFInterpolator（速度快，支持邻近点限制）
     - 'kriging'   : 简化版 Empirical Bayesian Kriging（与 ArcGIS EBK 对齐，需 scipy + pykrige）
-    - 'qgis_idw'  : KD-Tree 局部反距离权重插值（与 ArcGIS IDW 对齐，需 scipy）
+    - 'qgis_idw'  : ArcGIS 风格扇区搜索 IDW（KD-Tree + sector search，需 scipy）
     - 'qgis_tin'  : QGIS自带三角网插值（无需额外依赖）
 
 插值范围:
@@ -260,9 +274,62 @@ class TaskCancelledException(Exception):
     pass
 
 
+def _select_arcgis_sector_neighbors(
+    dists: np.ndarray,
+    idxs: np.ndarray,
+    pts_query: np.ndarray,
+    pts_train: np.ndarray,
+    n_sectors: int,
+    points_per_sector: int,
+    min_points: int = 1,
+    max_distance: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    为 ArcGIS 风格 IDW 扇区搜索生成候选邻居 mask。
+
+    返回:
+        selected_mask: 每个像素最终参与加权的邻居布尔 mask
+        valid_candidates: 满足索引/距离限制的候选邻居布尔 mask
+    """
+    if dists.ndim != 2 or idxs.ndim != 2:
+        raise ValueError("dists / idxs 必须是二维数组")
+
+    n_sectors = max(1, int(n_sectors))
+    points_per_sector = max(1, int(points_per_sector))
+    min_points = max(1, int(min_points))
+
+    valid_candidates = idxs >= 0
+    if max_distance is not None:
+        valid_candidates &= dists <= max_distance
+
+    if not valid_candidates.any():
+        empty = np.zeros_like(valid_candidates, dtype=bool)
+        return empty, valid_candidates
+
+    neighbor_pts = pts_train[idxs]
+    dx = neighbor_pts[:, :, 0] - pts_query[:, None, 0]
+    dy = neighbor_pts[:, :, 1] - pts_query[:, None, 1]
+    angles = np.mod(np.arctan2(dy, dx), 2.0 * np.pi)
+    sector_width = (2.0 * np.pi) / float(n_sectors)
+    sector_ids = np.floor(angles / sector_width).astype(np.int32)
+    np.minimum(sector_ids, n_sectors - 1, out=sector_ids)
+
+    selected_mask = np.zeros_like(valid_candidates, dtype=bool)
+    for sector_idx in range(n_sectors):
+        sector_mask = valid_candidates & (sector_ids == sector_idx)
+        if not sector_mask.any():
+            continue
+        keep_mask = sector_mask & (np.cumsum(sector_mask, axis=1) <= points_per_sector)
+        if min_points > 1:
+            keep_mask &= sector_mask.sum(axis=1, keepdims=True) >= min_points
+        selected_mask |= keep_mask
+
+    return selected_mask, valid_candidates
+
+
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.9）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.10）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -274,6 +341,7 @@ class KmlToIaConverter:
         - 所有插值在 UTM 米制坐标系下进行，距离权重更准确
         - 采样点数量可控（sample_interval + max_sample_points），避免内存溢出
         - 支持6种插值方法（scipy_tin推荐，平滑无突变）
+        - qgis_idw 使用 ArcGIS 风格扇区搜索，抑制等值线采样密集导致的平台阶梯
         - 严格内存控制（<10GB）：生成器、分批转换、分块写入、及时释放
         - 异常安全：run()使用try-finally，异常时也能释放资源
         - 所有关键方法添加try-except + logger日志 + 异常向上抛出
@@ -287,7 +355,7 @@ class KmlToIaConverter:
         - 'scipy_idw'  ：scipy RBF插值，速度快，支持邻近点限制，需安装scipy
         - 'kriging'    ：真正对齐 ArcGIS EBK 的子集化克里金，支持多次模拟
                         （ebk_n_simulations 默认 100），需安装 scipy + pykrige
-        - 'qgis_idw'   ：KD-Tree 局部反距离权重插值，与 ArcGIS IDW 对齐，需安装 scipy
+        - 'qgis_idw'   ：ArcGIS 风格扇区搜索 IDW，按扇区均衡选点，消除同心环带，需安装 scipy
         - 'qgis_tin'   ：QGIS三角网插值，基于Delaunay三角剖分，无需额外依赖
 
     用法示例:
@@ -376,6 +444,9 @@ class KmlToIaConverter:
         # ---- ArcGIS IDW 对齐参数（qgis_idw 方法专用）----
         idw_num_neighbors: int = 12,          # KD-Tree 局部搜索邻近点数，与 ArcGIS 默认一致
         idw_max_distance: Optional[float] = None,  # 最大搜索距离（米，UTM坐标），None 表示不限制
+        idw_num_sectors: int = 4,             # 扇区数，默认4，与 ArcGIS Search Neighborhood 对齐
+        idw_points_per_sector: Optional[int] = None,  # 每扇区取点数；None=自动计算
+        idw_min_points: int = 1,              # 每扇区最少有效点数；不足则该扇区跳过
 
         # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
         ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
@@ -434,8 +505,13 @@ class KmlToIaConverter:
         # 取消信号
         self._cancel_event: Optional[threading.Event] = cancel_event
         # ArcGIS IDW 参数
-        self.idw_num_neighbors = idw_num_neighbors
+        self.idw_num_neighbors = max(1, int(idw_num_neighbors))
         self.idw_max_distance = idw_max_distance
+        self.idw_num_sectors = max(1, int(idw_num_sectors))
+        self.idw_points_per_sector = (
+            None if idw_points_per_sector is None else max(1, int(idw_points_per_sector))
+        )
+        self.idw_min_points = max(1, int(idw_min_points))
         # ArcGIS EBK 参数
         self.ebk_subset_size = ebk_subset_size
         self.ebk_overlap_factor = ebk_overlap_factor
@@ -1000,16 +1076,17 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        ArcGIS IDW 风格的局部反距离权重插值（KD-Tree 加速）。
+        ArcGIS IDW 风格的局部反距离权重插值（KD-Tree + 扇区搜索）。
 
         与 ArcGIS IDW 工具原理一致：
-            - 使用 scipy.spatial.cKDTree 对每个像素查询最近的 N 个采样点
-              （默认 N=12，与 ArcGIS IDW 默认 Search Neighborhood 一致）。
+            - 使用 scipy.spatial.cKDTree 对每个像素查询最近的 K_LARGE 个候选点。
+            - 将候选点按方位角划分到多个扇区（默认 4 个），每个扇区保留最近的若干点，
+              避免邻居全部落在同一条密集等值线上导致平台阶梯。
             - 反距离权重 w_i = 1 / d_i^power；当 d_i = 0 时直接取该点的值。
             - 支持可选最大搜索距离 idw_max_distance（单位：米，UTM坐标）。
 
         性能：cKDTree.query 在 C 扩展层释放 GIL，可通过 ThreadPoolExecutor 多线程加速；
-              局部搜索复杂度 O(n_pixels × log(n_samples) × N)，
+              局部搜索复杂度 O(n_pixels × log(n_samples) × K_LARGE)，
               远优于全局 IDW 的 O(n_pixels × n_samples)。
 
         参数:
@@ -1032,16 +1109,26 @@ class KmlToIaConverter:
             # 建立 KD-Tree（在所有分块插值时共享）
             pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
             tree = _cKDTree(pts_train)
-            del pts_train
             vals_f64 = values.astype(np.float64)
 
             n_neighbors = min(self.idw_num_neighbors, len(x_arr))
+            n_sectors = self.idw_num_sectors
+            points_per_sector = self.idw_points_per_sector
+            if points_per_sector is None:
+                points_per_sector = max(1, n_neighbors // n_sectors)
+            min_points = self.idw_min_points
+            target_neighbors = n_sectors * points_per_sector
+            k_large = min(
+                len(x_arr),
+                max(n_neighbors * 4, target_neighbors * 3),
+            )
             power = self.qgis_idw_power
             max_dist = self.idw_max_distance
 
             logger.info(
-                "ArcGIS IDW (KD-Tree) 插值: 邻近点数=%d, 幂次=%.1f, 最大距离=%s",
-                n_neighbors, power,
+                "ArcGIS IDW（扇区搜索）: 扇区数=%d, 每扇区点数=%d, 总目标邻居数≈%d, "
+                "查询候选数=%d, 幂次=%.1f, 最大距离=%s",
+                n_sectors, points_per_sector, target_neighbors, k_large, power,
                 f"{max_dist:.1f} m" if max_dist is not None else "无限制",
             )
 
@@ -1073,23 +1160,35 @@ class KmlToIaConverter:
                 del xx, yy
                 n_pts = pts_query.shape[0]
 
-                # 查询最近的 n_neighbors 个采样点
-                dists, idxs = tree.query(pts_query, k=n_neighbors)
-                # 保证形状为 (n_pts, n_neighbors)，即使 n_neighbors==1 也统一
-                if n_neighbors == 1:
+                # 查询最近的 K_LARGE 个候选采样点，再做扇区筛选
+                dists, idxs = tree.query(pts_query, k=k_large)
+                if k_large == 1:
                     dists = dists.reshape(-1, 1)
                     idxs = idxs.reshape(-1, 1)
 
                 # 精确匹配（d=0）的像素：直接取该采样点的值
-                exact_mask = dists[:, 0] == 0.0
+                exact_hits = dists == 0.0
+                exact_mask = np.any(exact_hits, axis=1)
+                exact_pos = np.argmax(exact_hits, axis=1)
+
+                selected_mask, valid_candidates = _select_arcgis_sector_neighbors(
+                    dists=dists,
+                    idxs=idxs,
+                    pts_query=pts_query,
+                    pts_train=pts_train,
+                    n_sectors=n_sectors,
+                    points_per_sector=points_per_sector,
+                    min_points=min_points,
+                    max_distance=max_dist,
+                )
 
                 # 反距离权重（d=0 处设为 0.0，避免除零；精确匹配单独处理）
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    weights = np.where(dists > 0.0, 1.0 / (dists ** power), 0.0)
-
-                # 可选：超出最大搜索距离的邻居权重置 0
-                if max_dist is not None:
-                    weights[dists > max_dist] = 0.0
+                    weights = np.where(
+                        selected_mask & (dists > 0.0),
+                        1.0 / (dists ** power),
+                        0.0,
+                    )
 
                 weight_sum = weights.sum(axis=1)  # (n_pts,)
                 chunk_vals = np.full(n_pts, -9999.0, dtype=np.float64)
@@ -1097,15 +1196,27 @@ class KmlToIaConverter:
                 # 非精确匹配且权重和 > 0 的像素：加权平均
                 valid_mask = (~exact_mask) & (weight_sum > 0.0)
                 if valid_mask.any():
-                    w = weights[valid_mask]           # (n_valid, n_neighbors)
-                    v = vals_f64[idxs[valid_mask]]    # (n_valid, n_neighbors)
+                    w = weights[valid_mask]
+                    v = vals_f64[idxs[valid_mask]]
                     chunk_vals[valid_mask] = (w * v).sum(axis=1) / weight_sum[valid_mask]
 
                 # 精确匹配：直接赋值
                 if exact_mask.any():
-                    chunk_vals[exact_mask] = vals_f64[idxs[exact_mask, 0]]
+                    exact_rows = np.flatnonzero(exact_mask)
+                    chunk_vals[exact_mask] = vals_f64[idxs[exact_rows, exact_pos[exact_mask]]]
 
-                del pts_query, dists, idxs, weights, weight_sum
+                # 若扇区筛选后权重为空，则退化为最近有效邻居；若无有效邻居则保持 NoData
+                fallback_mask = (~exact_mask) & (weight_sum <= 0.0)
+                if fallback_mask.any():
+                    fallback_rows = np.flatnonzero(fallback_mask)
+                    fallback_valid = valid_candidates[fallback_mask]
+                    has_valid_fallback = fallback_valid.any(axis=1)
+                    if has_valid_fallback.any():
+                        chosen_rows = fallback_rows[has_valid_fallback]
+                        chosen_pos = np.argmax(fallback_valid[has_valid_fallback], axis=1)
+                        chunk_vals[chosen_rows] = vals_f64[idxs[chosen_rows, chosen_pos]]
+
+                del pts_query, dists, idxs, weights, weight_sum, selected_mask, valid_candidates
 
                 result = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
                 del chunk_vals
@@ -1172,6 +1283,8 @@ class KmlToIaConverter:
             band = None
             if tree is not None:
                 del tree
+            if 'pts_train' in locals():
+                del pts_train
             gc.collect()
 
     # ==================== scipy 插值方法 ====================
@@ -2706,7 +2819,8 @@ if __name__ == "__main__":
 
         # ========== 选择插值方法 ==========
         # 推荐方法（平滑，无突变）
-        interp_method='scipy_tin',  # ArcGIS IDW (KD-Tree局部IDW，与ArcGIS默认对齐，需scipy)
+        interp_method='scipy_tin',  # 推荐：scipy TIN（平滑、无突变）
+        # interp_method='qgis_idw',  # ArcGIS 风格扇区搜索 IDW（需 scipy）
         # interp_method='radial',   # 径向插值 - 专为同心圈，完美单调递增
 
         # 其他可用方法
@@ -2716,9 +2830,12 @@ if __name__ == "__main__":
 
         # ArcGIS IDW 参数（仅 interp_method='qgis_idw' 时有效，需安装scipy）
         qgis_idw_power=2.0,         # IDW幂次；推荐1.0~4.0，越大近点主导（与ArcGIS默认一致）
-        idw_num_neighbors=12,        # 局部搜索邻近点数；默认12与ArcGIS一致，越大结果越平滑
+        idw_num_neighbors=12,       # 总目标邻居数参考；默认12与ArcGIS一致
         # idw_max_distance=50000,    # 最大搜索距离（米，UTM坐标），None表示不限制（与ArcGIS默认一致）
         #                            # 例如 50000 表示 50 km
+        # idw_num_sectors=4,         # 扇区数；默认4，扇区搜索可显著减少同心环带
+        # idw_points_per_sector=None,# 每扇区取点数；None 自动 = idw_num_neighbors // idw_num_sectors
+        # idw_min_points=1,          # 每扇区最少有效点数；不足则该扇区跳过
 
         # QGIS TIN 参数（仅 interp_method='qgis_tin' 时有效）
         qgis_tin_method=0,  # TIN子方法: 0=线性（快）, 1=Clough-Tocher（平滑）
