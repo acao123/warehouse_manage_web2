@@ -1167,6 +1167,7 @@ class KmlToIaConverter:
             x_arr: 采样点X坐标（UTM easting，米）
             y_arr: 采样点Y坐标（UTM northing，米）
             values: 采样点对应值（Ia）
+            contour_ids: 采样点所属等值线ID；None 或 idw_per_contour_points<=0 时退回旧策略
             output_tif_path: 输出 GeoTIFF 文件路径
         """
         if not _HAS_SCIPY:
@@ -2611,6 +2612,7 @@ class KmlToIaConverter:
             x_arr: 采样点X坐标(经度)
             y_arr: 采样点Y坐标(纬度)
             ia_values: 采样点对应的Ia值
+            contour_ids: 采样点所属等值线ID（仅 qgis_idw 使用）
             output_tif_path: 输出Ia GeoTIFF 文件路径
         """
         method = self.interp_method
