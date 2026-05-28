@@ -1045,6 +1045,11 @@ class KmlToIaConverter:
             k_per_default = 2
             k_per_raw = self.idw_num_neighbors if self.idw_num_neighbors <= k_per_max else k_per_default
             k_per = max(1, min(k_per_max, k_per_raw))
+            if self.idw_num_neighbors > k_per_max:
+                logger.info(
+                    "ArcGIS IDW v3.10: idw_num_neighbors=%d 超出范围，按向后兼容映射为每条 %d 个点",
+                    self.idw_num_neighbors, k_per_default,
+                )
 
             if contour_ids is None:
                 contour_ids = np.zeros(len(x_arr), dtype=np.int32)
@@ -1054,6 +1059,7 @@ class KmlToIaConverter:
                 mask = contour_ids == cid
                 pts_c = np.column_stack([x_arr[mask], y_arr[mask]]).astype(np.float64)
                 if len(pts_c) == 0:
+                    logger.warning("ArcGIS IDW v3.10: contour_id=%s 分组无采样点，已跳过", cid)
                     continue
                 trees.append(_cKDTree(pts_c))
                 tree_vals.append(values[mask].astype(np.float64))
@@ -1131,7 +1137,10 @@ class KmlToIaConverter:
                     chunk_vals[valid_mask] = num / weight_sum[valid_mask]
 
                 if exact_mask.any():
-                    zero_cols = (all_dists[exact_mask] == 0.0).argmax(axis=1)
+                    zero_hits = (all_dists[exact_mask] == 0.0)
+                    if not zero_hits.any(axis=1).all():
+                        raise RuntimeError("ArcGIS IDW v3.10: 精确命中检测异常")
+                    zero_cols = zero_hits.argmax(axis=1)
                     chunk_vals[exact_mask] = all_vals[exact_mask, zero_cols]
 
                 del pts_query, all_dists, all_vals, weights, weight_sum
