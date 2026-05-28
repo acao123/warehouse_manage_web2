@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.12）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.13）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,13 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.12）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.13 相较 v3.12）：
+    1. qgis_idw（ArcGIS IDW）在圈间区域（region=1..N-1）改用
+       smoothstep + log 空间线性混合（不再使用 2 点 IDW）：
+       - t = d_in / (d_in + d_out), s = t²(3-2t)
+       - log_ia = (1-s)*log(ia_in) + s*log(ia_out), ia = exp(log_ia)
+       - 端点严格匹配等值线值，径向过渡 C1 连续、无折点、无带状感。
 
 主要改进（v3.12 相较 v3.11）：
     1. qgis_idw（ArcGIS IDW）在最外圈以外统一输出 NoData（-9999.0）：
@@ -1111,18 +1118,20 @@ class KmlToIaConverter:
             contour_ids: Optional[np.ndarray] = None,
     ) -> None:
         """
-        ArcGIS IDW 风格的反距离权插值（v3.12：按区域分段，外圈 NoData）。
+        ArcGIS IDW 风格的反距离权插值
+        （v3.13：按区域分段，圈间 log 空间 smoothstep 混合）。
 
         v3.12 说明（保留 v3.11 分区逻辑，仅修正外圈以外行为）：
             v3.10 的 IDW 本质上仍是插值，无法外推，导致：
               - 内圈以内：所有外圈值拉低中心 → 甜甜圈。
               - 外圈以外：内圈值拉高外部 → 光晕。
 
-            v3.11 改为按区域分段处理，v3.12 进一步将外圈以外统一设为 NoData：
+            v3.11 改为按区域分段处理，v3.12 将外圈以外统一设为 NoData，
+            v3.13 将圈间插值改为 log-smoothstep 混合：
               1. 先用 OGR/GDAL 栅格化得到区域索引栅格（region_arr）。
               2. 每条等值线单独建一棵 KD-Tree（k=1 查询）。
               3. 内圈以内（region=0）: 直接取 ia[0] 常量。
-              4. 相邻圈之间（region=1..N-1）: 仅用内外两条等值线做 2 点 IDW。
+              4. 相邻圈之间（region=1..N-1）: 用 smoothstep + log 混合。
               5. 外圈以外（region=N）: 统一写为 NoData（-9999.0）。
 
         参数:
@@ -1130,7 +1139,7 @@ class KmlToIaConverter:
             y_arr: 采样点Y坐标（UTM northing，米）
             values: 采样点对应值（Ia）
             output_tif_path: 输出 GeoTIFF 文件路径
-            contour_ids: 向后兼容参数（保留入口签名），v3.12 内部不使用
+            contour_ids: 向后兼容参数（保留入口签名），v3.13 内部不使用
         """
         if not _HAS_SCIPY:
             raise ImportError(
@@ -1143,12 +1152,10 @@ class KmlToIaConverter:
         trees: List = []
 
         try:
-            power = self.qgis_idw_power
-            max_dist = self.idw_max_distance
             N = len(self._contours)
 
             if N == 0:
-                raise RuntimeError("ArcGIS IDW v3.12: 没有等值线数据")
+                raise RuntimeError("ArcGIS IDW v3.13: 没有等值线数据")
 
             # ---- 每条等值线单独建一棵 KD-Tree（k=1 查询） ----
             # self._contours 已按 PGA 从大到小排序，index 0 = innermost
@@ -1172,13 +1179,19 @@ class KmlToIaConverter:
                     ).astype(np.float64)
                 trees.append(_cKDTree(pts_c))
 
-            max_dist_text = f"{max_dist:.1f} m" if max_dist is not None else "无限制"
+            if self.idw_max_distance is not None:
+                logger.info(
+                    "ArcGIS IDW v3.13 (区域分段+log-smoothstep): "
+                    "v3.13 起 idw_max_distance 在圈间区域已无效（混合公式不依赖距离阈值）"
+                )
+            if self.qgis_idw_power != 2.0:
+                logger.info(
+                    "ArcGIS IDW v3.13 (区域分段+log-smoothstep): "
+                    "v3.13 起 qgis_idw_power 在 qgis_idw 方法中已无效（混合公式不依赖 power）"
+                )
             logger.info(
-                "ArcGIS IDW v3.12 (按区域分段，外圈 NoData): 等值线数=%d, "
-                "幂次=%.1f, 最大距离=%s",
+                "ArcGIS IDW v3.13 (区域分段+log-smoothstep): 等值线数=%d",
                 N,
-                power,
-                max_dist_text,
             )
 
             # ---- 预计算区域索引栅格 ----
@@ -1202,7 +1215,7 @@ class KmlToIaConverter:
             n_rows = self._n_rows
             chunk_rows = self.chunk_size
             chunk_starts = list(range(0, n_rows, chunk_rows))
-            eps = 1e-6
+            eps = 1e-9
 
             def _compute_chunk_arcgis_idw(row_start: int) -> Tuple[int, np.ndarray]:
                 row_end = min(row_start + chunk_rows, n_rows)
@@ -1229,31 +1242,19 @@ class KmlToIaConverter:
                 if mask0.any():
                     chunk_vals[mask0] = ia_arr_per_contour[0]
 
-                # --- Region 1..N-1: 相邻圈之间，2 点 IDW ---
+                # --- Region 1..N-1: 相邻圈之间，log-smoothstep 混合 ---
                 mask_mid = (region_chunk >= 1) & (region_chunk <= N - 1)
                 if mask_mid.any():
                     r_idx = region_chunk[mask_mid]            # 1..N-1
-                    d_in  = dists_all[mask_mid, r_idx - 1]   # 到内圈的距离
-                    d_out = dists_all[mask_mid, r_idx]        # 到外圈的距离
+                    d_in = dists_all[mask_mid, r_idx - 1]     # 到内圈最近距离
+                    d_out = dists_all[mask_mid, r_idx]        # 到外圈最近距离
+                    t = d_in / (d_in + d_out + eps)
+                    s = t * t * (3.0 - 2.0 * t)
 
-                    w_in  = 1.0 / (np.power(d_in,  power) + eps)
-                    w_out = 1.0 / (np.power(d_out, power) + eps)
-
-                    if max_dist is not None:
-                        w_in[d_in   > max_dist] = 0.0
-                        w_out[d_out > max_dist] = 0.0
-
-                    ia_in  = ia_arr_per_contour[r_idx - 1]
-                    ia_out = ia_arr_per_contour[r_idx]
-
-                    w_sum = w_in + w_out
-                    valid = w_sum > 0.0
-                    result_mid = np.full(mask_mid.sum(), -9999.0, dtype=np.float64)
-                    result_mid[valid] = (
-                        (w_in[valid] * ia_in[valid] + w_out[valid] * ia_out[valid])
-                        / w_sum[valid]
-                    )
-                    chunk_vals[mask_mid] = result_mid
+                    ia_in_v = ia_arr_per_contour[r_idx - 1]   # 高
+                    ia_out_v = ia_arr_per_contour[r_idx]      # 低
+                    log_ia = (1.0 - s) * np.log(ia_in_v) + s * np.log(ia_out_v)
+                    chunk_vals[mask_mid] = np.exp(log_ia)
 
                 # --- Region N: 外圈以外，统一写 NoData ---
                 mask_out = region_chunk == N
@@ -1270,7 +1271,7 @@ class KmlToIaConverter:
                 return row_start, result
 
             start_time = time.time()
-            logger.info("ArcGIS IDW v3.12 插值开始，分块数=%d，并行线程数=%d",
+            logger.info("ArcGIS IDW v3.13 (区域分段+log-smoothstep) 插值开始，分块数=%d，并行线程数=%d",
                         len(chunk_starts), self.max_interp_workers)
 
             # 滑动窗口式并行提交与消费
@@ -1314,7 +1315,7 @@ class KmlToIaConverter:
             band.FlushCache()
 
             total_time = time.time() - start_time
-            logger.info("ArcGIS IDW v3.12 插值完成，总耗时: %.1fs, 已保存: %s",
+            logger.info("ArcGIS IDW v3.13 (区域分段+log-smoothstep) 插值完成，总耗时: %.1fs, 已保存: %s",
                         total_time, output_tif_path)
 
         except TaskCancelledException:
