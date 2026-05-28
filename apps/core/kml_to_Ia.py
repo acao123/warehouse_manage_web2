@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v4.0）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,17 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v4.0 相较 v3.9）：
+    1. qgis_idw 方法引入**椭圆径向辅助场重塑**，彻底消除同心环带（banding）：
+       - 新增参数：arcgis_idw_radial_assist（默认 True；False=退回 v3.9 行为）。
+       - 通过协方差矩阵特征分解确定椭圆主轴方向和轴比，使用椭圆距离（而非纯圆形）
+         让结果形状与 PGA 等值线（椭圆形）保持一致。
+       - 拟合 1D 径向趋势 f_radial(r_ellipse) 捕获主体单调梯度；
+         IDW 仅对残差做插值（残差在等值线间变化平缓，不产生环带）；
+         最终值 = f_radial(r_ellipse_pixel) + IDW_residual(pixel)。
+       - 降级路径（安全）：采样点不足 3 个、协方差奇异、控制点 < 2、
+         PchipInterpolator 构建失败或 scipy 不可用时，自动退回原始 IDW 行为。
 
 主要改进（v3.9 相较 v3.8）：
     1. scipy_tin 插值方法完全移除 KD-Tree IDW 填充逻辑：
@@ -131,9 +142,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.9)
-日期: 2026-04-30
-版本: 3.9
+作者: acao (重构版 v4.0)
+日期: 2026-05-28
+版本: 4.0
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -262,7 +273,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.9）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v4.0）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -384,6 +395,10 @@ class KmlToIaConverter:
         ebk_n_simulations: int = 100,         # 每个子集的模拟次数，与 ArcGIS EBK 默认一致
         ebk_predict_neighbors: int = 4,       # 每像素参与加权的子集数，默认4（v3.5 新增）
         ebk_simulation_noise: float = 0.1,    # 变差函数参数扰动幅度，n_simulations>1 时生效（v3.5 新增）
+
+        # ---- ArcGIS IDW 椭圆径向辅助场（v4.0 新增）----
+        # True=启用椭圆径向辅助场重塑（消除同心环带，推荐）；False=退回原始 IDW 行为（向后兼容/调试）
+        arcgis_idw_radial_assist: bool = True,
     ):
         self.kml_path = kml_path
         self.ia_output_path = ia_output_path
@@ -443,6 +458,8 @@ class KmlToIaConverter:
         self.ebk_n_simulations = ebk_n_simulations
         self.ebk_predict_neighbors = ebk_predict_neighbors
         self.ebk_simulation_noise = ebk_simulation_noise
+        # ArcGIS IDW 椭圆径向辅助场（v4.0 新增）
+        self.arcgis_idw_radial_assist = arcgis_idw_radial_assist
 
         # 运行时数据（由 run() 过程填充）
         self._contours: List[dict] = []
@@ -1045,6 +1062,135 @@ class KmlToIaConverter:
                 f"{max_dist:.1f} m" if max_dist is not None else "无限制",
             )
 
+            # ==================================================================
+            # v4.0 椭圆径向辅助场重塑（arcgis_idw_radial_assist）：消除同心环带
+            # 当 arcgis_idw_radial_assist=True 时：
+            #   1. 通过协方差矩阵特征分解得到椭圆主轴方向和轴比；
+            #   2. 拟合 1D 椭圆径向趋势 f_radial(r_ellipse)；
+            #   3. IDW 仅对残差做插值（残差平缓，无明显环带）；
+            #   4. 最终值 = f_radial(r_ellipse_pixel) + IDW_residual。
+            # 当 arcgis_idw_radial_assist=False 时：退回原始 IDW 行为。
+            # ==================================================================
+            use_radial_assist = False
+            f_radial = None
+            cx = cy = 0.0
+            _rot_mat = None    # 旋转矩阵 (2,2)：行为特征向量
+            _ratio = 1.0       # 次轴→主轴放大比例 = sqrt(λ_max / λ_min)
+
+            if self.arcgis_idw_radial_assist and _HAS_SCIPY and len(x_arr) >= 3:
+                try:
+                    # 1. 几何中心
+                    cx = float(np.mean(x_arr))
+                    cy = float(np.mean(y_arr))
+
+                    # 2. 协方差矩阵特征分解 → 椭圆主轴方向和轴比
+                    dx = (x_arr - cx).astype(np.float64)
+                    dy = (y_arr - cy).astype(np.float64)
+                    cov = np.cov(np.vstack([dx, dy]))  # shape (2,2)
+                    eigvals, eigvecs = np.linalg.eigh(cov)  # eigvals 升序
+                    lam_min, lam_max = float(eigvals[0]), float(eigvals[1])
+
+                    if lam_min <= 0.0:
+                        # 奇异（如所有点在一条线上）：退回圆形欧氏距离
+                        logger.warning(
+                            "椭圆径向辅助场：协方差矩阵奇异（λ_min=%.6g），退回圆形距离",
+                            lam_min,
+                        )
+                        _rot_mat = np.eye(2, dtype=np.float64)
+                        _ratio = 1.0
+                    else:
+                        _ratio = float(np.sqrt(lam_max / lam_min))
+                        # eigvecs[:,i] 是第 i 个特征向量；转置后行是特征向量
+                        _rot_mat = eigvecs.T.astype(np.float64)  # (2,2)
+
+                    # 3. 椭圆径向距离（样本点）
+                    coords = np.column_stack([dx, dy])      # (n, 2)
+                    rot_coords = coords @ _rot_mat.T         # (n, 2)
+                    # rot_coords[:,0] = 次轴分量，rot_coords[:,1] = 主轴分量
+                    u_major = rot_coords[:, 1]               # 主轴方向分量
+                    v_minor = rot_coords[:, 0]               # 次轴方向分量
+                    r_ellipse_arr = np.sqrt(u_major ** 2 + (_ratio * v_minor) ** 2)
+                    del dx, dy, coords, rot_coords, u_major, v_minor
+
+                    # 4. 按距离分 bin（容差 = resolution/2），合并均值
+                    # 容差取 resolution/2：比采样间距小一个量级，避免同等值线上的采样点被
+                    # 分入多个 bin，同时足以合并极接近的重复距离点（数值稳健）。
+                    sorted_idx = np.argsort(r_ellipse_arr)
+                    r_sorted = r_ellipse_arr[sorted_idx]
+                    v_sorted = values[sorted_idx].astype(np.float64)
+
+                    tol_bin = self.resolution / 2.0
+                    merged_r = [float(r_sorted[0])]
+                    merged_v = [float(v_sorted[0])]
+                    running_sum = float(v_sorted[0])
+                    running_cnt = 1
+                    last_r = merged_r[0]
+                    for _i in range(1, len(r_sorted)):
+                        _r = float(r_sorted[_i])
+                        _v = float(v_sorted[_i])
+                        if _r - last_r < tol_bin:
+                            running_sum += _v
+                            running_cnt += 1
+                        else:
+                            merged_v[-1] = running_sum / running_cnt
+                            merged_r.append(_r)
+                            merged_v.append(_v)
+                            last_r = _r
+                            running_sum = _v
+                            running_cnt = 1
+                    merged_v[-1] = running_sum / running_cnt
+                    del r_sorted, v_sorted, sorted_idx
+
+                    r_knots = np.array(merged_r, dtype=np.float64)
+                    v_knots = np.array(merged_v, dtype=np.float64)
+                    del merged_r, merged_v
+
+                    if len(r_knots) < 2:
+                        logger.warning(
+                            "椭圆径向辅助场：合并后控制点数 %d < 2，退回原始 IDW",
+                            len(r_knots),
+                        )
+                        del r_knots, v_knots, r_ellipse_arr
+                        gc.collect()
+                    else:
+                        # 5. 拟合 1D 径向趋势（单调三次 Hermite，无振荡）
+                        f_radial = _PchipInterpolator(r_knots, v_knots, extrapolate=True)
+                        n_knots = len(r_knots)
+
+                        # 6. 计算残差：vals_f64 = ia - f_radial(r_ellipse)
+                        radial_at_samples = f_radial(r_ellipse_arr)
+                        vals_f64 = values.astype(np.float64) - radial_at_samples
+                        del radial_at_samples, r_knots, v_knots, r_ellipse_arr
+                        gc.collect()
+
+                        use_radial_assist = True
+
+                        # 主轴角度（度），仅用于日志
+                        _axis_angle = float(
+                            np.degrees(np.arctan2(eigvecs[1, 1], eigvecs[0, 1]))
+                        ) if lam_min > 0.0 else 0.0
+                        logger.info(
+                            "椭圆径向辅助场（v4.0）: 中心=(%.1f, %.1f), "
+                            "ratio=%.3f, 主轴角度=%.1f°, 控制点数=%d, "
+                            "残差范围=[%.4f, %.4f]",
+                            cx, cy, _ratio, _axis_angle, n_knots,
+                            float(vals_f64.min()), float(vals_f64.max()),
+                        )
+
+                except Exception as _e:
+                    logger.warning(
+                        "椭圆径向辅助场构建失败（%s），退回原始 IDW 行为", _e,
+                    )
+                    vals_f64 = values.astype(np.float64)   # 重置为原始值
+                    use_radial_assist = False
+                    f_radial = None
+
+            if not use_radial_assist:
+                if self.arcgis_idw_radial_assist:
+                    logger.info("ArcGIS IDW：椭圆径向辅助场不可用，退回原始 IDW")
+                else:
+                    logger.info("ArcGIS IDW：arcgis_idw_radial_assist=False，使用原始 IDW")
+
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
             self._ensure_file_writable(output_tif_path)
             driver = gdal.GetDriverByName('GTiff')
@@ -1094,7 +1240,7 @@ class KmlToIaConverter:
                 weight_sum = weights.sum(axis=1)  # (n_pts,)
                 chunk_vals = np.full(n_pts, -9999.0, dtype=np.float64)
 
-                # 非精确匹配且权重和 > 0 的像素：加权平均
+                # 非精确匹配且权重和 > 0 的像素：加权平均（vals_f64 可能是残差）
                 valid_mask = (~exact_mask) & (weight_sum > 0.0)
                 if valid_mask.any():
                     w = weights[valid_mask]           # (n_valid, n_neighbors)
@@ -1105,10 +1251,29 @@ class KmlToIaConverter:
                 if exact_mask.any():
                     chunk_vals[exact_mask] = vals_f64[idxs[exact_mask, 0]]
 
-                del pts_query, dists, idxs, weights, weight_sum
+                del dists, idxs, weights, weight_sum
+
+                # v4.0 椭圆径向辅助场：将径向趋势加回残差场
+                if use_radial_assist and f_radial is not None:
+                    _dx_p = pts_query[:, 0] - cx
+                    _dy_p = pts_query[:, 1] - cy
+                    _pcoords = np.column_stack([_dx_p, _dy_p])
+                    _prot = _pcoords @ _rot_mat.T       # (n_pts, 2)
+                    _pu = _prot[:, 1]                   # 主轴分量
+                    _pv = _prot[:, 0]                   # 次轴分量
+                    _r_px = np.sqrt(_pu ** 2 + (_ratio * _pv) ** 2)
+                    _trend = f_radial(_r_px)
+                    # 仅对有效像素（非 NoData）加回趋势；NoData 标记值为 -9999.0，
+                    # 用 -9998.0 作为阈值以避免浮点精度问题
+                    _valid_for_trend = chunk_vals > -9998.0
+                    chunk_vals[_valid_for_trend] += _trend[_valid_for_trend]
+                    del _dx_p, _dy_p, _pcoords, _prot, _pu, _pv, _r_px, _trend, _valid_for_trend
+
+                del pts_query
 
                 result = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
                 del chunk_vals
+                # nodata 标记值为 -9999.0；用 -9998.0 作阈值以容忍浮点误差
                 nodata_mask = result < -9998.0
                 np.maximum(result, 0.0, out=result)
                 result[nodata_mask] = -9999.0
@@ -2719,6 +2884,9 @@ if __name__ == "__main__":
         idw_num_neighbors=12,        # 局部搜索邻近点数；默认12与ArcGIS一致，越大结果越平滑
         # idw_max_distance=50000,    # 最大搜索距离（米，UTM坐标），None表示不限制（与ArcGIS默认一致）
         #                            # 例如 50000 表示 50 km
+        # (v4.0 新增) 椭圆径向辅助场重塑，消除同心环带，形状与PGA等值线吻合（推荐 True）
+        # False=退回原始 IDW 行为（向后兼容/调试对比用）
+        arcgis_idw_radial_assist=True,
 
         # QGIS TIN 参数（仅 interp_method='qgis_tin' 时有效）
         qgis_tin_method=0,  # TIN子方法: 0=线性（快）, 1=Clough-Tocher（平滑）
