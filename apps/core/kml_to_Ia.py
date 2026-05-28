@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.10）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,14 +10,6 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.10）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
-
-主要改进（v3.10 相较 v3.9）：
-    1. qgis_idw（ArcGIS IDW）新增径向辅助场重塑（arcgis_idw_radial_assist，默认 True）：
-       - 先拟合 1D 径向趋势 f_radial(r)，再对残差执行 KD-Tree 局部 IDW，最后加回
-         径向趋势；显著消除等值线环状采样导致的同心阶梯环带（banding/plateau）。
-       - 保留椭圆方向与长短轴等几何形态，保留最值量级；新增计算开销远低于 KD-Tree 查询。
-       - 失败自动回退到 v3.9 原始 IDW 行为（保持向后兼容）。
-    2. 新增参数 arcgis_idw_radial_assist（默认 True；设为 False 可退回 v3.9 行为）。
 
 主要改进（v3.9 相较 v3.8）：
     1. scipy_tin 插值方法完全移除 KD-Tree IDW 填充逻辑：
@@ -139,9 +131,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.10）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.10)
+作者: acao (重构版 v3.9)
 日期: 2026-04-30
-版本: 3.10
+版本: 3.9
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -270,7 +262,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.10）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.9）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -384,9 +376,6 @@ class KmlToIaConverter:
         # ---- ArcGIS IDW 对齐参数（qgis_idw 方法专用）----
         idw_num_neighbors: int = 12,          # KD-Tree 局部搜索邻近点数，与 ArcGIS 默认一致
         idw_max_distance: Optional[float] = None,  # 最大搜索距离（米，UTM坐标），None 表示不限制
-        # ---- ArcGIS IDW 径向辅助场参数（v3.10 新增）----
-        # True=启用径向辅助场重塑（消除同心环带，推荐）；False=退回 v3.9 原始 IDW 行为
-        arcgis_idw_radial_assist: bool = True,
 
         # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
         ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
@@ -447,7 +436,6 @@ class KmlToIaConverter:
         # ArcGIS IDW 参数
         self.idw_num_neighbors = idw_num_neighbors
         self.idw_max_distance = idw_max_distance
-        self.arcgis_idw_radial_assist = arcgis_idw_radial_assist       # v3.10 新增
         # ArcGIS EBK 参数
         self.ebk_subset_size = ebk_subset_size
         self.ebk_overlap_factor = ebk_overlap_factor
@@ -1037,113 +1025,15 @@ class KmlToIaConverter:
             )
 
         tree = None
-        f_radial = None
         out_ds = None
         band = None
 
         try:
-            # ==============================================================
-            # v3.10 径向辅助场重塑（ArcGIS IDW）：
-            #   1) 拟合 1D 径向趋势 f_radial(r)
-            #   2) 对残差 aux = ia - f_radial(r) 执行局部 IDW
-            #   3) 像素最终值 = IDW(aux) + f_radial(r_pixel)
-            # 关闭或失败时回退到 v3.9：直接对原始值做 IDW
-            # ==============================================================
-            use_radial_assist = False
-            cx = cy = 0.0
-            idw_target_vals = values.astype(np.float64)
-
-            if self.arcgis_idw_radial_assist and len(x_arr) >= 3:
-                try:
-                    # 1. 计算几何中心
-                    cx = float(np.mean(x_arr))
-                    cy = float(np.mean(y_arr))
-
-                    # 2. 计算各采样点到中心的径向距离
-                    r_arr = np.sqrt((x_arr - cx) ** 2 + (y_arr - cy) ** 2)
-
-                    # 3. 按距离分 bin（容差 = resolution/2），合并均值
-                    sorted_idx = np.argsort(r_arr)
-                    r_sorted = r_arr[sorted_idx]
-                    v_sorted = values[sorted_idx].astype(np.float64)
-
-                    # 与 scipy_tin 径向辅助场保持一致：半像素容差可合并同一环带采样噪声，
-                    # 同时避免跨越相邻环带过度合并。
-                    tol_bin = self.resolution / 2.0
-                    merged_r = [float(r_sorted[0])]
-                    merged_v = [float(v_sorted[0])]
-                    running_sum = float(v_sorted[0])
-                    running_cnt = 1
-                    last_r = merged_r[0]
-                    for i in range(1, len(r_sorted)):
-                        _r = float(r_sorted[i])
-                        _v = float(v_sorted[i])
-                        if _r - last_r < tol_bin:
-                            running_sum += _v
-                            running_cnt += 1
-                        else:
-                            merged_v[-1] = running_sum / running_cnt
-                            merged_r.append(_r)
-                            merged_v.append(_v)
-                            last_r = _r
-                            running_sum = _v
-                            running_cnt = 1
-                    merged_v[-1] = running_sum / running_cnt
-                    del r_sorted, v_sorted, sorted_idx
-                    gc.collect()
-
-                    r_knots = np.array(merged_r, dtype=np.float64)
-                    v_knots = np.array(merged_v, dtype=np.float64)
-                    del merged_r, merged_v
-
-                    if len(r_knots) >= 2:
-                        # 4. 拟合 1D 径向趋势（单调三次 Hermite，无振荡）
-                        f_radial = _PchipInterpolator(r_knots, v_knots, extrapolate=True)
-                        n_knots = len(r_knots)
-
-                        # 5. 计算残差
-                        radial_at_samples = f_radial(r_arr)
-                        idw_target_vals = values.astype(np.float64) - radial_at_samples
-                        del radial_at_samples, r_arr, r_knots, v_knots
-                        gc.collect()
-
-                        use_radial_assist = True
-                        logger.info(
-                            "ArcGIS IDW 径向辅助场（v3.10）: 中心=(%.1f, %.1f), 控制点数=%d, "
-                            "残差范围=[%.4f, %.4f]",
-                            cx, cy, n_knots,
-                            float(idw_target_vals.min()), float(idw_target_vals.max()),
-                        )
-                    else:
-                        logger.warning(
-                            "ArcGIS IDW 径向辅助场：合并后控制点数 %d < 2，回退到 v3.9 原始 IDW",
-                            len(r_knots),
-                        )
-                        del r_knots, v_knots, r_arr
-                        gc.collect()
-                except Exception as _e:
-                    logger.warning(
-                        "ArcGIS IDW 径向辅助场构建失败（%s），回退到 v3.9 原始 IDW", _e
-                    )
-                    idw_target_vals = values.astype(np.float64)
-                    use_radial_assist = False
-            elif self.arcgis_idw_radial_assist:
-                logger.warning(
-                    "ArcGIS IDW 径向辅助场未启用：采样点数=%d < 3，回退到 v3.9 原始 IDW",
-                    len(x_arr),
-                )
-
-            logger.info(
-                "ArcGIS IDW v3.10 径向辅助场状态: 配置启用=%s, 实际启用=%s",
-                self.arcgis_idw_radial_assist,
-                use_radial_assist,
-            )
-
             # 建立 KD-Tree（在所有分块插值时共享）
             pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
             tree = _cKDTree(pts_train)
             del pts_train
-            vals_f64 = idw_target_vals
+            vals_f64 = values.astype(np.float64)
 
             n_neighbors = min(self.idw_num_neighbors, len(x_arr))
             power = self.qgis_idw_power
@@ -1179,9 +1069,6 @@ class KmlToIaConverter:
                 actual_rows = row_end - row_start
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
                 xx, yy = np.meshgrid(grid_x, grid_y)
-                radial_2d = None
-                if use_radial_assist and f_radial is not None:
-                    radial_2d = f_radial(np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2))
                 pts_query = np.column_stack([xx.ravel(), yy.ravel()])
                 del xx, yy
                 n_pts = pts_query.shape[0]
@@ -1220,18 +1107,9 @@ class KmlToIaConverter:
 
                 del pts_query, dists, idxs, weights, weight_sum
 
-                result = chunk_vals.reshape(actual_rows, self._n_cols)
+                result = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
                 del chunk_vals
-
                 nodata_mask = result < -9998.0
-                # v3.10：将径向趋势加回残差场（仅有效像素）
-                if radial_2d is not None:
-                    valid_mask = ~nodata_mask
-                    result[valid_mask] += radial_2d[valid_mask]
-                    del valid_mask
-                    del radial_2d
-
-                result = result.astype(np.float32)
                 np.maximum(result, 0.0, out=result)
                 result[nodata_mask] = -9999.0
                 return row_start, result
@@ -2839,7 +2717,6 @@ if __name__ == "__main__":
         # ArcGIS IDW 参数（仅 interp_method='qgis_idw' 时有效，需安装scipy）
         qgis_idw_power=2.0,         # IDW幂次；推荐1.0~4.0，越大近点主导（与ArcGIS默认一致）
         idw_num_neighbors=12,        # 局部搜索邻近点数；默认12与ArcGIS一致，越大结果越平滑
-        arcgis_idw_radial_assist=True,  # (v3.10 新增) 径向辅助场重塑；False=退回 v3.9 原始 IDW
         # idw_max_distance=50000,    # 最大搜索距离（米，UTM坐标），None表示不限制（与ArcGIS默认一致）
         #                            # 例如 50000 表示 50 km
 
