@@ -990,7 +990,7 @@ class KmlToIaConverter:
             del interpolator, layer
             gc.collect()
 
-    # ==================== ArcGIS IDW 插值方法（KD-Tree 局部 IDW）====================
+    # ==================== ArcGIS IDW 插值方法（等值线约束双边界 IDW）====================
 
     def _run_arcgis_idw_interpolation(
             self,
@@ -1000,7 +1000,335 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        ArcGIS IDW 风格的局部反距离权重插值（KD-Tree 加速）。
+        相邻等值线约束双边界 IDW 插值（Contour-Aware IDW）。
+
+        算法思路：
+            1. 按 PGA/Ia 等值线层级构建每层的 cKDTree，用于距离查询。
+            2. 将各层等值线圈栅格化为 rank 栅格（rank = 像素被包含的等值线层数）：
+               - rank=0：位于最外圈之外 → 直接赋最小 Ia 值；
+               - rank=k（1≤k<n）：位于第 k-1 层（外圈）与第 k 层（内圈）之间
+                 → 仅用这两层的边界距离做线性混合；
+               - rank≥n：位于最内圈之内 → 直接赋最大 Ia 值。
+            3. 混合公式（无 overshoot）：
+               t = d_outer / (d_outer + d_inner)，value = ia_outer*(1−t) + ia_inner*t。
+            4. 最终严格 clamp 到 [ia_min, ia_max]，保证不外溢。
+
+        回退策略：
+            若等值线层数 < 2（或 rank 栅格构建失败），自动回退至标准 KD-Tree 局部 IDW。
+
+        性能：
+            - rank 栅格由 GDAL RasterizeLayer（C 实现）计算，一次性完成，开销低。
+            - 每个像素仅需查询 2 个 cKDTree（k=1），比原局部 IDW（k=12）更快。
+            - 保留 ThreadPoolExecutor 多线程分块并行，GIL 由 cKDTree 释放。
+
+        参数:
+            x_arr: 采样点 X 坐标（UTM easting，米）
+            y_arr: 采样点 Y 坐标（UTM northing，米）
+            values: 采样点对应值（Ia），与 x_arr/y_arr 一一对应
+            output_tif_path: 输出 GeoTIFF 文件路径
+        """
+        if not _HAS_SCIPY:
+            raise ImportError(
+                "scipy 未安装，无法使用 'qgis_idw' (Contour-Aware IDW) 方法。"
+                "请在 QGIS Python 环境中运行: pip install scipy"
+            )
+
+        # ── 准备等值线层级结构 ─────────────────────────────────────────────────────
+        # self._contours 按 pga_g 降序排列（内圈→外圈），ia 亦同方向单调
+        ia_key_to_coords: dict = {}
+        for c in self._contours:
+            k = float(c['ia'])
+            ia_key_to_coords.setdefault(k, []).append(c['coordinates'])
+
+        sorted_ia: List[float] = sorted(ia_key_to_coords.keys())  # 升序：外→内
+        n_levels = len(sorted_ia)
+
+        if n_levels < 2:
+            logger.info(
+                "等值线层数不足（%d 层），回退至标准 KD-Tree 局部 IDW", n_levels
+            )
+            self._run_arcgis_idw_kd_legacy(x_arr, y_arr, values, output_tif_path)
+            return
+
+        out_ds = None
+        band = None
+
+        try:
+            ia_min = sorted_ia[0]
+            ia_max = sorted_ia[-1]
+            ia_np = np.array(sorted_ia, dtype=np.float64)
+
+            logger.info(
+                "Contour-Aware IDW: %d 层等值线, Ia=[%.6f, %.6f] m/s",
+                n_levels, ia_min, ia_max,
+            )
+
+            # ── 构建每层等值线的 UTM 点数组及 cKDTree ────────────────────────────
+            level_trees: List[_cKDTree] = []
+            for ia_val in sorted_ia:
+                all_pts: List[tuple] = []
+                for coords_ll in ia_key_to_coords[ia_val]:
+                    xys = self._coord_transform.TransformPoints(
+                        [(float(lo), float(la)) for lo, la in coords_ll]
+                    )
+                    all_pts.extend((p[0], p[1]) for p in xys)
+                pts_arr = np.array(all_pts, dtype=np.float64)
+                level_trees.append(_cKDTree(pts_arr))
+                del all_pts, pts_arr
+
+            # ── 计算 rank 栅格 ────────────────────────────────────────────────────
+            try:
+                rank_arr = self._build_rank_raster(sorted_ia, ia_key_to_coords)
+            except Exception as exc:
+                logger.warning(
+                    "rank 栅格构建失败（%s），回退至标准 KD-Tree 局部 IDW", exc
+                )
+                for t in level_trees:
+                    del t
+                self._run_arcgis_idw_kd_legacy(x_arr, y_arr, values, output_tif_path)
+                return
+
+            # ── 创建输出 GeoTIFF ──────────────────────────────────────────────────
+            os.makedirs(
+                os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True
+            )
+            self._ensure_file_writable(output_tif_path)
+            driver = gdal.GetDriverByName('GTiff')
+            out_ds = driver.Create(
+                output_tif_path,
+                self._n_cols, self._n_rows, 1, gdal.GDT_Float32,
+                ['COMPRESS=LZW', 'TILED=YES'],
+            )
+            out_ds.SetGeoTransform(self._geo_transform)
+            out_ds.SetProjection(self._utm_srs.ExportToWkt())
+            band = out_ds.GetRasterBand(1)
+            band.SetNoDataValue(-9999.0)
+
+            grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
+            n_rows = self._n_rows
+            chunk_rows = self.chunk_size
+            chunk_starts = list(range(0, n_rows, chunk_rows))
+
+            # ── 内层分块计算函数（线程安全：所有引用均为只读）────────────────────
+            def _compute_chunk_contour_aware(row_start: int) -> Tuple[int, np.ndarray]:
+                row_end = min(row_start + chunk_rows, n_rows)
+                actual_rows = row_end - row_start
+
+                grid_y = (
+                    self._y_max
+                    - (np.arange(row_start, row_end) + 0.5) * self._res_lat
+                )
+                xx, yy = np.meshgrid(grid_x, grid_y)
+                px = xx.ravel().astype(np.float64)
+                py = yy.ravel().astype(np.float64)
+                del xx, yy
+
+                rk = rank_arr[row_start:row_end].ravel().astype(np.int32)
+                result = np.full(len(px), ia_min, dtype=np.float64)
+
+                # rank >= n_levels：最内圈内部 → 最大 Ia
+                result[rk >= n_levels] = ia_max
+
+                # rank == k（1 ≤ k < n_levels）：位于第 k-1 层与第 k 层之间
+                for k in range(1, n_levels):
+                    mask = rk == k
+                    if not mask.any():
+                        continue
+                    pts = np.column_stack([px[mask], py[mask]])
+                    # 到外圈（level k-1）的最近距离
+                    d_out, _ = level_trees[k - 1].query(pts, k=1)
+                    # 到内圈（level k）的最近距离
+                    d_in, _ = level_trees[k].query(pts, k=1)
+                    d_sum = d_out + d_in
+                    # t=0 → 落在外圈上，t=1 → 落在内圈上
+                    t = np.where(d_sum > 1e-10, d_out / d_sum, 0.5)
+                    result[mask] = ia_np[k - 1] + t * (ia_np[k] - ia_np[k - 1])
+                    del pts, d_out, d_in, d_sum, t
+
+                # 严格 clamp，杜绝 overshoot
+                np.clip(result, ia_min, ia_max, out=result)
+
+                chunk_out = result.reshape(actual_rows, self._n_cols).astype(np.float32)
+                del px, py, rk, result
+                return row_start, chunk_out
+
+            start_time = time.time()
+            logger.info(
+                "Contour-Aware IDW 插值开始，分块数=%d，并行线程数=%d",
+                len(chunk_starts), self.max_interp_workers,
+            )
+
+            # 滑动窗口式并行提交与消费（与原 ArcGIS IDW 保持相同模式）
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.max_interp_workers
+            ) as executor:
+                pending: dict = {}
+                submit_ptr = 0
+
+                while (
+                    submit_ptr < len(chunk_starts)
+                    and submit_ptr < self.max_interp_workers
+                ):
+                    rs = chunk_starts[submit_ptr]
+                    pending[rs] = executor.submit(_compute_chunk_contour_aware, rs)
+                    submit_ptr += 1
+
+                for chunk_idx, rs in enumerate(chunk_starts):
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise TaskCancelledException("任务已被取消")
+                    try:
+                        row_start_res, chunk_vals = pending.pop(rs).result()
+                    except Exception as exc:
+                        logger.error(
+                            "Contour-Aware IDW 分块 row_start=%d 失败: %s", rs, exc
+                        )
+                        raise
+
+                    band.WriteArray(chunk_vals, 0, row_start_res)
+                    del chunk_vals
+                    gc.collect()
+
+                    if submit_ptr < len(chunk_starts):
+                        next_rs = chunk_starts[submit_ptr]
+                        pending[next_rs] = executor.submit(
+                            _compute_chunk_contour_aware, next_rs
+                        )
+                        submit_ptr += 1
+
+                    row_end = min(rs + chunk_rows, n_rows)
+                    if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
+                        elapsed = time.time() - start_time
+                        logger.info(
+                            "Contour-Aware IDW 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
+                            row_end, n_rows, 100.0 * row_end / n_rows, elapsed,
+                        )
+
+            band.ComputeStatistics(False)
+            band.FlushCache()
+
+            total_time = time.time() - start_time
+            logger.info(
+                "Contour-Aware IDW 完成，总耗时: %.1fs, 已保存: %s",
+                total_time, output_tif_path,
+            )
+
+        except TaskCancelledException:
+            raise
+        except Exception as exc:
+            logger.error("Contour-Aware IDW 插值失败: %s", exc, exc_info=True)
+            raise
+        finally:
+            out_ds = None
+            band = None
+            gc.collect()
+
+    # ── rank 栅格辅助方法 ─────────────────────────────────────────────────────────
+
+    def _build_rank_raster(
+        self,
+        sorted_ia: List[float],
+        ia_key_to_coords: dict,
+    ) -> np.ndarray:
+        """
+        将各层等值线圈栅格化为 rank 栅格（int16）。
+
+        rank(pixel) = 包含该像素的等值线层数（多边形内部计数）。
+        各层依 ia 升序遍历（最外圈先），每层独立栅格化为 0/1 掩码后累加。
+
+        实现：
+            - 使用 GDAL 内存驱动（MEM）和 OGR 内存驱动（Memory）。
+            - 每层构建一个 OGR Polygon 图层，调用 gdal.RasterizeLayer 烧录值=1。
+            - 逐层累加掩码到 rank_arr（int16）。
+        """
+        rank_arr = np.zeros((self._n_rows, self._n_cols), dtype=np.int16)
+        gdal_mem_drv = gdal.GetDriverByName('MEM')
+        ogr_mem_drv = ogr.GetDriverByName('Memory')
+
+        for level_idx, ia_val in enumerate(sorted_ia):
+            # 构建当前层的 OGR 多边形图层
+            tmp_ogr_ds = ogr_mem_drv.CreateDataSource(f'rnk_{level_idx}')
+            tmp_lyr = tmp_ogr_ds.CreateLayer(
+                'r', srs=self._utm_srs, geom_type=ogr.wkbPolygon
+            )
+
+            n_feats = 0
+            for coords_ll in ia_key_to_coords[ia_val]:
+                if len(coords_ll) < 3:
+                    continue
+                ring_geom = ogr.Geometry(ogr.wkbLinearRing)
+                for lon, lat in coords_ll:
+                    x, y, _ = self._coord_transform.TransformPoint(
+                        float(lon), float(lat)
+                    )
+                    ring_geom.AddPoint(x, y)
+                # 确保环已闭合
+                p0 = ring_geom.GetPoint(0)
+                pn = ring_geom.GetPoint(ring_geom.GetPointCount() - 1)
+                if abs(p0[0] - pn[0]) > 1e-6 or abs(p0[1] - pn[1]) > 1e-6:
+                    ring_geom.AddPoint(p0[0], p0[1])
+                if ring_geom.GetPointCount() < 4:
+                    continue
+
+                poly_geom = ogr.Geometry(ogr.wkbPolygon)
+                poly_geom.AddGeometry(ring_geom)
+
+                feat = ogr.Feature(tmp_lyr.GetLayerDefn())
+                feat.SetGeometry(poly_geom)
+                tmp_lyr.CreateFeature(feat)
+                feat = None
+                n_feats += 1
+
+            if n_feats == 0:
+                logger.warning(
+                    "rank 栅格：ia=%.6f 层无有效多边形，跳过", ia_val
+                )
+                tmp_ogr_ds = None
+                continue
+
+            # 栅格化为 Byte（0=外部，1=内部）
+            tmp_rast = gdal_mem_drv.Create(
+                '', self._n_cols, self._n_rows, 1, gdal.GDT_Byte
+            )
+            tmp_rast.SetGeoTransform(self._geo_transform)
+            tmp_rast.SetProjection(self._utm_srs.ExportToWkt())
+            tmp_b = tmp_rast.GetRasterBand(1)
+            tmp_b.Fill(0)
+
+            gdal.RasterizeLayer(tmp_rast, [1], tmp_lyr, burn_values=[1.0])
+            tmp_b.FlushCache()
+
+            lvl_mask = tmp_b.ReadAsArray().astype(np.int16)
+            rank_arr += lvl_mask
+
+            # 释放 GDAL/OGR 对象
+            tmp_b = None
+            tmp_rast = None
+            tmp_ogr_ds = None
+            del lvl_mask
+            gc.collect()
+
+            logger.debug(
+                "rank 栅格：level %d (ia=%.6f) 栅格化完成", level_idx, ia_val
+            )
+
+        logger.info(
+            "rank 栅格构建完成: rank 范围=[%d, %d], 层数=%d",
+            int(rank_arr.min()), int(rank_arr.max()), len(sorted_ia),
+        )
+        return rank_arr
+
+    # ── 标准 KD-Tree 局部 IDW（原实现，作为回退路径保留）────────────────────────
+
+    def _run_arcgis_idw_kd_legacy(
+            self,
+            x_arr: np.ndarray,
+            y_arr: np.ndarray,
+            values: np.ndarray,
+            output_tif_path: str,
+    ) -> None:
+        """
+        ArcGIS IDW 风格的局部反距离权重插值（KD-Tree 加速，原始实现）。
 
         与 ArcGIS IDW 工具原理一致：
             - 使用 scipy.spatial.cKDTree 对每个像素查询最近的 N 个采样点
@@ -1045,7 +1373,9 @@ class KmlToIaConverter:
                 f"{max_dist:.1f} m" if max_dist is not None else "无限制",
             )
 
-            os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
+            os.makedirs(
+                os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True
+            )
             self._ensure_file_writable(output_tif_path)
             driver = gdal.GetDriverByName('GTiff')
             out_ds = driver.Create(
