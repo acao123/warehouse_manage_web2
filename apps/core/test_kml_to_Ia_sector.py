@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -239,6 +240,121 @@ class ArcgisSectorSearchTests(unittest.TestCase):
         np.testing.assert_array_equal(y_arr, np.array([20.0, 21.0, 22.0]))
         np.testing.assert_array_equal(ia_arr, np.array([1.0, 1.0, 2.0], dtype=np.float32))
         np.testing.assert_array_equal(contour_ids, np.array([0, 0, 1], dtype=np.int32))
+
+    def _make_arcgis_idw_converter(self, *, arcgis_idw_radial_assist=True):
+        converter = KML_TO_IA.KmlToIaConverter(
+            kml_path="dummy.kml",
+            ia_output_path="dummy.tif",
+            interp_method="qgis_idw",
+            resolution=0.1,
+            qgis_idw_power=1.0,
+            idw_num_neighbors=3,
+            chunk_size=1,
+            max_interp_workers=1,
+            arcgis_idw_radial_assist=arcgis_idw_radial_assist,
+        )
+        converter._n_cols = 1
+        converter._n_rows = 1
+        converter._x_min = 1.5
+        converter._y_max = 0.5
+        converter._res_lon = 1.0
+        converter._res_lat = 1.0
+        converter._geo_transform = (0, 1, 0, 0, 0, -1)
+        converter._utm_srs = types.SimpleNamespace(ExportToWkt=lambda: "WKT")
+        converter._ensure_file_writable = lambda _: None
+        return converter
+
+    def _run_arcgis_idw_once(self, converter, pchip_cls):
+        class _FakeBand:
+            def __init__(self):
+                self.arr = None
+
+            def SetNoDataValue(self, _):
+                return None
+
+            def WriteArray(self, arr, _xoff, _yoff):
+                self.arr = np.array(arr, copy=True)
+
+            def ComputeStatistics(self, _):
+                return None
+
+            def FlushCache(self):
+                return None
+
+        class _FakeDataset:
+            def __init__(self):
+                self.band = _FakeBand()
+
+            def SetGeoTransform(self, _):
+                return None
+
+            def SetProjection(self, _):
+                return None
+
+            def GetRasterBand(self, _):
+                return self.band
+
+        class _FakeDriver:
+            def __init__(self):
+                self.dataset = _FakeDataset()
+
+            def Create(self, *_args, **_kwargs):
+                return self.dataset
+
+        class _FakeTree:
+            def query(self, pts_query, k):
+                d = np.array([1.0, 2.0, 3.0], dtype=np.float64)[:k]
+                i = np.array([0, 1, 2], dtype=np.int64)[:k]
+                return np.tile(d, (pts_query.shape[0], 1)), np.tile(i, (pts_query.shape[0], 1))
+
+        fake_driver = _FakeDriver()
+        fake_gdal = types.SimpleNamespace(
+            GDT_Float32=6,
+            GetDriverByName=lambda _name: fake_driver,
+        )
+
+        with patch.object(KML_TO_IA, "_HAS_SCIPY", True), \
+             patch.object(KML_TO_IA, "_cKDTree", lambda _pts: _FakeTree(), create=True), \
+             patch.object(KML_TO_IA, "_PchipInterpolator", pchip_cls, create=True), \
+             patch.object(KML_TO_IA, "gdal", fake_gdal):
+            converter._run_arcgis_idw_interpolation(
+                np.array([-1.0, 0.0, 1.0], dtype=np.float64),
+                np.array([0.0, 0.0, 0.0], dtype=np.float64),
+                np.array([1.0, 0.0, 1.0], dtype=np.float32),
+                "/tmp/arcgis_idw_test.tif",
+            )
+
+        return float(fake_driver.dataset.band.arr[0, 0])
+
+    def test_arcgis_idw_radial_assist_adds_back_radial_trend(self):
+        class _IdentityPchip:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, r):
+                return np.asarray(r, dtype=np.float64)
+
+        converter = self._make_arcgis_idw_converter(arcgis_idw_radial_assist=True)
+        result = self._run_arcgis_idw_once(converter, _IdentityPchip)
+        self.assertAlmostEqual(result, 2.0, places=6)
+
+    def test_arcgis_idw_radial_assist_falls_back_when_pchip_fails(self):
+        class _FailingPchip:
+            def __init__(self, *_args, **_kwargs):
+                raise RuntimeError("pchip failed")
+
+        converter = self._make_arcgis_idw_converter(arcgis_idw_radial_assist=True)
+        result = self._run_arcgis_idw_once(converter, _FailingPchip)
+        # d=[1,2,3]、v=[1,0,1]、power=1.0 的加权均值（回退到原始 IDW 时应得到此值）
+        expected = (1.0 + (1.0 / 3.0)) / (1.0 + 0.5 + (1.0 / 3.0))
+        self.assertAlmostEqual(result, expected, places=6)
+
+    def test_arcgis_idw_radial_assist_default_enabled(self):
+        converter = KML_TO_IA.KmlToIaConverter(
+            kml_path="dummy.kml",
+            ia_output_path="dummy.tif",
+        )
+        self.assertTrue(converter.arcgis_idw_radial_assist)
 
 
 if __name__ == "__main__":
