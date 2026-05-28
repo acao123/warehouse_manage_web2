@@ -1067,6 +1067,8 @@ class KmlToIaConverter:
                     r_sorted = r_arr[sorted_idx]
                     v_sorted = values[sorted_idx].astype(np.float64)
 
+                    # 与 scipy_tin 径向辅助场保持一致：半像素容差可合并同一环带采样噪声，
+                    # 同时避免跨越相邻环带过度合并。
                     tol_bin = self.resolution / 2.0
                     merged_r = [float(r_sorted[0])]
                     merged_v = [float(v_sorted[0])]
@@ -1131,11 +1133,11 @@ class KmlToIaConverter:
                     len(x_arr),
                 )
 
-            logger.info("ArcGIS IDW 径向辅助场开关: %s", self.arcgis_idw_radial_assist)
-            if use_radial_assist:
-                logger.info("ArcGIS IDW v3.10 模式：径向辅助场重塑已启用")
-            else:
-                logger.info("ArcGIS IDW v3.10 模式：直接对原始值做 IDW（无径向辅助）")
+            logger.info(
+                "ArcGIS IDW v3.10 径向辅助场状态: 配置启用=%s, 实际启用=%s",
+                self.arcgis_idw_radial_assist,
+                use_radial_assist,
+            )
 
             # 建立 KD-Tree（在所有分块插值时共享）
             pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
@@ -1224,11 +1226,12 @@ class KmlToIaConverter:
                 nodata_mask = result < -9998.0
                 # v3.10：将径向趋势加回残差场（仅有效像素）
                 if radial_2d is not None:
-                    result[~nodata_mask] += radial_2d[~nodata_mask]
+                    valid_mask = ~nodata_mask
+                    result[valid_mask] += radial_2d[valid_mask]
+                    del valid_mask
                     del radial_2d
 
                 result = result.astype(np.float32)
-                nodata_mask = result < -9998.0
                 np.maximum(result, 0.0, out=result)
                 result[nodata_mask] = -9999.0
                 return row_start, result

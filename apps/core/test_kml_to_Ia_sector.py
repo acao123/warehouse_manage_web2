@@ -241,7 +241,7 @@ class ArcgisSectorSearchTests(unittest.TestCase):
         np.testing.assert_array_equal(ia_arr, np.array([1.0, 1.0, 2.0], dtype=np.float32))
         np.testing.assert_array_equal(contour_ids, np.array([0, 0, 1], dtype=np.int32))
 
-    def _make_arcgis_idw_converter(self, *, radial_assist=True):
+    def _make_arcgis_idw_converter(self, *, arcgis_idw_radial_assist=True):
         converter = KML_TO_IA.KmlToIaConverter(
             kml_path="dummy.kml",
             ia_output_path="dummy.tif",
@@ -251,7 +251,7 @@ class ArcgisSectorSearchTests(unittest.TestCase):
             idw_num_neighbors=3,
             chunk_size=1,
             max_interp_workers=1,
-            arcgis_idw_radial_assist=radial_assist,
+            arcgis_idw_radial_assist=arcgis_idw_radial_assist,
         )
         converter._n_cols = 1
         converter._n_rows = 1
@@ -329,12 +329,12 @@ class ArcgisSectorSearchTests(unittest.TestCase):
     def test_arcgis_idw_radial_assist_adds_back_radial_trend(self):
         class _IdentityPchip:
             def __init__(self, *_args, **_kwargs):
-                return None
+                pass
 
             def __call__(self, r):
                 return np.asarray(r, dtype=np.float64)
 
-        converter = self._make_arcgis_idw_converter(radial_assist=True)
+        converter = self._make_arcgis_idw_converter(arcgis_idw_radial_assist=True)
         result = self._run_arcgis_idw_once(converter, _IdentityPchip)
         self.assertAlmostEqual(result, 2.0, places=6)
 
@@ -343,8 +343,9 @@ class ArcgisSectorSearchTests(unittest.TestCase):
             def __init__(self, *_args, **_kwargs):
                 raise RuntimeError("pchip failed")
 
-        converter = self._make_arcgis_idw_converter(radial_assist=True)
+        converter = self._make_arcgis_idw_converter(arcgis_idw_radial_assist=True)
         result = self._run_arcgis_idw_once(converter, _FailingPchip)
+        # d=[1,2,3]、v=[1,0,1]、power=1.0 的加权均值（回退到原始 IDW 时应得到此值）
         expected = (1.0 + (1.0 / 3.0)) / (1.0 + 0.5 + (1.0 / 3.0))
         self.assertAlmostEqual(result, expected, places=6)
 
