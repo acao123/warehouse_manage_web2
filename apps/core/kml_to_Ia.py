@@ -288,6 +288,7 @@ gdal.UseExceptions()
 _PGA_NAME_PATTERN = re.compile(r'^([0-9]*\.?[0-9]+)\s*[gG]$')
 _IDW_EXACT_MATCH_EPSILON = 1e-6          # UTM 米制坐标下的精确命中容差，避免浮点误差漏判
 _IDW_CANCEL_CHECK_INTERVAL = 4           # 每处理若干条等值线检查一次取消信号，兼顾响应性与开销
+_CONTOUR_IA_CONSISTENCY_TOLERANCE = 1e-12
 
 
 class TaskCancelledException(Exception):
@@ -1215,7 +1216,12 @@ class KmlToIaConverter:
                 contour_vals = vals_f64[mask]
                 if contour_vals.size == 0:
                     raise ValueError("存在空等值线分组，无法执行 qgis_idw")
-                if not np.allclose(contour_vals, contour_vals[0], rtol=0.0, atol=1e-12):
+                if not np.allclose(
+                    contour_vals,
+                    contour_vals[0],
+                    rtol=0.0,
+                    atol=_CONTOUR_IA_CONSISTENCY_TOLERANCE,
+                ):
                     raise ValueError(
                         f"contour_id={int(unique_contours[contour_pos])} 的 Ia 值不一致，"
                         "无法执行按等值线的 qgis_idw"
@@ -1302,6 +1308,8 @@ class KmlToIaConverter:
                     valid_rows = ~exact_mask
                     if valid_rows.any():
                         selected_dists = contour_dists[valid_rows]
+                        # limit_contours=True 时必有 used_contours < n_contours，
+                        # 因此这里只在真正需要截取最近 K 条等值线时才执行 argpartition。
                         top_pos = np.argpartition(
                             selected_dists, kth=used_contours - 1, axis=1
                         )[:, :used_contours]
