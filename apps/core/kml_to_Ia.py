@@ -287,6 +287,10 @@ def _select_arcgis_sector_neighbors(
     """
     为 ArcGIS 风格 IDW 扇区搜索生成候选邻居 mask。
 
+    约定:
+        dists / idxs 需保持 cKDTree.query 的返回顺序（按距离升序），这样每个扇区
+        用 cumsum 截取前 N 个时，得到的就是该扇区最近邻。
+
     返回:
         selected_mask: 每个像素最终参与加权的邻居布尔 mask
         valid_candidates: 满足索引/距离限制的候选邻居布尔 mask
@@ -1107,6 +1111,8 @@ class KmlToIaConverter:
 
         try:
             # 建立 KD-Tree（在所有分块插值时共享）
+            # 注意：pts_train 需要保留到所有分块结束，因为扇区搜索要用候选邻居坐标
+            # 计算相对查询像素的方位角；不能像旧版那样在建树后立刻删除。
             pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
             tree = _cKDTree(pts_train)
             vals_f64 = values.astype(np.float64)
@@ -1120,6 +1126,8 @@ class KmlToIaConverter:
             target_neighbors = n_sectors * points_per_sector
             k_large = min(
                 len(x_arr),
+                # 经验系数：4×原目标邻居数，给扇区均衡选点留足候选；
+                # 3×扇区目标邻居数，确保即使部分方向采样稀疏也有安全余量。
                 max(n_neighbors * 4, target_neighbors * 3),
             )
             power = self.qgis_idw_power
@@ -1169,6 +1177,7 @@ class KmlToIaConverter:
                 # 精确匹配（d=0）的像素：直接取该采样点的值
                 exact_hits = dists == 0.0
                 exact_mask = np.any(exact_hits, axis=1)
+                # 仅 exact_mask=True 的行才会使用该位置；其余行为 argmax 默认 0，无影响。
                 exact_pos = np.argmax(exact_hits, axis=1)
 
                 selected_mask, valid_candidates = _select_arcgis_sector_neighbors(
