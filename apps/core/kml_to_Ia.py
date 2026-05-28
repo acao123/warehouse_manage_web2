@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.11）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.12）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -11,6 +11,11 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.11）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
 
+主要改进（v3.12 相较 v3.11）：
+    1. qgis_idw（ArcGIS IDW）在最外圈以外统一输出 NoData（-9999.0）：
+       - 使栅格统计最小值保持为最外圈 Ia 值 ia[N-1]，不再被外圈衰减拖低到接近 0。
+       - 最外圈以外完全回到背景，不再出现亮度延伸，结果与 PGA 圈严格对应。
+
 主要改进（v3.11 相较 v3.10）：
     1. qgis_idw（ArcGIS IDW）改为"区域分段 IDW"，消除甜甜圈和光晕效应：
        - 用 OGR/GDAL 栅格化得到区域索引栅格（region_arr），每个像素标明
@@ -18,8 +23,7 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.11）
        - 内圈以内（region=0）：直接取最内圈 Ia 常量，无插值误差。
        - 相邻圈之间（region=1..N-1）：仅用内外两条等值线做 2 点 IDW，
          消除其他等值线干扰，保证单调过渡。
-       - 外圈以外（region=N）：用距离衰减公式 ia_out * decay_dist / (d + decay_dist)，
-         天然压到 0，消除光晕效应。
+       - 外圈以外（region=N）：v3.12 起统一写为 NoData，不再做外推衰减。
 
 主要改进（v3.10 相较 v3.9）：
     1. qgis_idw（ArcGIS IDW）改为按等值线分组的 KD-Tree IDW：
@@ -1010,7 +1014,7 @@ class KmlToIaConverter:
             del interpolator, layer
             gc.collect()
 
-    # ==================== ArcGIS IDW 插值方法（区域分段 IDW v3.11）====================
+    # ==================== ArcGIS IDW 插值方法（区域分段 IDW v3.12）====================
 
     def _compute_contour_region_raster(self) -> np.ndarray:
         """
@@ -1107,26 +1111,26 @@ class KmlToIaConverter:
             contour_ids: Optional[np.ndarray] = None,
     ) -> None:
         """
-        ArcGIS IDW 风格的反距离权插值（v3.11：按区域分段）。
+        ArcGIS IDW 风格的反距离权插值（v3.12：按区域分段，外圈 NoData）。
 
-        v3.11 说明（消除甜甜圈和光晕）：
+        v3.12 说明（保留 v3.11 分区逻辑，仅修正外圈以外行为）：
             v3.10 的 IDW 本质上仍是插值，无法外推，导致：
               - 内圈以内：所有外圈值拉低中心 → 甜甜圈。
               - 外圈以外：内圈值拉高外部 → 光晕。
 
-            v3.11 改为按区域分段处理：
+            v3.11 改为按区域分段处理，v3.12 进一步将外圈以外统一设为 NoData：
               1. 先用 OGR/GDAL 栅格化得到区域索引栅格（region_arr）。
               2. 每条等值线单独建一棵 KD-Tree（k=1 查询）。
               3. 内圈以内（region=0）: 直接取 ia[0] 常量。
               4. 相邻圈之间（region=1..N-1）: 仅用内外两条等值线做 2 点 IDW。
-              5. 外圈以外（region=N）: 衰减公式 ia_out * decay_dist / (d + decay_dist)。
+              5. 外圈以外（region=N）: 统一写为 NoData（-9999.0）。
 
         参数:
             x_arr: 采样点X坐标（UTM easting，米）
             y_arr: 采样点Y坐标（UTM northing，米）
             values: 采样点对应值（Ia）
             output_tif_path: 输出 GeoTIFF 文件路径
-            contour_ids: 向后兼容参数（保留入口签名），v3.11 内部不使用
+            contour_ids: 向后兼容参数（保留入口签名），v3.12 内部不使用
         """
         if not _HAS_SCIPY:
             raise ImportError(
@@ -1144,7 +1148,7 @@ class KmlToIaConverter:
             N = len(self._contours)
 
             if N == 0:
-                raise RuntimeError("ArcGIS IDW v3.11: 没有等值线数据")
+                raise RuntimeError("ArcGIS IDW v3.12: 没有等值线数据")
 
             # ---- 每条等值线单独建一棵 KD-Tree（k=1 查询） ----
             # self._contours 已按 PGA 从大到小排序，index 0 = innermost
@@ -1168,32 +1172,13 @@ class KmlToIaConverter:
                     ).astype(np.float64)
                 trees.append(_cKDTree(pts_c))
 
-            # ---- 计算 decay_dist（外圈以外的衰减尺度） ----
-            if N >= 2:
-                # 取 contour[N-2] 的采样点，查询到 contour[N-1] 树的最近距离
-                mask_inner = contour_ids == (N - 2)
-                if mask_inner.any():
-                    pts_sample = np.column_stack(
-                        [x_arr[mask_inner], y_arr[mask_inner]]
-                    ).astype(np.float64)
-                    dists_to_outer, _ = trees[N - 1].query(pts_sample, k=1)
-                    decay_dist = float(max(np.median(dists_to_outer), self.resolution))
-                else:
-                    decay_dist = float(max(
-                        self._x_max - self._x_min,
-                        self._y_max - self._y_min,
-                    ) / 4.0)
-            else:
-                decay_dist = float(max(
-                    self._x_max - self._x_min,
-                    self._y_max - self._y_min,
-                ) / 4.0)
-
+            max_dist_text = f"{max_dist:.1f} m" if max_dist is not None else "无限制"
             logger.info(
-                "ArcGIS IDW v3.11 (按区域分段): 等值线数=%d, decay_dist=%.1f m, "
+                "ArcGIS IDW v3.12 (按区域分段，外圈 NoData): 等值线数=%d, "
                 "幂次=%.1f, 最大距离=%s",
-                N, decay_dist, power,
-                f"{max_dist:.1f} m" if max_dist is not None else "无限制",
+                N,
+                power,
+                max_dist_text,
             )
 
             # ---- 预计算区域索引栅格 ----
@@ -1270,20 +1255,10 @@ class KmlToIaConverter:
                     )
                     chunk_vals[mask_mid] = result_mid
 
-                # --- Region N: 外圈以外，衰减公式 ---
+                # --- Region N: 外圈以外，统一写 NoData ---
                 mask_out = region_chunk == N
                 if mask_out.any():
-                    d_out = dists_all[mask_out, N - 1]
-                    if max_dist is not None:
-                        # 超出最大距离直接设为 nodata
-                        too_far = d_out > max_dist
-                        val_out = ia_arr_per_contour[N - 1] * decay_dist / (d_out + decay_dist)
-                        val_out[too_far] = -9999.0
-                        chunk_vals[mask_out] = val_out
-                    else:
-                        chunk_vals[mask_out] = (
-                            ia_arr_per_contour[N - 1] * decay_dist / (d_out + decay_dist)
-                        )
+                    chunk_vals[mask_out] = -9999.0
 
                 del pts_query, dists_all
 
@@ -1295,7 +1270,7 @@ class KmlToIaConverter:
                 return row_start, result
 
             start_time = time.time()
-            logger.info("ArcGIS IDW v3.11 插值开始，分块数=%d，并行线程数=%d",
+            logger.info("ArcGIS IDW v3.12 插值开始，分块数=%d，并行线程数=%d",
                         len(chunk_starts), self.max_interp_workers)
 
             # 滑动窗口式并行提交与消费
@@ -1339,7 +1314,7 @@ class KmlToIaConverter:
             band.FlushCache()
 
             total_time = time.time() - start_time
-            logger.info("ArcGIS IDW v3.11 插值完成，总耗时: %.1fs, 已保存: %s",
+            logger.info("ArcGIS IDW v3.12 插值完成，总耗时: %.1fs, 已保存: %s",
                         total_time, output_tif_path)
 
         except TaskCancelledException:
