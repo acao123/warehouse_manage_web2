@@ -276,7 +276,7 @@ def _select_arcgis_sector_neighbors(
     n_sectors: int,
     points_per_sector: int,
     min_points: int,
-    max_distance,
+    max_distance: Optional[float],
     contour_ids: Optional[np.ndarray] = None,
     per_contour_points: Optional[int] = None,
     max_contours: Optional[int] = None,
