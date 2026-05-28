@@ -260,6 +260,105 @@ class TaskCancelledException(Exception):
     pass
 
 
+def _select_arcgis_sector_neighbors(
+    dists: np.ndarray,
+    idxs: np.ndarray,
+    pts_query: np.ndarray,
+    pts_train: np.ndarray,
+    n_sectors: int,
+    points_per_sector: int,
+    min_points: int,
+    max_distance: Optional[float],
+    *,
+    contour_ids: Optional[np.ndarray] = None,
+    per_contour_points: Optional[int] = None,
+    max_contours: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    ArcGIS IDW 扇区邻居选择。
+
+    将每个查询点周围的空间划分为 n_sectors 个扇区，每个扇区最多选取
+    points_per_sector 个最近邻（按 dists 升序处理），并可按等值线 ID 限制
+    每条等值线的贡献点数和参与的等值线数目。
+
+    参数:
+        dists         : shape (n_query, k)，已按升序排列的邻居距离
+        idxs          : shape (n_query, k)，对应 pts_train 中的索引
+        pts_query     : shape (n_query, 2)，查询点坐标
+        pts_train     : shape (n_train, 2)，训练点坐标
+        n_sectors     : 扇区数（整数，ArcGIS 默认 4）
+        points_per_sector : 每个扇区最多选取的点数（ArcGIS 默认 1）
+        min_points    : 最少需要选中的点数（不足时调用方可将像素标记为 NoData）
+        max_distance  : 最大搜索距离（米）；None 表示不限
+        contour_ids   : shape (n_train,) int32，每个训练点对应的等值线 ID；
+                        None 则禁用等值线约束
+        per_contour_points : 每条等值线最多贡献的点数；None 则不限
+        max_contours  : 最多参与的不同等值线数；None 则不限
+
+    返回:
+        (selected_mask, valid_mask)
+            selected_mask : shape (n_query, k)，bool，是否被选中参与 IDW
+            valid_mask    : shape (n_query, k)，bool，是否在 max_distance 内
+    """
+    n_query, k = dists.shape
+
+    # 距离有效性掩码
+    if max_distance is not None:
+        valid_mask = dists <= max_distance
+    else:
+        valid_mask = np.ones((n_query, k), dtype=bool)
+
+    selected_mask = np.zeros((n_query, k), dtype=bool)
+
+    for q in range(n_query):
+        sector_counts: List[int] = [0] * n_sectors
+        contour_cnt: dict = {}
+        n_distinct_contours: int = 0
+
+        for pos in range(k):
+            if not valid_mask[q, pos]:
+                continue
+
+            pt_idx = int(idxs[q, pos])
+
+            # 等值线数量约束
+            if contour_ids is not None:
+                cid = int(contour_ids[pt_idx])
+                # 最多参与的不同等值线数
+                if max_contours is not None:
+                    is_new = cid not in contour_cnt
+                    if is_new and n_distinct_contours >= max_contours:
+                        continue
+                # 每条等值线贡献点数上限
+                if per_contour_points is not None:
+                    if contour_cnt.get(cid, 0) >= per_contour_points:
+                        continue
+
+            # 扇区计算（从查询点指向训练点的方位角，[0°, 360°)）
+            if n_sectors > 1:
+                dx = float(pts_train[pt_idx, 0]) - float(pts_query[q, 0])
+                dy = float(pts_train[pt_idx, 1]) - float(pts_query[q, 1])
+                angle = math.degrees(math.atan2(dy, dx)) % 360.0
+                sector = int(angle * n_sectors / 360.0) % n_sectors
+            else:
+                sector = 0
+
+            if sector_counts[sector] >= points_per_sector:
+                continue
+
+            # 选中
+            selected_mask[q, pos] = True
+            sector_counts[sector] += 1
+
+            if contour_ids is not None:
+                cid = int(contour_ids[pt_idx])
+                if cid not in contour_cnt:
+                    n_distinct_contours += 1
+                contour_cnt[cid] = contour_cnt.get(cid, 0) + 1
+
+    return selected_mask, valid_mask
+
+
 class KmlToIaConverter:
     """
     KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.9）
@@ -376,6 +475,8 @@ class KmlToIaConverter:
         # ---- ArcGIS IDW 对齐参数（qgis_idw 方法专用）----
         idw_num_neighbors: int = 12,          # KD-Tree 局部搜索邻近点数，与 ArcGIS 默认一致
         idw_max_distance: Optional[float] = None,  # 最大搜索距离（米，UTM坐标），None 表示不限制
+        # 【v3.10 新增】True=启用 PCHIP 径向辅助趋势，消除同心环带（推荐）；False=退回纯 KD-Tree IDW
+        arcgis_idw_radial_assist: bool = True,
 
         # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
         ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
@@ -436,6 +537,7 @@ class KmlToIaConverter:
         # ArcGIS IDW 参数
         self.idw_num_neighbors = idw_num_neighbors
         self.idw_max_distance = idw_max_distance
+        self.arcgis_idw_radial_assist = arcgis_idw_radial_assist  # v3.10 新增
         # ArcGIS EBK 参数
         self.ebk_subset_size = ebk_subset_size
         self.ebk_overlap_factor = ebk_overlap_factor
@@ -668,14 +770,15 @@ class KmlToIaConverter:
 
     # ==================== 采样点准备 ====================
 
-    def _iter_sample_points(self) -> Iterator[Tuple[float, float, float]]:
+    def _iter_sample_points(self) -> Iterator[Tuple[float, float, float, int]]:
         """
         生成器：逐条遍历等值线并按间隔采样，逐点输出（内存优化）
 
         生成:
-            (lon, lat, ia_val): 每个采样点的经纬度和对应的 Ia 值
+            (lon, lat, ia_val, contour_idx): 每个采样点的经纬度、对应的 Ia 值
+            以及该点所属等值线在 self._contours 中的索引
         """
-        for contour in self._contours:
+        for contour_idx, contour in enumerate(self._contours):
             coords = contour['coordinates']
             ia_val = contour['ia']
 
@@ -686,9 +789,9 @@ class KmlToIaConverter:
                     sampled.append(last_pt)
 
             for lon, lat in sampled:
-                yield lon, lat, ia_val
+                yield lon, lat, ia_val, contour_idx
 
-    def _prepare_sample_points(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _prepare_sample_points(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         从等值线中提取并下采样坐标点，作为插值的输入采样点（内存优化版）
 
@@ -699,7 +802,8 @@ class KmlToIaConverter:
             4. 去除完全重叠的坐标点（防止插值奇异矩阵）
 
         返回:
-            tuple: (x_arr, y_arr, ia_values)，UTM 米坐标和Ia值数组
+            tuple: (x_arr, y_arr, ia_values, contour_ids)，UTM 米坐标、Ia值数组
+            以及各点所属等值线索引（int32）
 
         异常:
             ValueError: 没有有效的采样点
@@ -719,9 +823,10 @@ class KmlToIaConverter:
                 logger.info("超过最大采样点数限制(%d)，随机抽样至 %d 个点",
                             self.max_sample_points, len(rows))
 
-            lons_arr = np.array([r[0] for r in rows], dtype=np.float64)
-            lats_arr = np.array([r[1] for r in rows], dtype=np.float64)
-            ia_arr   = np.array([r[2] for r in rows], dtype=np.float32)
+            lons_arr        = np.array([r[0] for r in rows], dtype=np.float64)
+            lats_arr        = np.array([r[1] for r in rows], dtype=np.float64)
+            ia_arr          = np.array([r[2] for r in rows], dtype=np.float32)
+            contour_ids_arr = np.array([r[3] for r in rows], dtype=np.int32)
             del rows
             gc.collect()
 
@@ -740,16 +845,17 @@ class KmlToIaConverter:
             del coords_rounded
             unique_idx.sort()
 
-            x_out  = x_out[unique_idx]
-            y_out  = y_out[unique_idx]
-            ia_arr = ia_arr[unique_idx]
+            x_out          = x_out[unique_idx]
+            y_out          = y_out[unique_idx]
+            ia_arr         = ia_arr[unique_idx]
+            contour_ids_arr = contour_ids_arr[unique_idx]
             del unique_idx
             gc.collect()
 
             logger.info("去重后有效采样点数: %d", len(x_out))
             logger.info("Ia值范围: %.6f ~ %.6f m/s", ia_arr.min(), ia_arr.max())
 
-            return x_out, y_out, ia_arr
+            return x_out, y_out, ia_arr, contour_ids_arr
 
         except ValueError:
             raise
@@ -990,7 +1096,7 @@ class KmlToIaConverter:
             del interpolator, layer
             gc.collect()
 
-    # ==================== ArcGIS IDW 插值方法（等值线约束双边界 IDW）====================
+    # ==================== ArcGIS IDW 插值方法（PCHIP 径向辅助 + KD-Tree IDW）====================
 
     def _run_arcgis_idw_interpolation(
             self,
@@ -1000,26 +1106,25 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        相邻等值线约束双边界 IDW 插值（Contour-Aware IDW）。
+        ArcGIS IDW 风格插值，含可选 PCHIP 径向趋势辅助（消除同心环带）。
 
-        算法思路：
-            1. 按 PGA/Ia 等值线层级构建每层的 cKDTree，用于距离查询。
-            2. 将各层等值线圈栅格化为 rank 栅格（rank = 像素被包含的等值线层数）：
-               - rank=0：位于最外圈之外 → 直接赋最小 Ia 值；
-               - rank=k（1≤k<n）：位于第 k-1 层（外圈）与第 k 层（内圈）之间
-                 → 仅用这两层的边界距离做线性混合；
-               - rank≥n：位于最内圈之内 → 直接赋最大 Ia 值。
-            3. 混合公式（无 overshoot）：
-               t = d_outer / (d_outer + d_inner)，value = ia_outer*(1−t) + ia_inner*t。
-            4. 最终严格 clamp 到 [ia_min, ia_max]，保证不外溢。
+        算法思路（arcgis_idw_radial_assist=True 时）：
+            1. 以采样点质心为原点，计算各采样点的径向距离 r_i。
+            2. 按唯一 Ia 层级对其平均径向距离排序，用 PchipInterpolator 拟合
+               f_radial(r) → Ia，建立平滑单调的径向基准趋势。
+            3. 计算残差 e_i = Ia_i - f_radial(r_i)。
+            4. 对每个输出像素：
+               a. 计算像素的径向距离 r_pixel；
+               b. 用 KD-Tree 查询 k 个最近邻，通过向量化 IDW 插值残差；
+               c. 输出值 = f_radial(r_pixel) + IDW(e)，严格 clamp 到 [ia_min, ia_max]。
 
-        回退策略：
-            若等值线层数 < 2（或 rank 栅格构建失败），自动回退至标准 KD-Tree 局部 IDW。
+        arcgis_idw_radial_assist=False 或 PCHIP 拟合失败时：
+            回退至标准 KD-Tree 局部 IDW（_run_arcgis_idw_kd_legacy）。
 
         性能：
-            - rank 栅格由 GDAL RasterizeLayer（C 实现）计算，一次性完成，开销低。
-            - 每个像素仅需查询 2 个 cKDTree（k=1），比原局部 IDW（k=12）更快。
-            - 保留 ThreadPoolExecutor 多线程分块并行，GIL 由 cKDTree 释放。
+            - cKDTree 建树一次，所有分块共享；
+            - chunk 内 IDW 全向量化，无 Python 像素级循环；
+            - ThreadPoolExecutor 多线程分块并行（GIL 在 cKDTree.query 中释放）。
 
         参数:
             x_arr: 采样点 X 坐标（UTM easting，米）
@@ -1029,66 +1134,73 @@ class KmlToIaConverter:
         """
         if not _HAS_SCIPY:
             raise ImportError(
-                "scipy 未安装，无法使用 'qgis_idw' (Contour-Aware IDW) 方法。"
+                "scipy 未安装，无法使用 'qgis_idw' (ArcGIS IDW) 方法。"
                 "请在 QGIS Python 环境中运行: pip install scipy"
             )
 
-        # ── 准备等值线层级结构 ─────────────────────────────────────────────────────
-        # self._contours 按 pga_g 降序排列（内圈→外圈），ia 亦同方向单调
-        ia_key_to_coords: dict = {}
-        for c in self._contours:
-            k = float(c['ia'])
-            ia_key_to_coords.setdefault(k, []).append(c['coordinates'])
+        # ── 尝试构建 PCHIP 径向辅助趋势 ──────────────────────────────────────────
+        pchip_fn = None
+        residuals: Optional[np.ndarray] = None
+        ia_min = float(values.min())
+        ia_max = float(values.max())
+        centroid = np.array([x_arr.mean(), y_arr.mean()], dtype=np.float64)
 
-        sorted_ia: List[float] = sorted(ia_key_to_coords.keys())  # 升序：外→内
-        n_levels = len(sorted_ia)
+        if self.arcgis_idw_radial_assist:
+            try:
+                # 每个采样点到质心的径向距离
+                train_radii = np.sqrt(
+                    (x_arr - centroid[0]) ** 2 + (y_arr - centroid[1]) ** 2
+                )
+                # 按唯一 Ia 值计算平均径向距离，作为 PCHIP 控制点
+                vals_f64 = values.astype(np.float64)
+                unique_ia = np.unique(vals_f64)
+                mean_radii = np.array(
+                    [train_radii[vals_f64 == iv].mean() for iv in unique_ia],
+                    dtype=np.float64,
+                )
+                # 按径向距离排序（正常情况下 Ia 越大半径越小，但允许任意顺序）
+                sort_ord = np.argsort(mean_radii)
+                sorted_r = mean_radii[sort_ord]
+                sorted_v = unique_ia[sort_ord]
 
-        if n_levels < 2:
-            logger.info(
-                "等值线层数不足（%d 层），回退至标准 KD-Tree 局部 IDW", n_levels
-            )
+                pchip_fn = _PchipInterpolator(sorted_r, sorted_v, extrapolate=True)
+                pchip_at_train = pchip_fn(train_radii)
+                residuals = vals_f64 - pchip_at_train
+
+                logger.info(
+                    "PCHIP 径向辅助拟合成功: %d 个控制点, Ia=[%.6f, %.6f]",
+                    len(sorted_r), ia_min, ia_max,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "PCHIP 径向辅助拟合失败 (%s), 回退至标准 KD-Tree IDW", exc
+                )
+                pchip_fn = None
+                residuals = None
+
+        # 若径向辅助不可用，直接委托给标准实现
+        if pchip_fn is None:
             self._run_arcgis_idw_kd_legacy(x_arr, y_arr, values, output_tif_path)
             return
+
+        # ── 建立 KD-Tree ─────────────────────────────────────────────────────────
+        pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
+        tree = _cKDTree(pts_train)
+
+        n_neighbors = min(self.idw_num_neighbors, len(x_arr))
+        power = self.qgis_idw_power
+        max_dist = self.idw_max_distance
+
+        logger.info(
+            "ArcGIS IDW (PCHIP 辅助) 插值: 邻近点数=%d, 幂次=%.1f, 最大距离=%s",
+            n_neighbors, power,
+            f"{max_dist:.1f} m" if max_dist is not None else "无限制",
+        )
 
         out_ds = None
         band = None
 
         try:
-            ia_min = sorted_ia[0]
-            ia_max = sorted_ia[-1]
-            ia_np = np.array(sorted_ia, dtype=np.float64)
-
-            logger.info(
-                "Contour-Aware IDW: %d 层等值线, Ia=[%.6f, %.6f] m/s",
-                n_levels, ia_min, ia_max,
-            )
-
-            # ── 构建每层等值线的 UTM 点数组及 cKDTree ────────────────────────────
-            level_trees: List[_cKDTree] = []
-            for ia_val in sorted_ia:
-                all_pts: List[tuple] = []
-                for coords_ll in ia_key_to_coords[ia_val]:
-                    xys = self._coord_transform.TransformPoints(
-                        [(float(lo), float(la)) for lo, la in coords_ll]
-                    )
-                    all_pts.extend((p[0], p[1]) for p in xys)
-                pts_arr = np.array(all_pts, dtype=np.float64)
-                level_trees.append(_cKDTree(pts_arr))
-                del all_pts, pts_arr
-
-            # ── 计算 rank 栅格 ────────────────────────────────────────────────────
-            try:
-                rank_arr = self._build_rank_raster(sorted_ia, ia_key_to_coords)
-            except Exception as exc:
-                logger.warning(
-                    "rank 栅格构建失败（%s），回退至标准 KD-Tree 局部 IDW", exc
-                )
-                for t in level_trees:
-                    del t
-                self._run_arcgis_idw_kd_legacy(x_arr, y_arr, values, output_tif_path)
-                return
-
-            # ── 创建输出 GeoTIFF ──────────────────────────────────────────────────
             os.makedirs(
                 os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True
             )
@@ -1106,59 +1218,76 @@ class KmlToIaConverter:
 
             grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
             n_rows = self._n_rows
+            n_cols = self._n_cols
             chunk_rows = self.chunk_size
             chunk_starts = list(range(0, n_rows, chunk_rows))
 
-            # ── 内层分块计算函数（线程安全：所有引用均为只读）────────────────────
-            def _compute_chunk_contour_aware(row_start: int) -> Tuple[int, np.ndarray]:
+            # 内层函数（线程安全：所有引用均为只读共享）
+            def _compute_chunk_pchip_idw(row_start: int) -> Tuple[int, np.ndarray]:
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
-
                 grid_y = (
                     self._y_max
                     - (np.arange(row_start, row_end) + 0.5) * self._res_lat
                 )
                 xx, yy = np.meshgrid(grid_x, grid_y)
-                px = xx.ravel().astype(np.float64)
-                py = yy.ravel().astype(np.float64)
+                pts_query = np.column_stack([xx.ravel(), yy.ravel()])
                 del xx, yy
 
-                rk = rank_arr[row_start:row_end].ravel().astype(np.int32)
-                result = np.full(len(px), ia_min, dtype=np.float64)
+                n_pts = pts_query.shape[0]
 
-                # rank >= n_levels：最内圈内部 → 最大 Ia
-                result[rk >= n_levels] = ia_max
+                # 查询最近的 n_neighbors 个采样点（已按距离升序）
+                dists, idxs = tree.query(pts_query, k=n_neighbors)
+                if n_neighbors == 1:
+                    dists = dists.reshape(-1, 1)
+                    idxs = idxs.reshape(-1, 1)
 
-                # rank == k（1 ≤ k < n_levels）：位于第 k-1 层与第 k 层之间
-                for k in range(1, n_levels):
-                    mask = rk == k
-                    if not mask.any():
-                        continue
-                    pts = np.column_stack([px[mask], py[mask]])
-                    # 到外圈（level k-1）的最近距离
-                    d_out, _ = level_trees[k - 1].query(pts, k=1)
-                    # 到内圈（level k）的最近距离
-                    d_in, _ = level_trees[k].query(pts, k=1)
-                    d_sum = d_out + d_in
-                    # t=0 → 落在外圈上，t=1 → 落在内圈上
-                    t = np.where(d_sum > 1e-10, d_out / d_sum, 0.5)
-                    result[mask] = ia_np[k - 1] + t * (ia_np[k] - ia_np[k - 1])
-                    del pts, d_out, d_in, d_sum, t
+                # 精确匹配（d=0）
+                exact_mask = dists[:, 0] == 0.0
 
-                # 严格 clamp，杜绝 overshoot
-                np.clip(result, ia_min, ia_max, out=result)
+                # 反距离权重（超出 max_distance 或 d=0 的权重置 0）
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    weights = np.where(dists > 0.0, 1.0 / (dists ** power), 0.0)
+                if max_dist is not None:
+                    weights[dists > max_dist] = 0.0
 
-                chunk_out = result.reshape(actual_rows, self._n_cols).astype(np.float32)
-                del px, py, rk, result
-                return row_start, chunk_out
+                weight_sum = weights.sum(axis=1)
+                chunk_vals = np.full(n_pts, -9999.0, dtype=np.float64)
+
+                # 非精确匹配且有效权重 > 0：IDW 插值残差
+                valid_mask = (~exact_mask) & (weight_sum > 0.0)
+                if valid_mask.any():
+                    w = weights[valid_mask]
+                    e = residuals[idxs[valid_mask]]
+                    chunk_vals[valid_mask] = (w * e).sum(axis=1) / weight_sum[valid_mask]
+
+                # 精确匹配：直接取残差
+                if exact_mask.any():
+                    chunk_vals[exact_mask] = residuals[idxs[exact_mask, 0]]
+
+                # 加上 PCHIP 径向趋势
+                px = pts_query[:, 0]
+                py = pts_query[:, 1]
+                pixel_radii = np.sqrt(
+                    (px - centroid[0]) ** 2 + (py - centroid[1]) ** 2
+                )
+                trend = pchip_fn(pixel_radii)
+
+                nodata_flag = chunk_vals < -9998.0
+                chunk_vals += trend
+                chunk_vals[nodata_flag] = -9999.0
+
+                del pts_query, dists, idxs, weights, weight_sum, px, py, pixel_radii, trend
+                result = chunk_vals.reshape(actual_rows, n_cols).astype(np.float32)
+                del chunk_vals
+                return row_start, result
 
             start_time = time.time()
             logger.info(
-                "Contour-Aware IDW 插值开始，分块数=%d，并行线程数=%d",
+                "ArcGIS IDW (PCHIP 辅助) 插值开始，分块数=%d，并行线程数=%d",
                 len(chunk_starts), self.max_interp_workers,
             )
 
-            # 滑动窗口式并行提交与消费（与原 ArcGIS IDW 保持相同模式）
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.max_interp_workers
             ) as executor:
@@ -1170,7 +1299,7 @@ class KmlToIaConverter:
                     and submit_ptr < self.max_interp_workers
                 ):
                     rs = chunk_starts[submit_ptr]
-                    pending[rs] = executor.submit(_compute_chunk_contour_aware, rs)
+                    pending[rs] = executor.submit(_compute_chunk_pchip_idw, rs)
                     submit_ptr += 1
 
                 for chunk_idx, rs in enumerate(chunk_starts):
@@ -1181,7 +1310,7 @@ class KmlToIaConverter:
                         row_start_res, chunk_vals = pending.pop(rs).result()
                     except Exception as exc:
                         logger.error(
-                            "Contour-Aware IDW 分块 row_start=%d 失败: %s", rs, exc
+                            "ArcGIS IDW (PCHIP) 分块 row_start=%d 失败: %s", rs, exc
                         )
                         raise
 
@@ -1192,7 +1321,7 @@ class KmlToIaConverter:
                     if submit_ptr < len(chunk_starts):
                         next_rs = chunk_starts[submit_ptr]
                         pending[next_rs] = executor.submit(
-                            _compute_chunk_contour_aware, next_rs
+                            _compute_chunk_pchip_idw, next_rs
                         )
                         submit_ptr += 1
 
@@ -1200,7 +1329,7 @@ class KmlToIaConverter:
                     if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
                         elapsed = time.time() - start_time
                         logger.info(
-                            "Contour-Aware IDW 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
+                            "ArcGIS IDW (PCHIP) 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
                             row_end, n_rows, 100.0 * row_end / n_rows, elapsed,
                         )
 
@@ -1209,114 +1338,19 @@ class KmlToIaConverter:
 
             total_time = time.time() - start_time
             logger.info(
-                "Contour-Aware IDW 完成，总耗时: %.1fs, 已保存: %s",
+                "ArcGIS IDW (PCHIP 辅助) 插值完成，总耗时: %.1fs, 已保存: %s",
                 total_time, output_tif_path,
             )
 
         except TaskCancelledException:
             raise
         except Exception as exc:
-            logger.error("Contour-Aware IDW 插值失败: %s", exc, exc_info=True)
+            logger.error("ArcGIS IDW (PCHIP) 插值失败: %s", exc, exc_info=True)
             raise
         finally:
             out_ds = None
             band = None
             gc.collect()
-
-    # ── rank 栅格辅助方法 ─────────────────────────────────────────────────────────
-
-    def _build_rank_raster(
-        self,
-        sorted_ia: List[float],
-        ia_key_to_coords: dict,
-    ) -> np.ndarray:
-        """
-        将各层等值线圈栅格化为 rank 栅格（int16）。
-
-        rank(pixel) = 包含该像素的等值线层数（多边形内部计数）。
-        各层依 ia 升序遍历（最外圈先），每层独立栅格化为 0/1 掩码后累加。
-
-        实现：
-            - 使用 GDAL 内存驱动（MEM）和 OGR 内存驱动（Memory）。
-            - 每层构建一个 OGR Polygon 图层，调用 gdal.RasterizeLayer 烧录值=1。
-            - 逐层累加掩码到 rank_arr（int16）。
-        """
-        rank_arr = np.zeros((self._n_rows, self._n_cols), dtype=np.int16)
-        gdal_mem_drv = gdal.GetDriverByName('MEM')
-        ogr_mem_drv = ogr.GetDriverByName('Memory')
-
-        for level_idx, ia_val in enumerate(sorted_ia):
-            # 构建当前层的 OGR 多边形图层
-            tmp_ogr_ds = ogr_mem_drv.CreateDataSource(f'rnk_{level_idx}')
-            tmp_lyr = tmp_ogr_ds.CreateLayer(
-                'r', srs=self._utm_srs, geom_type=ogr.wkbPolygon
-            )
-
-            n_feats = 0
-            for coords_ll in ia_key_to_coords[ia_val]:
-                if len(coords_ll) < 3:
-                    continue
-                ring_geom = ogr.Geometry(ogr.wkbLinearRing)
-                for lon, lat in coords_ll:
-                    x, y, _ = self._coord_transform.TransformPoint(
-                        float(lon), float(lat)
-                    )
-                    ring_geom.AddPoint(x, y)
-                # 确保环已闭合
-                p0 = ring_geom.GetPoint(0)
-                pn = ring_geom.GetPoint(ring_geom.GetPointCount() - 1)
-                if abs(p0[0] - pn[0]) > 1e-6 or abs(p0[1] - pn[1]) > 1e-6:
-                    ring_geom.AddPoint(p0[0], p0[1])
-                if ring_geom.GetPointCount() < 4:
-                    continue
-
-                poly_geom = ogr.Geometry(ogr.wkbPolygon)
-                poly_geom.AddGeometry(ring_geom)
-
-                feat = ogr.Feature(tmp_lyr.GetLayerDefn())
-                feat.SetGeometry(poly_geom)
-                tmp_lyr.CreateFeature(feat)
-                feat = None
-                n_feats += 1
-
-            if n_feats == 0:
-                logger.warning(
-                    "rank 栅格：ia=%.6f 层无有效多边形，跳过", ia_val
-                )
-                tmp_ogr_ds = None
-                continue
-
-            # 栅格化为 Byte（0=外部，1=内部）
-            tmp_rast = gdal_mem_drv.Create(
-                '', self._n_cols, self._n_rows, 1, gdal.GDT_Byte
-            )
-            tmp_rast.SetGeoTransform(self._geo_transform)
-            tmp_rast.SetProjection(self._utm_srs.ExportToWkt())
-            tmp_b = tmp_rast.GetRasterBand(1)
-            tmp_b.Fill(0)
-
-            gdal.RasterizeLayer(tmp_rast, [1], tmp_lyr, burn_values=[1.0])
-            tmp_b.FlushCache()
-
-            lvl_mask = tmp_b.ReadAsArray().astype(np.int16)
-            rank_arr += lvl_mask
-
-            # 释放 GDAL/OGR 对象
-            tmp_b = None
-            tmp_rast = None
-            tmp_ogr_ds = None
-            del lvl_mask
-            gc.collect()
-
-            logger.debug(
-                "rank 栅格：level %d (ia=%.6f) 栅格化完成", level_idx, ia_val
-            )
-
-        logger.info(
-            "rank 栅格构建完成: rank 范围=[%d, %d], 层数=%d",
-            int(rank_arr.min()), int(rank_arr.max()), len(sorted_ia),
-        )
-        return rank_arr
 
     # ── 标准 KD-Tree 局部 IDW（原实现，作为回退路径保留）────────────────────────
 
@@ -2968,7 +3002,7 @@ class KmlToIaConverter:
             self._setup_output_crs(center_lon)
 
             # 4. 准备采样点（坐标转换为 UTM 米坐标）
-            x_arr, y_arr, ia_values = self._prepare_sample_points()
+            x_arr, y_arr, ia_values, _contour_ids = self._prepare_sample_points()
 
             # 5. 构建栅格网格（UTM 米坐标，直接使用 resolution 作为像素大小）
             self._build_grid(x_arr, y_arr)
