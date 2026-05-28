@@ -78,6 +78,8 @@ class ArcgisSectorSearchTests(unittest.TestCase):
             [-1.0, 0.0],   # sector 2
             [0.0, -1.0],   # sector 3
         ])
+        # dists/idxs 模拟 cKDTree.query 的升序返回：前 4 个点距离都为 1，
+        # 最后一个点仍在 sector 0，但更远，因此应被 points_per_sector=1 排除。
         dists = np.array([[1.0, 1.0, 1.0, 1.0, 2.0]])
         idxs = np.array([[0, 2, 3, 4, 1]])
 

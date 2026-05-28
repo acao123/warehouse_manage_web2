@@ -267,6 +267,10 @@ gdal.UseExceptions()
 # ==================== KML PGA值解析正则 ====================
 # 匹配格式如 "0.01g"、"0.05G"、"0.10 g" 等
 _PGA_NAME_PATTERN = re.compile(r'^([0-9]*\.?[0-9]+)\s*[gG]$')
+# 扇区搜索候选扩容倍率：4×原目标邻居数，给跨扇区均衡选点留足候选。
+_IDW_CANDIDATE_MULTIPLIER_BASE = 4
+# 扇区搜索最低安全余量：3×扇区目标邻居数，降低方向采样不均时的漏选概率。
+_IDW_CANDIDATE_MULTIPLIER_TARGET = 3
 
 
 class TaskCancelledException(Exception):
@@ -1106,6 +1110,7 @@ class KmlToIaConverter:
             )
 
         tree = None
+        pts_train = None
         out_ds = None
         band = None
 
@@ -1126,9 +1131,12 @@ class KmlToIaConverter:
             target_neighbors = n_sectors * points_per_sector
             k_large = min(
                 len(x_arr),
-                # 经验系数：4×原目标邻居数，给扇区均衡选点留足候选；
-                # 3×扇区目标邻居数，确保即使部分方向采样稀疏也有安全余量。
-                max(n_neighbors * 4, target_neighbors * 3),
+                # 经验系数：base 倍原目标邻居数，给扇区均衡选点留足候选；
+                # target 倍扇区目标邻居数，确保即使部分方向采样稀疏也有安全余量。
+                max(
+                    n_neighbors * _IDW_CANDIDATE_MULTIPLIER_BASE,
+                    target_neighbors * _IDW_CANDIDATE_MULTIPLIER_TARGET,
+                ),
             )
             power = self.qgis_idw_power
             max_dist = self.idw_max_distance
@@ -1177,7 +1185,7 @@ class KmlToIaConverter:
                 # 精确匹配（d=0）的像素：直接取该采样点的值
                 exact_hits = dists == 0.0
                 exact_mask = np.any(exact_hits, axis=1)
-                # 仅 exact_mask=True 的行才会使用该位置；其余行为 argmax 默认 0，无影响。
+                # argmax 在全 False 行会返回 0；这些行后续会被 exact_mask 过滤掉，因此安全。
                 exact_pos = np.argmax(exact_hits, axis=1)
 
                 selected_mask, valid_candidates = _select_arcgis_sector_neighbors(
@@ -1212,9 +1220,11 @@ class KmlToIaConverter:
                 # 精确匹配：直接赋值
                 if exact_mask.any():
                     exact_rows = np.flatnonzero(exact_mask)
-                    chunk_vals[exact_mask] = vals_f64[idxs[exact_rows, exact_pos[exact_mask]]]
+                    exact_positions = exact_pos[exact_mask]
+                    chunk_vals[exact_mask] = vals_f64[idxs[exact_rows, exact_positions]]
 
-                # 若扇区筛选后权重为空，则退化为最近有效邻居；若无有效邻居则保持 NoData
+                # 若扇区筛选后权重为空，则退化为最近有效邻居，避免因方向采样不均产生 NoData 空洞；
+                # 若最大距离过滤后已无任何有效候选，则继续保留 NoData。
                 fallback_mask = (~exact_mask) & (weight_sum <= 0.0)
                 if fallback_mask.any():
                     fallback_rows = np.flatnonzero(fallback_mask)
@@ -1292,7 +1302,7 @@ class KmlToIaConverter:
             band = None
             if tree is not None:
                 del tree
-            if 'pts_train' in locals():
+            if pts_train is not None:
                 del pts_train
             gc.collect()
 
