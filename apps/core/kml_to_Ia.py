@@ -324,7 +324,7 @@ def _select_arcgis_sector_neighbors(
 
     candidate_mask = valid_candidates
     if contour_ids is not None and int(per_contour_points) > 0:
-        contour_ids = np.asarray(contour_ids, dtype=np.int64)
+        contour_ids = np.asarray(contour_ids, dtype=np.int32)
         if contour_ids.ndim != 1:
             raise ValueError("contour_ids 必须是一维数组")
 
@@ -1187,7 +1187,7 @@ class KmlToIaConverter:
             pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
             tree = _cKDTree(pts_train)
             vals_f64 = values.astype(np.float64)
-            contour_ids_arr = None if contour_ids is None else np.asarray(contour_ids, dtype=np.int64)
+            contour_ids_arr = None if contour_ids is None else np.asarray(contour_ids, dtype=np.int32)
 
             n_neighbors = min(self.idw_num_neighbors, len(x_arr))
             n_sectors = self.idw_num_sectors
@@ -1206,7 +1206,7 @@ class KmlToIaConverter:
             if contour_ids_arr is not None and contour_ids_arr.shape[0] != len(x_arr):
                 raise ValueError("contour_ids 数量必须与采样点数量一致")
 
-            n_contours = int(np.unique(contour_ids_arr).size) if use_contour_grouping else 0
+            n_contours = int(contour_ids_arr.max()) + 1 if use_contour_grouping else 0
             contour_target = n_contours if max_contours is None else min(n_contours, max_contours)
             k_large = min(
                 len(x_arr),
