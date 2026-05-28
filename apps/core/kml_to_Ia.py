@@ -303,6 +303,7 @@ gdal.UseExceptions()
 # 匹配格式如 "0.01g"、"0.05G"、"0.10 g" 等
 _PGA_NAME_PATTERN = re.compile(r'^([0-9]*\.?[0-9]+)\s*[gG]$')
 _IDW_EXACT_MATCH_EPSILON = 1e-6          # UTM 米制坐标下的精确命中容差，避免浮点误差漏判
+_LINEAR_INTERP_EPSILON = 1e-10           # 线性插值分母最小阈值（米），避免极端情况下除零
 _IDW_CANCEL_CHECK_INTERVAL = 4           # 每处理若干条等值线检查一次取消信号，兼顾响应性与开销
 
 
@@ -420,7 +421,7 @@ def _select_arcgis_sector_neighbors(
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.11）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.13）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -432,7 +433,7 @@ class KmlToIaConverter:
         - 所有插值在 UTM 米制坐标系下进行，距离权重更准确
         - 采样点数量可控（sample_interval + max_sample_points），避免内存溢出
         - 支持6种插值方法（scipy_tin推荐，平滑无突变）
-        - qgis_idw 使用按等值线分组的代表点 IDW，并可叠加扇区搜索，抑制平台阶梯
+        - qgis_idw 使用“相邻等值线线性插值”，保留每等值线独立 KD-Tree 的高性能框架
         - 严格内存控制（<10GB）：生成器、分批转换、分块写入、及时释放
         - 异常安全：run()使用try-finally，异常时也能释放资源
         - 所有关键方法添加try-except + logger日志 + 异常向上抛出
@@ -446,7 +447,7 @@ class KmlToIaConverter:
         - 'scipy_idw'  ：scipy RBF插值，速度快，支持邻近点限制，需安装scipy
         - 'kriging'    ：真正对齐 ArcGIS EBK 的子集化克里金，支持多次模拟
                         （ebk_n_simulations 默认 100），需安装 scipy + pykrige
-        - 'qgis_idw'   ：ArcGIS 风格代表点 IDW，按等值线分组并可叠加扇区搜索，需安装 scipy
+        - 'qgis_idw'   ：相邻等值线线性插值（每等值线独立 KD-Tree），需安装 scipy
         - 'qgis_tin'   ：QGIS三角网插值，基于Delaunay三角剖分，无需额外依赖
 
     用法示例:
@@ -1344,8 +1345,10 @@ class KmlToIaConverter:
                             c1_right = np.clip(c1 + 1, 0, n_contours - 1)
                             d_left = np.take_along_axis(contour_dists, c1_left[:, None], axis=1).squeeze(1)
                             d_right = np.take_along_axis(contour_dists, c1_right[:, None], axis=1).squeeze(1)
-                            d_left = np.where(c1 == 0, np.inf, d_left)
-                            d_right = np.where(c1 == n_contours - 1, np.inf, d_right)
+                            # 当 c1 位于首/尾等值线时，某一侧邻居索引会被 clip 回 c1（该侧无相邻等值线），
+                            # 因此该方向距离置为 +inf 排除。
+                            d_left = np.where(c1_left == c1, np.inf, d_left)
+                            d_right = np.where(c1_right == c1, np.inf, d_right)
 
                             c2 = np.where(d_left < d_right, c1_left, c1_right)
                             d2 = np.minimum(d_left, d_right)
@@ -1356,10 +1359,16 @@ class KmlToIaConverter:
                             interp_mask = middle_mask & np.isfinite(d1) & np.isfinite(d2)
                             if interp_mask.any():
                                 numer = ia1[interp_mask] * d2[interp_mask] + ia2[interp_mask] * d1[interp_mask]
-                                denom = d1[interp_mask] + d2[interp_mask] + 1e-12
+                                denom = np.maximum(
+                                    d1[interp_mask] + d2[interp_mask],
+                                    _LINEAR_INTERP_EPSILON,
+                                )
                                 chunk_vals[interp_mask] = numer / denom
 
-                            # 若仅剩一条有限等值线，则退化为该等值线常值
+                            # c1 = argmin(dists)，且 remaining 至少有一条有限距离，理论上 d1 必有限；
+                            # 此处保留 np.isfinite(d1) 作为防御式保护。若 d2 非有限，说明 max_dist
+                            # 过滤后仅剩 1 条可用等值线，或 c1 位于首/尾等值线导致一侧邻居不存在，
+                            # 此时退化为常值填充。
                             single_contour_mask = middle_mask & np.isfinite(d1) & (~np.isfinite(d2))
                             if single_contour_mask.any():
                                 chunk_vals[single_contour_mask] = ia1[single_contour_mask]
