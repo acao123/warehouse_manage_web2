@@ -69,6 +69,16 @@ SPEC.loader.exec_module(KML_TO_IA)
 
 
 class ArcgisSectorSearchTests(unittest.TestCase):
+    def _make_converter(self):
+        converter = KML_TO_IA.KmlToIaConverter(
+            kml_path="dummy.kml",
+            ia_output_path="dummy.tif",
+        )
+        converter._coord_transform = types.SimpleNamespace(
+            TransformPoints=lambda pts: [(lon, lat, 0.0) for lon, lat in pts]
+        )
+        return converter
+
     def test_sector_search_limits_neighbors_per_sector(self):
         pts_query = np.array([[0.0, 0.0]])
         pts_train = np.array([
@@ -98,6 +108,69 @@ class ArcgisSectorSearchTests(unittest.TestCase):
         np.testing.assert_array_equal(
             selected_mask,
             np.array([[True, True, True, True, False]]),
+        )
+
+    def test_sector_search_keeps_nearest_point_per_contour(self):
+        pts_query = np.array([[0.0, 0.0]])
+        pts_train = np.array([
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [0.0, 3.0],
+            [0.0, 4.0],
+        ])
+        dists = np.array([[1.0, 2.0, 3.0, 4.0]])
+        idxs = np.array([[0, 1, 2, 3]])
+        contour_ids = np.array([10, 10, 20, 20], dtype=np.int32)
+
+        selected_mask, valid_mask = KML_TO_IA._select_arcgis_sector_neighbors(
+            dists=dists,
+            idxs=idxs,
+            pts_query=pts_query,
+            pts_train=pts_train,
+            n_sectors=1,
+            points_per_sector=4,
+            min_points=1,
+            max_distance=None,
+            contour_ids=contour_ids,
+            per_contour_points=1,
+            max_contours=None,
+        )
+
+        np.testing.assert_array_equal(valid_mask, np.ones_like(valid_mask, dtype=bool))
+        np.testing.assert_array_equal(
+            selected_mask,
+            np.array([[True, False, True, False]]),
+        )
+
+    def test_sector_search_limits_distinct_contours_when_requested(self):
+        pts_query = np.array([[0.0, 0.0]])
+        pts_train = np.array([
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [0.0, 3.0],
+            [-4.0, 0.0],
+        ])
+        dists = np.array([[1.0, 2.0, 3.0, 4.0]])
+        idxs = np.array([[0, 1, 2, 3]])
+        contour_ids = np.array([10, 20, 30, 40], dtype=np.int32)
+
+        selected_mask, _ = KML_TO_IA._select_arcgis_sector_neighbors(
+            dists=dists,
+            idxs=idxs,
+            pts_query=pts_query,
+            pts_train=pts_train,
+            n_sectors=1,
+            points_per_sector=4,
+            min_points=1,
+            max_distance=None,
+            contour_ids=contour_ids,
+            per_contour_points=1,
+            max_contours=2,
+        )
+
+        np.testing.assert_array_equal(
+            selected_mask,
+            np.array([[True, True, False, False]]),
         )
 
     def test_sector_search_skips_underfilled_sector_after_distance_filter(self):
@@ -132,6 +205,40 @@ class ArcgisSectorSearchTests(unittest.TestCase):
             selected_mask,
             np.array([[True, True, True, True, False, False]]),
         )
+
+    def test_iter_sample_points_yields_contour_ids(self):
+        converter = self._make_converter()
+        converter.sample_interval = 1
+        converter._contours = [
+            {"coordinates": [(100.0, 20.0), (101.0, 21.0)], "ia": 1.5},
+            {"coordinates": [(102.0, 22.0), (103.0, 23.0)], "ia": 2.5},
+        ]
+
+        self.assertEqual(
+            list(converter._iter_sample_points()),
+            [
+                (100.0, 20.0, 1.5, 0),
+                (101.0, 21.0, 1.5, 0),
+                (102.0, 22.0, 2.5, 1),
+                (103.0, 23.0, 2.5, 1),
+            ],
+        )
+
+    def test_prepare_sample_points_keeps_contour_ids_after_dedup(self):
+        converter = self._make_converter()
+        converter.sample_interval = 1
+        converter.max_sample_points = 100
+        converter._contours = [
+            {"coordinates": [(100.0, 20.0), (101.0, 21.0)], "ia": 1.0},
+            {"coordinates": [(100.0, 20.0), (102.0, 22.0)], "ia": 2.0},
+        ]
+
+        x_arr, y_arr, ia_arr, contour_ids = converter._prepare_sample_points()
+
+        np.testing.assert_array_equal(x_arr, np.array([100.0, 101.0, 102.0]))
+        np.testing.assert_array_equal(y_arr, np.array([20.0, 21.0, 22.0]))
+        np.testing.assert_array_equal(ia_arr, np.array([1.0, 1.0, 2.0], dtype=np.float32))
+        np.testing.assert_array_equal(contour_ids, np.array([0, 0, 1], dtype=np.int32))
 
 
 if __name__ == "__main__":
