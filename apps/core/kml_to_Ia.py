@@ -1162,6 +1162,14 @@ class KmlToIaConverter:
             ia_arr_per_contour = np.array(
                 [self._contours[i]['ia'] for i in range(N)], dtype=np.float64
             )
+            if np.any(ia_arr_per_contour <= 0.0):
+                bad_idx = np.where(ia_arr_per_contour <= 0.0)[0].tolist()
+                raise RuntimeError(
+                    f"ArcGIS IDW v3.13: 检测到非正 Ia 值(等值线索引={bad_idx}, "
+                    f"值={ia_arr_per_contour[bad_idx].tolist()})，"
+                    "无法进行 log-smoothstep 混合"
+                )
+            log_ia_arr_per_contour = np.log(ia_arr_per_contour)
 
             if contour_ids is None:
                 contour_ids = np.zeros(len(x_arr), dtype=np.int32)
@@ -1215,7 +1223,7 @@ class KmlToIaConverter:
             n_rows = self._n_rows
             chunk_rows = self.chunk_size
             chunk_starts = list(range(0, n_rows, chunk_rows))
-            eps = 1e-9
+            eps = 1e-9  # 仅用于防止理论上的 d_in+d_out=0 分母为 0
 
             def _compute_chunk_arcgis_idw(row_start: int) -> Tuple[int, np.ndarray]:
                 row_end = min(row_start + chunk_rows, n_rows)
@@ -1251,9 +1259,9 @@ class KmlToIaConverter:
                     t = d_in / (d_in + d_out + eps)
                     s = t * t * (3.0 - 2.0 * t)
 
-                    ia_in_v = ia_arr_per_contour[r_idx - 1]   # 高
-                    ia_out_v = ia_arr_per_contour[r_idx]      # 低
-                    log_ia = (1.0 - s) * np.log(ia_in_v) + s * np.log(ia_out_v)
+                    log_ia_in = log_ia_arr_per_contour[r_idx - 1]    # 高
+                    log_ia_out = log_ia_arr_per_contour[r_idx]       # 低
+                    log_ia = (1.0 - s) * log_ia_in + s * log_ia_out
                     chunk_vals[mask_mid] = np.exp(log_ia)
 
                 # --- Region N: 外圈以外，统一写 NoData ---
