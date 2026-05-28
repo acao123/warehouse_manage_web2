@@ -1163,6 +1163,8 @@ class KmlToIaConverter:
                 sorted_r = mean_radii[sort_ord]
                 sorted_v = unique_ia[sort_ord]
 
+                # extrapolate=True: 让 PCHIP 在最内/最外等值线之外平滑延伸，
+                # 避免超出采样点域时突然截断；实际值由后续 nodata 逻辑控制
                 pchip_fn = _PchipInterpolator(sorted_r, sorted_v, extrapolate=True)
                 pchip_at_train = pchip_fn(train_radii)
                 residuals = vals_f64 - pchip_at_train
@@ -1273,6 +1275,8 @@ class KmlToIaConverter:
                 )
                 trend = pchip_fn(pixel_radii)
 
+                # 任何初始化为 -9999.0 的像素（IDW 无有效邻居）保持 NoData；
+                # 阈值 -9998.0 宽松匹配 float32 精度误差，与文件中其他 NoData 检测一致
                 nodata_flag = chunk_vals < -9998.0
                 chunk_vals += trend
                 chunk_vals[nodata_flag] = -9999.0
@@ -3002,7 +3006,7 @@ class KmlToIaConverter:
             self._setup_output_crs(center_lon)
 
             # 4. 准备采样点（坐标转换为 UTM 米坐标）
-            x_arr, y_arr, ia_values, _contour_ids = self._prepare_sample_points()
+            x_arr, y_arr, ia_values, _ = self._prepare_sample_points()
 
             # 5. 构建栅格网格（UTM 米坐标，直接使用 resolution 作为像素大小）
             self._build_grid(x_arr, y_arr)
