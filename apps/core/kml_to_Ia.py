@@ -1091,7 +1091,7 @@ class KmlToIaConverter:
                     r_sorted = r_arr[sorted_idx]
                     v_sorted = values[sorted_idx].astype(np.float64)
 
-                    tol_bin = self.resolution / 2.0
+                    tol_bin = self.resolution / 2.0  # 半像素容差：同一等值线上的密集采样点合并为一个控制点
                     merged_r = [float(r_sorted[0])]
                     merged_v = [float(v_sorted[0])]
                     running_sum = float(v_sorted[0])
@@ -1218,6 +1218,7 @@ class KmlToIaConverter:
                         (pts_query[:, 0] - cx) ** 2 + (pts_query[:, 1] - cy) ** 2
                     )
                     radial_values = f_radial(r_pixels)
+                    # -9998.0 阈值：凡赋值 -9999.0 的 NoData 像素均 < -9998.0，有效像素均 > -9998.0
                     valid_pixel_mask = chunk_vals > -9998.0
                     chunk_vals[valid_pixel_mask] += radial_values[valid_pixel_mask]
                     del r_pixels, radial_values, valid_pixel_mask
