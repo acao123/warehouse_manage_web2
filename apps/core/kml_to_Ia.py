@@ -1039,7 +1039,12 @@ class KmlToIaConverter:
         try:
             power = self.qgis_idw_power
             max_dist = self.idw_max_distance
-            k_per = max(1, min(4, self.idw_num_neighbors if self.idw_num_neighbors <= 4 else 2))
+            # v3.10: 每条等值线取点数向后兼容钳制到 [1, 4]；
+            # 老配置常见值 12 映射为默认 2。
+            k_per_max = 4
+            k_per_default = 2
+            k_per_raw = self.idw_num_neighbors if self.idw_num_neighbors <= k_per_max else k_per_default
+            k_per = max(1, min(k_per_max, k_per_raw))
 
             if contour_ids is None:
                 contour_ids = np.zeros(len(x_arr), dtype=np.int32)
@@ -1090,6 +1095,8 @@ class KmlToIaConverter:
                 del xx, yy
                 n_pts = pts_query.shape[0]
 
+                # 预分配 n_groups * k_per 列，换取更低的拼接开销；
+                # 不足 k_per 的分组用哨兵列填充（距离 inf => 权重为 0）。
                 all_dists = np.empty((n_pts, n_groups * k_per), dtype=np.float64)
                 all_vals = np.empty((n_pts, n_groups * k_per), dtype=np.float64)
                 for gi in range(n_groups):
@@ -1105,6 +1112,7 @@ class KmlToIaConverter:
                     all_vals[:, col_start:col_start + k_eff] = vs[i]
                     if k_eff < k_per:
                         all_dists[:, col_start + k_eff:col_start + k_per] = np.inf
+                        # 值列填 0.0 即可；对应距离为 inf，权重会被压到 0，不参与计算。
                         all_vals[:, col_start + k_eff:col_start + k_per] = 0.0
 
                 exact_mask = (all_dists == 0.0).any(axis=1)
@@ -1123,8 +1131,8 @@ class KmlToIaConverter:
                     chunk_vals[valid_mask] = num / weight_sum[valid_mask]
 
                 if exact_mask.any():
-                    argmin = np.argmin(all_dists[exact_mask], axis=1)
-                    chunk_vals[exact_mask] = all_vals[exact_mask, argmin]
+                    zero_cols = (all_dists[exact_mask] == 0.0).argmax(axis=1)
+                    chunk_vals[exact_mask] = all_vals[exact_mask, zero_cols]
 
                 del pts_query, all_dists, all_vals, weights, weight_sum
 
