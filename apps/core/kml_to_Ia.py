@@ -1059,7 +1059,7 @@ class KmlToIaConverter:
                 mask = contour_ids == cid
                 pts_c = np.column_stack([x_arr[mask], y_arr[mask]]).astype(np.float64)
                 if len(pts_c) == 0:
-                    logger.warning("ArcGIS IDW v3.10: contour_id=%s 分组无采样点，已跳过", cid)
+                    logger.warning("ArcGIS IDW v3.10: contour_id=%d 分组无采样点，已跳过", cid)
                     continue
                 trees.append(_cKDTree(pts_c))
                 tree_vals.append(values[mask].astype(np.float64))
@@ -1139,7 +1139,9 @@ class KmlToIaConverter:
                 if exact_mask.any():
                     zero_hits = (all_dists[exact_mask] == 0.0)
                     if not zero_hits.any(axis=1).all():
-                        raise RuntimeError("ArcGIS IDW v3.10: 精确命中检测异常")
+                        raise RuntimeError(
+                            "ArcGIS IDW v3.10: 期望 exact_mask 像素至少有一个零距离邻居，但检测到异常行"
+                        )
                     zero_cols = zero_hits.argmax(axis=1)
                     chunk_vals[exact_mask] = all_vals[exact_mask, zero_cols]
 
