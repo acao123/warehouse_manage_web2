@@ -286,6 +286,8 @@ gdal.UseExceptions()
 # ==================== KML PGA值解析正则 ====================
 # 匹配格式如 "0.01g"、"0.05G"、"0.10 g" 等
 _PGA_NAME_PATTERN = re.compile(r'^([0-9]*\.?[0-9]+)\s*[gG]$')
+_IDW_EXACT_MATCH_EPSILON = 1e-6          # UTM 米制坐标下的精确命中容差，避免浮点误差漏判
+_IDW_CANCEL_CHECK_INTERVAL = 4           # 每处理若干条等值线检查一次取消信号，兼顾响应性与开销
 
 
 class TaskCancelledException(Exception):
@@ -1211,6 +1213,13 @@ class KmlToIaConverter:
                 mask = inverse == contour_pos
                 contour_pts = pts_train[mask]
                 contour_vals = vals_f64[mask]
+                if contour_vals.size == 0:
+                    raise ValueError("存在空等值线分组，无法执行 qgis_idw")
+                if not np.allclose(contour_vals, contour_vals[0], rtol=0.0, atol=1e-12):
+                    raise ValueError(
+                        f"contour_id={int(unique_contours[contour_pos])} 的 Ia 值不一致，"
+                        "无法执行按等值线的 qgis_idw"
+                    )
                 contour_trees.append(_cKDTree(contour_pts))
                 ia_per_contour[contour_pos] = float(contour_vals[0])
                 contour_point_counts[contour_pos] = contour_pts.shape[0]
@@ -1222,7 +1231,7 @@ class KmlToIaConverter:
             used_contours = n_contours if max_contours is None else min(n_contours, max_contours)
             power = float(self.qgis_idw_power)
             max_dist = self.idw_max_distance
-            exact_eps = 1e-6
+            exact_eps = _IDW_EXACT_MATCH_EPSILON
 
             logger.info(
                 "ArcGIS IDW(v3.12): contour数=%d, idw_max_contours=%s, 幂次=%.1f, "
@@ -1280,7 +1289,7 @@ class KmlToIaConverter:
                 if limit_contours:
                     contour_dists = np.empty((n_pts, n_contours), dtype=np.float64)
                     for contour_pos, contour_tree in enumerate(contour_trees):
-                        if contour_pos % 4 == 0:
+                        if contour_pos % _IDW_CANCEL_CHECK_INTERVAL == 0:
                             self._check_cancelled()
                         contour_dists[:, contour_pos] = contour_tree.query(pts_query, k=1)[0]
 
@@ -1329,7 +1338,7 @@ class KmlToIaConverter:
                     active_mask = np.ones(n_pts, dtype=bool)
 
                     for contour_pos, contour_tree in enumerate(contour_trees):
-                        if contour_pos % 4 == 0:
+                        if contour_pos % _IDW_CANCEL_CHECK_INTERVAL == 0:
                             self._check_cancelled()
                         d_c = contour_tree.query(pts_query, k=1)[0]
 
