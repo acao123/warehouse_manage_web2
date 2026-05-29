@@ -432,7 +432,7 @@ class KmlToIaConverter:
         arcgis_idw_radial_assist: Optional[bool] = None,  # v3.10: 兼容别名，优先级高于 arcgis_idw_smooth
         arcgis_idw_shape_aware: bool = True,  # v3.10+: 形状感知径向距离（米制椭圆径向）
         arcgis_idw_smooth_extra_neighbors: int = 0,  # v3.10: 残差IDW额外邻居数
-        arcgis_idw_smooth_sigma_factor: float = 0.3,  # v3.10: 可选高斯后处理强度（0=禁用）；v3.13 默认改为 0.3
+        arcgis_idw_smooth_sigma_factor: float = 1,  # v3.10: 可选高斯后处理强度（0=禁用）；v3.13 默认改为 0.3
 
         # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
         ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
@@ -3152,7 +3152,7 @@ class KmlToIaConverter:
 if __name__ == "__main__":
     converter = KmlToIaConverter(
         kml_path="E:\\code\\python\\地质\\PGA666.kml",  # 输入KML文件路径
-        ia_output_path="E:\\code\\python\\地质\\Ia123.tif",  # Ia输出路径
+        ia_output_path="E:\\code\\python\\地质\\Ia789.tif",  # Ia输出路径
 
         # PGA输出（可选，使用矢量栅格化非插值）
         pga_output_path="../../data/geology/kml/PGA.tif",  # 不需要PGA时设为None
