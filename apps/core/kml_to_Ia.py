@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.10）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.11）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,16 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.10）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.11 相较 v3.10）：
+    1. 修复 qgis_idw（ArcGIS IDW）径向辅助场控制点塌缩问题：
+       - 根因：v3.10 使用协方差白化后的无量纲距离 r_arr，却继续使用米制
+         tol_bin=resolution/2 分 bin，导致在同心椭圆输入下控制点可能塌缩为 1。
+       - 方案：改为“米制椭圆径向距离”——仅提取主轴方向与轴比 ratio（含上限钳制），
+         在主轴坐标系下对次轴分量做 ratio 拉伸后计算半径，确保与米制容差同量纲。
+       - 新增诊断日志：输出半径范围、近似唯一值数量、ratio、λmin/λmax、控制点数。
+       - 降级改进：当径向辅助场失败时，不再仅回退纯局部 IDW；至少执行一次全图高斯
+         平滑后处理（sigma 可在参数为 0 时按 kNN 距离中位数自适应）。
 
 主要改进（v3.10 相较 v3.9）：
     1. qgis_idw（ArcGIS IDW）重构为“形状感知径向趋势 + 残差局部IDW”：
@@ -142,9 +152,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.10）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.10)
+作者: acao (重构版 v3.11)
 日期: 2026-05-29
-版本: 3.10
+版本: 3.11
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -273,7 +283,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.10）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.11）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -298,7 +308,7 @@ class KmlToIaConverter:
         - 'scipy_idw'  ：scipy RBF插值，速度快，支持邻近点限制，需安装scipy
         - 'kriging'    ：真正对齐 ArcGIS EBK 的子集化克里金，支持多次模拟
                         （ebk_n_simulations 默认 100），需安装 scipy + pykrige
-        - 'qgis_idw'   ：形状感知径向趋势 + KD-Tree 局部反距离权重残差插值（ArcGIS IDW 对齐）
+        - 'qgis_idw'   ：米制椭圆径向趋势 + KD-Tree 局部反距离权重残差插值（ArcGIS IDW 对齐）
         - 'qgis_tin'   ：QGIS三角网插值，基于Delaunay三角剖分，无需额外依赖
 
     用法示例:
@@ -389,7 +399,7 @@ class KmlToIaConverter:
         idw_max_distance: Optional[float] = None,  # 最大搜索距离（米，UTM坐标），None 表示不限制
         arcgis_idw_smooth: bool = True,       # v3.10: True=启用径向辅助平滑（推荐）
         arcgis_idw_radial_assist: Optional[bool] = None,  # v3.10: 兼容别名，优先级高于 arcgis_idw_smooth
-        arcgis_idw_shape_aware: bool = True,  # v3.10: 形状感知径向距离（协方差归一化）
+        arcgis_idw_shape_aware: bool = True,  # v3.10+: 形状感知径向距离（米制椭圆径向）
         arcgis_idw_smooth_extra_neighbors: int = 0,  # v3.10: 残差IDW额外邻居数
         arcgis_idw_smooth_sigma_factor: float = 0.0,  # v3.10: 可选高斯后处理强度（0=禁用）
 
@@ -1027,7 +1037,7 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        ArcGIS IDW 风格的局部反距离权重插值（v3.10：形状感知径向趋势 + 残差IDW）。
+        ArcGIS IDW 风格的局部反距离权重插值（v3.11：米制椭圆径向趋势 + 残差IDW）。
 
         与 ArcGIS IDW 工具原理一致：
             - 使用 scipy.spatial.cKDTree 对每个像素查询最近的 N 个采样点
@@ -1035,9 +1045,9 @@ class KmlToIaConverter:
             - 反距离权重 w_i = 1 / d_i^power；当 d_i = 0 时直接取该点的值。
             - 支持可选最大搜索距离 idw_max_distance（单位：米，UTM坐标）。
 
-        v3.10 平滑重构：
+        v3.11 平滑重构：
             - 当 arcgis_idw_smooth=True（默认）时，先构建径向单调趋势 f_radial：
-              ① 基于采样点协方差构建形状感知径向距离（可退回欧氏距离）；
+              ① 基于采样点协方差提取主轴与轴比，构建米制椭圆径向距离（可退回欧氏距离）；
               ② 将 (r_i, ia_i) 分 bin 合并后，用 PCHIP 拟合并强制外到内单调递增；
               ③ 对残差 aux_i = ia_i - f_radial(r_i) 做局部 IDW 插值。
             - 最终像素值 = f_radial(r_pixel) + IDW_residual(pixel)。
@@ -1064,7 +1074,8 @@ class KmlToIaConverter:
         out_ds = None
         band = None
         f_radial = None
-        shape_transform = None
+        shape_rotation = None
+        shape_ratio = 1.0
 
         try:
             # 建立 KD-Tree（在所有分块插值时共享）
@@ -1088,27 +1099,47 @@ class KmlToIaConverter:
             residual_vals = vals_f64
 
             logger.info(
-                "ArcGIS IDW (v3.10) 插值: 邻近点数=%d, 残差邻近点数=%d, 幂次=%.1f, "
+                "ArcGIS IDW (v3.11) 插值: 邻近点数=%d, 残差邻近点数=%d, 幂次=%.1f, "
                 "最大距离=%s, smooth=%s, shape_aware=%s, sigma_factor=%.3f",
                 n_neighbors, residual_neighbors, power,
                 f"{max_dist:.1f} m" if max_dist is not None else "无限制",
                 smooth_enabled, self.arcgis_idw_shape_aware, self.arcgis_idw_smooth_sigma_factor,
             )
 
-            # v3.10：径向辅助场（可选）——先拟合趋势，再插值残差
+            # v3.11：径向辅助场（可选）——先拟合趋势，再插值残差
             use_radial_assist = False
+            radial_assist_failed = False
             if smooth_enabled:
                 try:
                     centered_train = np.column_stack([x_arr - cx, y_arr - cy]).astype(np.float64)
+                    lam_min = float("nan")
+                    lam_max = float("nan")
+                    eig_ratio = float("nan")
+                    raw_ratio = 1.0
                     if self.arcgis_idw_shape_aware:
                         cov = np.cov(centered_train.T)
                         eigvals, eigvecs = np.linalg.eigh(cov)
-                        eigvals = np.maximum(eigvals, 1e-12)
-                        shape_transform = eigvecs @ np.diag(1.0 / np.sqrt(eigvals))
-                        normalized_train = centered_train @ shape_transform
-                        r_arr = np.sqrt((normalized_train ** 2).sum(axis=1))
-                        del cov, eigvals, eigvecs, normalized_train
+                        eigvals = np.where(np.isfinite(eigvals), eigvals, 0.0)
+                        lam_min = float(np.min(eigvals))
+                        lam_max = float(np.max(eigvals))
+                        if lam_max > 0.0:
+                            eig_ratio = lam_min / lam_max
+                        order = np.argsort(eigvals)[::-1]  # [主轴, 次轴]
+                        shape_rotation = eigvecs[:, order]
+                        if lam_min > 1e-12 and lam_max > 0.0:
+                            raw_ratio = float(math.sqrt(lam_max / lam_min))
+                            shape_ratio = float(np.clip(raw_ratio, 1.0, 50.0))
+                        else:
+                            shape_ratio = 1.0
+                        rotated_train = centered_train @ shape_rotation
+                        r_arr = np.sqrt(
+                            rotated_train[:, 0] ** 2 +
+                            (rotated_train[:, 1] * shape_ratio) ** 2
+                        )
+                        del cov, eigvals, eigvecs, order, rotated_train
                     else:
+                        shape_rotation = None
+                        shape_ratio = 1.0
                         r_arr = np.sqrt((centered_train ** 2).sum(axis=1))
                     del centered_train
 
@@ -1117,6 +1148,15 @@ class KmlToIaConverter:
                     r_sorted = r_arr[sorted_idx]
                     v_sorted = vals_f64[sorted_idx]
                     tol_bin = max(self.resolution / 2.0, 1e-6)
+                    r_min_raw = float(np.min(r_arr))
+                    r_max_raw = float(np.max(r_arr))
+                    uniq_count = int(np.unique(np.round(r_arr, decimals=6)).size)
+                    logger.info(
+                        "ArcGIS IDW v3.11 径向诊断: r范围=[%.6f, %.6f], unique≈%d, "
+                        "ratio=%.4f(raw=%.4f), λmin=%.6e, λmax=%.6e, λmin/λmax=%.6e, tol_bin=%.6f",
+                        r_min_raw, r_max_raw, uniq_count,
+                        shape_ratio, raw_ratio, lam_min, lam_max, eig_ratio, tol_bin,
+                    )
                     merged_r = [float(r_sorted[0])]
                     merged_v = [float(v_sorted[0])]
                     running_sum = float(v_sorted[0])
@@ -1141,6 +1181,10 @@ class KmlToIaConverter:
                     r_knots = np.asarray(merged_r, dtype=np.float64)
                     v_knots = np.asarray(merged_v, dtype=np.float64)
                     del merged_r, merged_v
+                    logger.info(
+                        "ArcGIS IDW v3.11 径向分bin完成: 控制点=%d",
+                        len(r_knots),
+                    )
 
                     if len(r_knots) >= 2:
                         # 外->内单调递增 等价于 r 增大时单调不增
@@ -1149,20 +1193,24 @@ class KmlToIaConverter:
                         residual_vals = vals_f64 - f_radial(r_arr)
                         use_radial_assist = True
                         logger.info(
-                            "ArcGIS IDW v3.10 径向辅助场启用: 中心=(%.1f, %.1f), 控制点=%d, 残差范围=[%.4f, %.4f]",
+                            "ArcGIS IDW v3.11 径向辅助场启用: 中心=(%.1f, %.1f), 控制点=%d, 残差范围=[%.4f, %.4f]",
                             cx, cy, len(r_knots), float(residual_vals.min()), float(residual_vals.max()),
                         )
                     else:
+                        radial_assist_failed = True
                         logger.warning(
-                            "ArcGIS IDW v3.10 径向辅助场控制点不足（%d），回退到原始局部 IDW",
+                            "ArcGIS IDW v3.11 径向辅助场控制点不足（%d），回退到局部 IDW + 高斯降级平滑",
                             len(r_knots),
                         )
-                        shape_transform = None
+                        shape_rotation = None
+                        shape_ratio = 1.0
                     del r_knots, v_knots, r_arr
                 except Exception as _e:
-                    logger.warning("ArcGIS IDW v3.10 径向辅助场构建失败（%s），回退到原始局部 IDW", _e)
+                    radial_assist_failed = True
+                    logger.warning("ArcGIS IDW v3.11 径向辅助场构建失败（%s），回退到局部 IDW + 高斯降级平滑", _e)
                     f_radial = None
-                    shape_transform = None
+                    shape_rotation = None
+                    shape_ratio = 1.0
                     residual_vals = vals_f64
                     use_radial_assist = False
 
@@ -1185,7 +1233,14 @@ class KmlToIaConverter:
             chunk_rows = self.chunk_size
             chunk_starts = list(range(0, n_rows, chunk_rows))
             sigma_factor = max(0.0, float(self.arcgis_idw_smooth_sigma_factor))
-            collect_full_arr = bool(smooth_enabled and sigma_factor > 0.0)
+            effective_sigma_factor = sigma_factor
+            if smooth_enabled and radial_assist_failed and effective_sigma_factor <= 0.0:
+                effective_sigma_factor = 0.5
+                logger.info(
+                    "ArcGIS IDW v3.11 降级平滑启用自适应 sigma: 原sigma_factor=0，临时使用 %.3f",
+                    effective_sigma_factor,
+                )
+            collect_full_arr = bool(smooth_enabled and effective_sigma_factor > 0.0)
             apply_gaussian = bool(collect_full_arr)
             if collect_full_arr:
                 # 使用采样点 kNN 距离中位数估计典型间距，保证尺度自适应
@@ -1196,7 +1251,7 @@ class KmlToIaConverter:
                 else:
                     d_typical = float(np.median(d_knn[:, -1]))
                 del d_knn
-                sigma_pixels = max(1.0, sigma_factor * d_typical / self.resolution)
+                sigma_pixels = max(1.0, effective_sigma_factor * d_typical / self.resolution)
             else:
                 sigma_pixels = 0.0
 
@@ -1264,10 +1319,13 @@ class KmlToIaConverter:
                 # 径向趋势加回残差场，得到最终 Ia
                 if use_radial_assist and f_radial is not None:
                     centered_q = np.column_stack([pts_query[:, 0] - cx, pts_query[:, 1] - cy])
-                    if shape_transform is not None:
-                        norm_q = centered_q @ shape_transform
-                        r_pixels = np.sqrt((norm_q ** 2).sum(axis=1))
-                        del norm_q
+                    if shape_rotation is not None:
+                        rotated_q = centered_q @ shape_rotation
+                        r_pixels = np.sqrt(
+                            rotated_q[:, 0] ** 2 +
+                            (rotated_q[:, 1] * shape_ratio) ** 2
+                        )
+                        del rotated_q
                     else:
                         r_pixels = np.sqrt((centered_q ** 2).sum(axis=1))
                     chunk_vals += f_radial(r_pixels)
@@ -1331,7 +1389,7 @@ class KmlToIaConverter:
                     try:
                         logger.info(
                             "ArcGIS IDW 执行高斯后处理: sigma_factor=%.3f, sigma_pixels=%.2f",
-                            sigma_factor, sigma_pixels,
+                            effective_sigma_factor, sigma_pixels,
                         )
                         nodata_mask = full_arr < -9998.0
                         mask = (~nodata_mask).astype(np.float32)
@@ -1378,8 +1436,8 @@ class KmlToIaConverter:
                 del tree
             if f_radial is not None:
                 del f_radial
-            if shape_transform is not None:
-                del shape_transform
+            if shape_rotation is not None:
+                del shape_rotation
             gc.collect()
 
     # ==================== scipy 插值方法 ====================
@@ -2813,7 +2871,7 @@ class KmlToIaConverter:
     def _run_impl(self) -> bool:
         """run() 的实际实现。"""
         logger.info("=" * 60)
-        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.9）")
+        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.11）")
         logger.info("插值方法: %s", self.interp_method)
         logger.info("采样间隔: %d，最大采样点数: %d",
                      self.sample_interval, self.max_sample_points)
