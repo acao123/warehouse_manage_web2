@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.13）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.14）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,19 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.13）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.14 相较 v3.13）：
+    1. 彻底修复中心平顶（根因修复）：
+       - v3.13 的 PCHIP 方法依赖分箱均值控制点；当最内圈 v_at_rmin == v_max 时，
+         v_peak 无法超过 v_max，导致 [0, r_min] 区间被钳制为常数平台。
+    2. 彻底消除同心环带（根因修复）：
+       - v3.13 的稠密重采样仅是把阶梯结构压缩，无法消除梯度跳变引起的环带。
+    3. 采用 Weibull 广义高斯径向模型：
+       v(r) = v_min + (v_max - v_min) * exp(-(r/r0)^beta)
+       - v(0) = v_max，中心精确为峰值（无平顶）；
+       - 全域 C∞ 连续单调递减（无环带）；
+       - 线性化拟合：log(-log(z)) = beta*log(r) - beta*log(r0)，z=(v-vmin)/(vmax-vmin)；
+       - 若可用中间层控制点 < 2 或拟合参数无效，自动回退到 v3.13 PCHIP 逻辑。
 
 主要改进（v3.13 相较 v3.12）：
     1. 彻底消除中心平顶（Fix A 增强）：
@@ -183,7 +196,7 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.13）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.13)
+作者: acao (重构版 v3.14)
 日期: 2026-05-29
 版本: 3.13
 QGIS版本: 3.40.15
@@ -193,7 +206,7 @@ QGIS版本: 3.40.15
     - 'radial'    : 径向距离1D插值（专为同心圈优化，完美单调递增）
     - 'scipy_idw' : scipy RBFInterpolator（速度快，支持邻近点限制）
     - 'kriging'   : 简化版 Empirical Bayesian Kriging（与 ArcGIS EBK 对齐，需 scipy + pykrige）
-    - 'qgis_idw'  : 椭圆径向单调趋势插值（v3.13 改进中心峰值+消除环带，需 scipy）
+    - 'qgis_idw'  : 椭圆径向单调趋势插值（v3.14 Weibull模型彻底修复中心平顶+消除环带，需 scipy）
     - 'qgis_tin'  : QGIS自带三角网插值（无需额外依赖）
 
 插值范围:
@@ -314,7 +327,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.13）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.14）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -1068,13 +1081,19 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        ArcGIS IDW 风格的局部反距离权重插值（v3.13：改进中心峰值估计 + 余弦虚拟控制点 + 稠密重采样消除环带）。
+        ArcGIS IDW 风格的局部反距离权重插值（v3.14：Weibull径向模型彻底修复中心平顶 + 消除同心环带）。
 
         与 ArcGIS IDW 工具原理一致：
             - 使用 scipy.spatial.cKDTree 对每个像素查询最近的 N 个采样点
               （默认 N=12，与 ArcGIS IDW 默认 Search Neighborhood 一致）。
             - 反距离权重 w_i = 1 / d_i^power；当 d_i = 0 时直接取该点的值。
             - 支持可选最大搜索距离 idw_max_distance（单位：米，UTM坐标）。
+
+        v3.14 修复（在 v3.13 基础上）：
+            - Weibull 径向模型：v(r) = v_min + (v_max-v_min)*exp(-(r/r0)^beta)
+              · v(0) = v_max（中心精确峰值，无平顶）；全域 C∞ 单调（无环带）
+              · 参数 beta/r0 由中间层控制点对数线性拟合得到（np.polyfit）
+              · 回退条件：可用中间层控制点 < 2 或拟合无效，沿用 v3.13 PCHIP
 
         v3.13 修复（在 v3.12 基础上）：
             Fix A 增强——改进中心峰值估计：
@@ -1151,7 +1170,7 @@ class KmlToIaConverter:
             residual_vals = vals_f64
 
             logger.info(
-                "ArcGIS IDW (v3.13) 插值: 邻近点数=%d, 残差邻近点数=%d, 幂次=%.1f, "
+                "ArcGIS IDW (v3.14) 插值: 邻近点数=%d, 残差邻近点数=%d, 幂次=%.1f, "
                 "最大距离=%s, smooth=%s, shape_aware=%s, sigma_factor=%.3f",
                 n_neighbors, residual_neighbors, power,
                 f"{max_dist:.1f} m" if max_dist is not None else "无限制",
@@ -1292,56 +1311,134 @@ class KmlToIaConverter:
                             v_peak, strategy_used, v_at_rmin, v_max,
                         )
 
-                        # v3.13 Fix D: 在 [0, r_min] 区间插入虚拟控制点（余弦 ease-in-out 平滑过渡）
-                        # 保证从中心（r=0, v_peak）到最内圈（r=r_min, v_at_rmin）严格单调递减
-                        N_VIRTUAL = 8
-                        if r_min_knot > 1e-9 and v_peak > v_at_rmin:
-                            # 生成 N_VIRTUAL+1 个点（r=0 到 r≈r_min，不含 r_min 端以避免重复）
-                            t_center = np.linspace(0.0, 1.0, N_VIRTUAL + 2)[:-1]  # 0 → 接近1，不含1
-                            r_center = t_center * r_min_knot
-                            # cosine ease-in-out: f(0)=v_peak, f(1)=v_at_rmin, 两端斜率→0
-                            v_center = v_peak - (v_peak - v_at_rmin) * (1.0 - np.cos(np.pi * t_center)) / 2.0
-                            n_virtual_inserted = len(r_center)
-                        else:
-                            # v_peak ≈ v_at_rmin 或 r_min ≈ 0：只追加一个中心点
-                            r_center = np.array([0.0])
-                            v_center = np.array([float(v_peak)])
-                            n_virtual_inserted = 1
-
-                        r_knots_ext = np.concatenate([r_center, r_knots])
-                        v_knots_ext = np.concatenate([v_center, v_knots])
-                        n_knots_total = len(r_knots_ext)
-
-                        logger.info(
-                            "ArcGIS IDW v3.13 虚拟控制点: 插入=%d 个，r_knots_ext 总计=%d 个",
-                            n_virtual_inserted, n_knots_total,
-                        )
-
-                        # v3.13 Fix D（续）: 稠密重采样消除 PCHIP 控制点间梯度跳变（消除同心环带）
-                        # 先用初始 PCHIP 拟合扩展控制点，再在 [0, r_max] 均匀采样 300 点，
-                        # 强制单调并钳制，再重建最终 PCHIP；300 段极短曲线视觉效果接近 C2 连续
-                        f_pchip_initial = _PchipInterpolator(r_knots_ext, v_knots_ext, extrapolate=True)
-                        del r_knots_ext, v_knots_ext
-
+                        # v3.14: Weibull 广义高斯径向模型（首选）+ v3.13 PCHIP 回退
+                        # ----------------------------------------------------------------
+                        # 根因修复（Fix 中心平顶 + 同心环带）：
+                        #   v3.13 PCHIP 建立在分箱均值（阶梯型控制点）上，即使稠密重采样
+                        #   + minimum.accumulate 也无法消除梯度跳变引起的同心环带；
+                        #   当最内圈 v_at_rmin == v_max 时 v_peak 无法超越 v_max，
+                        #   导致 [0, r_min] 区间被钳制为常数平台（中心平顶）。
+                        # 修复策略（Weibull 模型）：
+                        #   v(r) = v_min + (v_max - v_min) * exp(-(r/r0)^beta)
+                        #   - v(0) = v_max，中心精确为峰值，无平台（Fix：中心平顶）
+                        #   - 全域 C∞ 连续单调递减，无逐段跳变（Fix：同心环带）
+                        #   - 线性化：log(-log(z)) = beta*log(r) - beta*log(r0)，
+                        #     z = (v - v_min)/(v_max - v_min)，用 polyfit 求解
+                        #   - 只用 z 严格在 (1e-4, 1-1e-4) 的中间层控制点拟合（排除端点）
+                        # 回退：可用控制点 < 2 或拟合无效，沿用 v3.13 PCHIP 逻辑
                         r_max_knot = float(r_knots[-1])
-                        N_DENSE = 300
-                        r_dense = np.linspace(0.0, r_max_knot, N_DENSE)
-                        v_dense = f_pchip_initial(r_dense)
-                        del f_pchip_initial
-                        # 强制单调不增（外到内递增 <=> r 增大时 v 单调不增）
-                        v_dense = np.minimum.accumulate(v_dense)
-                        # 钳制到采样点范围
-                        v_dense = np.clip(v_dense, v_min, v_max)
-                        # 确保 r=0 处精确等于 v_peak（防止 PCHIP 外推偏差）
-                        v_dense[0] = float(v_peak)
+                        _weibull_ok = False
+                        r0_weibull = float('nan')
+                        beta_weibull = float('nan')
+                        _v_span = v_max - v_min
+                        if _v_span > 1e-12:
+                            _z_k = (v_knots - v_min) / _v_span
+                            _wm = (
+                                (_z_k > 1e-4) & (_z_k < 1.0 - 1e-4) & (r_knots > 1e-9)
+                            )
+                            if int(_wm.sum()) >= 2:
+                                try:
+                                    _lr = np.log(r_knots[_wm])
+                                    _lz = np.log(-np.log(_z_k[_wm]))
+                                    _cw = np.polyfit(_lr, _lz, 1)
+                                    beta_weibull = float(_cw[0])
+                                    if beta_weibull > 0.1:
+                                        r0_weibull = float(
+                                            np.exp(-float(_cw[1]) / beta_weibull)
+                                        )
+                                        if r0_weibull > 1e-9 and np.isfinite(r0_weibull):
+                                            _vc = (
+                                                v_min
+                                                + _v_span
+                                                * np.exp(
+                                                    -(r_knots[_wm] / r0_weibull)
+                                                    ** beta_weibull
+                                                )
+                                            )
+                                            if np.isfinite(_vc).all():
+                                                _weibull_ok = True
+                                except Exception as _ew:
+                                    logger.debug(
+                                        "ArcGIS IDW v3.14 Weibull 拟合异常 (%s)", _ew
+                                    )
+                            del _z_k, _wm
 
-                        f_radial = _PchipInterpolator(r_dense, v_dense, extrapolate=True)
-                        del r_dense, v_dense
+                        if _weibull_ok:
+                            # Weibull 解析函数直接作为 f_radial（全局 C∞ 光滑，无需 PCHIP）
+                            _r0w, _bw = r0_weibull, beta_weibull
+                            _vmn, _vmx, _vsp = v_min, v_max, _v_span
 
-                        logger.info(
-                            "ArcGIS IDW v3.13 稠密重采样: 重采样点数=%d，最终 PCHIP 控制点=%d",
-                            N_DENSE, N_DENSE,
-                        )
+                            def f_radial(r_q: np.ndarray) -> np.ndarray:  # noqa: E306
+                                return np.clip(
+                                    _vmn + _vsp * np.exp(-(r_q / _r0w) ** _bw),
+                                    _vmn, _vmx,
+                                )
+
+                            N_DENSE = 0          # Weibull 路径无稠密重采样步骤
+                            n_knots_total = len(r_knots)
+                            _v_fit_at_rmin = float(
+                                v_min
+                                + _v_span
+                                * np.exp(-(r_min_knot / r0_weibull) ** beta_weibull)
+                            )
+                            logger.info(
+                                "ArcGIS IDW v3.14 Weibull 径向模型启用: "
+                                "beta=%.3f, r0=%.1f m, "
+                                "v_at_rmin(模型)=%.4f vs v_at_rmin(数据)=%.4f",
+                                beta_weibull, r0_weibull, _v_fit_at_rmin, v_at_rmin,
+                            )
+                        else:
+                            # v3.13 PCHIP 回退：虚拟控制点 + 稠密重采样
+                            logger.info(
+                                "ArcGIS IDW v3.14 Weibull 未启用（beta=%.3f r0=%.3f），"
+                                "回退到 v3.13 PCHIP",
+                                beta_weibull, r0_weibull,
+                            )
+                            N_VIRTUAL = 8
+                            if r_min_knot > 1e-9 and v_peak > v_at_rmin:
+                                t_center = np.linspace(0.0, 1.0, N_VIRTUAL + 2)[:-1]
+                                r_center = t_center * r_min_knot
+                                v_center = (
+                                    v_peak
+                                    - (v_peak - v_at_rmin)
+                                    * (1.0 - np.cos(np.pi * t_center))
+                                    / 2.0
+                                )
+                                n_virtual_inserted = len(r_center)
+                            else:
+                                r_center = np.array([0.0])
+                                v_center = np.array([float(v_peak)])
+                                n_virtual_inserted = 1
+
+                            r_knots_ext = np.concatenate([r_center, r_knots])
+                            v_knots_ext = np.concatenate([v_center, v_knots])
+                            n_knots_total = len(r_knots_ext)
+
+                            logger.info(
+                                "ArcGIS IDW v3.13 PCHIP 虚拟控制点: 插入=%d 个，总计=%d 个",
+                                n_virtual_inserted, n_knots_total,
+                            )
+
+                            f_pchip_initial = _PchipInterpolator(
+                                r_knots_ext, v_knots_ext, extrapolate=True
+                            )
+                            del r_knots_ext, v_knots_ext
+
+                            N_DENSE = 300
+                            r_dense = np.linspace(0.0, r_max_knot, N_DENSE)
+                            v_dense = f_pchip_initial(r_dense)
+                            del f_pchip_initial
+                            v_dense = np.minimum.accumulate(v_dense)
+                            v_dense = np.clip(v_dense, v_min, v_max)
+                            v_dense[0] = float(v_peak)
+
+                            f_radial = _PchipInterpolator(r_dense, v_dense, extrapolate=True)
+                            del r_dense, v_dense
+
+                            logger.info(
+                                "ArcGIS IDW v3.13 稠密重采样: 重采样点数=%d，PCHIP 控制点=%d",
+                                N_DENSE, N_DENSE,
+                            )
 
                         # v3.12 Fix B (保留): 纯椭圆径向趋势，抑制残差 IDW 引起的同心环带
                         # 输入为同心椭圆等值线，理想输出几乎是纯椭圆径向单调场；
@@ -1359,12 +1456,14 @@ class KmlToIaConverter:
                             axis_angle_deg = 0.0
                         use_radial_assist = True
                         logger.info(
-                            "ArcGIS IDW v3.13 径向辅助场启用: 中心=(%.1f, %.1f), "
-                            "ratio=%.4f, 主轴角=%.1f°, 原始控制点=%d (含虚拟中心点+稠密重采样=%d), "
+                            "ArcGIS IDW v3.14 径向辅助场启用: 中心=(%.1f, %.1f), "
+                            "ratio=%.4f, 主轴角=%.1f°, 原始控制点=%d "
+                            "(Weibull=%s, PCHIP重采样=%d), "
                             "r_min=%.1f m, v_peak=%.4f (策略=%s), v_max=%.4f, "
                             "原始残差=[%.4f, %.4f] (已抑制为0)",
                             cx, cy, shape_ratio, axis_angle_deg,
-                            n_knots_total, N_DENSE,
+                            n_knots_total,
+                            _weibull_ok, N_DENSE,
                             r_min_knot, v_peak, strategy_used, v_max,
                             float(raw_residuals.min()), float(raw_residuals.max()),
                         )
