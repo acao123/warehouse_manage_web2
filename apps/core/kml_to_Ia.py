@@ -198,7 +198,7 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.14）
 
 作者: acao (重构版 v3.14)
 日期: 2026-05-29
-版本: 3.13
+版本: 3.14
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -1365,21 +1365,24 @@ class KmlToIaConverter:
 
                         if _weibull_ok:
                             # Weibull 解析函数直接作为 f_radial（全局 C∞ 光滑，无需 PCHIP）
-                            _r0w, _bw = r0_weibull, beta_weibull
-                            _vmn, _vmx, _vsp = v_min, v_max, _v_span
+                            r0_captured, beta_captured = r0_weibull, beta_weibull
+                            v_min_captured, v_max_captured = v_min, v_max
+                            v_span_captured = _v_span
 
                             def f_radial(r_q: np.ndarray) -> np.ndarray:  # noqa: E306
                                 return np.clip(
-                                    _vmn + _vsp * np.exp(-(r_q / _r0w) ** _bw),
-                                    _vmn, _vmx,
+                                    v_min_captured
+                                    + v_span_captured
+                                    * np.exp(-(r_q / r0_captured) ** beta_captured),
+                                    v_min_captured, v_max_captured,
                                 )
 
                             N_DENSE = 0          # Weibull 路径无稠密重采样步骤
                             n_knots_total = len(r_knots)
                             _v_fit_at_rmin = float(
-                                v_min
-                                + _v_span
-                                * np.exp(-(r_min_knot / r0_weibull) ** beta_weibull)
+                                v_min_captured
+                                + v_span_captured
+                                * np.exp(-(r_min_knot / r0_captured) ** beta_captured)
                             )
                             logger.info(
                                 "ArcGIS IDW v3.14 Weibull 径向模型启用: "
