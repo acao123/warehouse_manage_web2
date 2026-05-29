@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.12）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.13）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,26 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.12）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.13 相较 v3.12）：
+    1. 彻底消除中心平顶（Fix A 增强）：
+       - v3.12 的线性外推在最内两圈斜率极小时几乎无效（v_peak ≈ v_at_rmin）。
+       - v3.13 改用双策略峰值估计：
+         * 策略 A（优先）：对最内 3~5 个控制点做对数/幂律拟合（log v vs log r），
+           外推到 r≈0 得到物理合理的峰值；
+         * 策略 B（备选）：直接取 v_max（采样点最大值），确保峰值不低于任何样本值。
+       - 在 [0, r_min] 区间插入 8 个虚拟控制点（余弦 ease-in-out 平滑过渡），
+         保证从中心到最内圈严格单调递减，彻底消除平台/台阶感。
+    2. 消除同心光晕环带（Fix D：稠密重采样）：
+       - v3.12 PCHIP 仅有 4~6 个控制点，相邻控制点间二阶导跳变视觉可见为环带。
+       - v3.13 在扩展控制点上先建 PCHIP，再在 [0, r_max] 均匀采样 300 个点，
+         强制单调并裁剪，再重建最终 PCHIP；300 段极短曲线的视觉效果接近 C2 连续，
+         彻底消除控制点间的梯度跳变环带。
+    3. 默认启用轻度高斯后处理：
+       - 将 arcgis_idw_smooth_sigma_factor 默认值从 0.0 改为 0.3；
+         即使径向趋势有微小不连续，高斯卷积也能将其平滑到肉眼不可见。
+    4. 日志增强：输出 v_peak 值与采用策略（A/B）、虚拟控制点数、
+       稠密重采样点数、高斯 sigma_pixels 等关键诊断信息。
 
 主要改进（v3.12 相较 v3.11）：
     1. 修复 qgis_idw 中心平顶问题（Fix A）：
@@ -163,9 +183,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.12）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.12)
+作者: acao (重构版 v3.13)
 日期: 2026-05-29
-版本: 3.12
+版本: 3.13
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -173,7 +193,7 @@ QGIS版本: 3.40.15
     - 'radial'    : 径向距离1D插值（专为同心圈优化，完美单调递增）
     - 'scipy_idw' : scipy RBFInterpolator（速度快，支持邻近点限制）
     - 'kriging'   : 简化版 Empirical Bayesian Kriging（与 ArcGIS EBK 对齐，需 scipy + pykrige）
-    - 'qgis_idw'  : 椭圆径向单调趋势插值（v3.12 修复中心平顶与同心环带，需 scipy）
+    - 'qgis_idw'  : 椭圆径向单调趋势插值（v3.13 改进中心峰值+消除环带，需 scipy）
     - 'qgis_tin'  : QGIS自带三角网插值（无需额外依赖）
 
 插值范围:
@@ -294,7 +314,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.12）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.13）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -412,7 +432,7 @@ class KmlToIaConverter:
         arcgis_idw_radial_assist: Optional[bool] = None,  # v3.10: 兼容别名，优先级高于 arcgis_idw_smooth
         arcgis_idw_shape_aware: bool = True,  # v3.10+: 形状感知径向距离（米制椭圆径向）
         arcgis_idw_smooth_extra_neighbors: int = 0,  # v3.10: 残差IDW额外邻居数
-        arcgis_idw_smooth_sigma_factor: float = 0.0,  # v3.10: 可选高斯后处理强度（0=禁用）
+        arcgis_idw_smooth_sigma_factor: float = 0.3,  # v3.10: 可选高斯后处理强度（0=禁用）；v3.13 默认改为 0.3
 
         # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
         ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
@@ -1048,7 +1068,7 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        ArcGIS IDW 风格的局部反距离权重插值（v3.12：椭圆径向趋势含中心峰值外推 + 纯径向场无残差环带）。
+        ArcGIS IDW 风格的局部反距离权重插值（v3.13：改进中心峰值估计 + 余弦虚拟控制点 + 稠密重采样消除环带）。
 
         与 ArcGIS IDW 工具原理一致：
             - 使用 scipy.spatial.cKDTree 对每个像素查询最近的 N 个采样点
@@ -1056,11 +1076,19 @@ class KmlToIaConverter:
             - 反距离权重 w_i = 1 / d_i^power；当 d_i = 0 时直接取该点的值。
             - 支持可选最大搜索距离 idw_max_distance（单位：米，UTM坐标）。
 
-        v3.12 修复（在 v3.11 基础上）：
-            Fix A——中心外推：
-                在 r_knots 中追加 (r=0, v_peak) 控制点，其中 v_peak 由最内两个控制点
-                线性外推，钳制到 [v_at_rmin, v_max]，保证从最内圈到中心区域单调平滑递增，
-                彻底消除最内圈以内区域因 PCHIP 常数外推导致的"平顶"效果。
+        v3.13 修复（在 v3.12 基础上）：
+            Fix A 增强——改进中心峰值估计：
+                策略 A（优先）：对最内 3~5 个控制点做对数/幂律拟合（log v vs log r），
+                外推到 r≈0 得到物理合理的峰值；当斜率为负（Ia 随距离减小而增大）且
+                外推值显著大于 v_at_rmin 时采用。
+                策略 B（备选）：直接取 v_max（采样点最大值）；在策略 A 无效时使用，
+                确保中心峰值始终 >= v_at_rmin。
+            Fix D——余弦虚拟控制点 + 稠密重采样消除环带：
+                在 [0, r_min] 区间插入 8 个余弦 ease-in-out 虚拟控制点，保证从中心
+                到最内圈平滑单调递减；再在 [0, r_max] 均匀采样 300 点，强制单调并
+                钳制，重建最终 PCHIP；300 段极短曲线视觉接近 C2 连续，彻底消除环带。
+
+        v3.12 修复（保持不变）：
             Fix B——消除残差环带：
                 将 residual_vals 置零，改为纯椭圆径向趋势场（f_radial）输出；
                 输入本质上为同心椭圆等值线，理想输出几乎是纯椭圆径向单调场，
@@ -1074,7 +1102,8 @@ class KmlToIaConverter:
               ① 基于采样点协方差提取主轴与轴比，构建米制椭圆径向距离（可退回欧氏距离）；
               ② 将 (r_i, ia_i) 分 bin 合并后，用 PCHIP 拟合并强制外到内单调递增；
               ③ 最终像素值 = f_radial(r_pixel)（v3.12 已抑制残差项）。
-            - 可选轻度高斯后处理（arcgis_idw_smooth_sigma_factor > 0）进一步抑制细微带状噪声。
+            - 可选轻度高斯后处理（arcgis_idw_smooth_sigma_factor > 0；v3.13 默认 0.3）
+              进一步抑制细微带状噪声。
             - 最终值钳制到输入样本 [min(values), max(values)]，保持 min/max 正确。
 
         性能：cKDTree.query 在 C 扩展层释放 GIL，可通过 ThreadPoolExecutor 多线程加速；
@@ -1122,14 +1151,14 @@ class KmlToIaConverter:
             residual_vals = vals_f64
 
             logger.info(
-                "ArcGIS IDW (v3.12) 插值: 邻近点数=%d, 残差邻近点数=%d, 幂次=%.1f, "
+                "ArcGIS IDW (v3.13) 插值: 邻近点数=%d, 残差邻近点数=%d, 幂次=%.1f, "
                 "最大距离=%s, smooth=%s, shape_aware=%s, sigma_factor=%.3f",
                 n_neighbors, residual_neighbors, power,
                 f"{max_dist:.1f} m" if max_dist is not None else "无限制",
                 smooth_enabled, self.arcgis_idw_shape_aware, self.arcgis_idw_smooth_sigma_factor,
             )
 
-            # v3.12：径向辅助场（可选）——先拟合趋势，再插值残差
+            # v3.13：径向辅助场（可选）——先拟合趋势，再插值残差
             use_radial_assist = False
             radial_assist_failed = False
             max_shape_ratio = 50.0
@@ -1150,7 +1179,7 @@ class KmlToIaConverter:
                         if not np.all(finite_mask):
                             bad_idx = np.where(~finite_mask)[0].tolist()
                             logger.warning(
-                                "ArcGIS IDW v3.12 检测到非有限协方差特征值，索引=%s，已按 0 处理",
+                                "ArcGIS IDW v3.13 检测到非有限协方差特征值，索引=%s，已按 0 处理",
                                 bad_idx,
                             )
                         # 非有限特征值按 0 处理：后续会触发 lam_min/lam_max 阈值保护并回退 ratio=1
@@ -1189,7 +1218,7 @@ class KmlToIaConverter:
                     r_max_raw = float(np.max(r_arr))
                     uniq_count = int(np.unique(np.round(r_arr, decimals=6)).size)
                     logger.info(
-                        "ArcGIS IDW v3.12 径向诊断: r范围=[%.6f, %.6f], unique≈%d, "
+                        "ArcGIS IDW v3.13 径向诊断: r范围=[%.6f, %.6f], unique≈%d, "
                         "ratio=%.4f(raw=%.4f), λmin=%.6e, λmax=%.6e, λmin/λmax=%.6e, tol_bin=%.6f",
                         r_min_raw, r_max_raw, uniq_count,
                         shape_ratio, raw_ratio, lam_min, lam_max, eig_ratio, tol_bin,
@@ -1219,7 +1248,7 @@ class KmlToIaConverter:
                     v_knots = np.asarray(merged_v, dtype=np.float64)
                     del merged_r, merged_v
                     logger.info(
-                        "ArcGIS IDW v3.12 径向分bin完成: 控制点=%d",
+                        "ArcGIS IDW v3.13 径向分bin完成: 控制点=%d",
                         len(r_knots),
                     )
 
@@ -1227,32 +1256,94 @@ class KmlToIaConverter:
                         # 外->内单调递增 等价于 r 增大时单调不增
                         v_knots = np.minimum.accumulate(v_knots)
 
-                        # v3.12 Fix A: 中心外推——添加 (r=0, v_peak) 控制点
-                        # 防止最内圈以内（r < r_min）PCHIP 外推退化为常数平顶
+                        # v3.13 Fix A（改进）: 中心峰值估计
+                        # 策略 A：对最内 3~5 个控制点做对数/幂律拟合，外推到 r≈0
+                        # 策略 B（备选）：直接取 v_max（采样点最大值）
                         r_min_knot = float(r_knots[0])
                         v_at_rmin = float(v_knots[0])
-                        if float(r_knots[1]) > r_min_knot:
-                            # 用最内两个控制点线性外推到 r=0
-                            # r_knots 升序排列，v_knots 单调不增（内→外值递减）
-                            # slope_inner = |Δv/Δr|，r 减小方向 v 增大；
-                            # 外推公式 v_peak = v0 + slope_inner * r0（向 r=0 延伸）
-                            dr = float(r_knots[1]) - r_min_knot  # > 0，已由条件保证
-                            dv = v_at_rmin - float(v_knots[1])   # ≥ 0（单调不增）
-                            slope_inner = dv / dr
-                            v_peak = v_at_rmin + slope_inner * r_min_knot
-                            # 钳制到 [v_at_rmin, v_max]：不低于最内圈值（保证单调），不超过 v_max
-                            v_peak = float(np.clip(v_peak, v_at_rmin, v_max))
-                        else:
-                            v_peak = v_at_rmin
+                        strategy_used = 'B'
+                        v_peak = float(v_max)  # 默认策略 B
 
-                        r_knots_ext = np.concatenate([[0.0], r_knots])
-                        v_knots_ext = np.concatenate([[v_peak], v_knots])
+                        n_inner = min(5, len(r_knots))
+                        r_inner = r_knots[:n_inner]
+                        v_inner = v_knots[:n_inner]
+                        try:
+                            pos_mask = (r_inner > 1e-9) & (v_inner > 1e-12)
+                            if pos_mask.sum() >= 3:
+                                log_r_fit = np.log(r_inner[pos_mask])
+                                log_v_fit = np.log(v_inner[pos_mask])
+                                coeffs = np.polyfit(log_r_fit, log_v_fit, 1)
+                                b_fit = float(coeffs[0])   # 幂律指数（负值代表 v 随 r 减小而增大）
+                                a_fit = float(coeffs[1])   # 截距
+                                if b_fit < -0.01:
+                                    # 外推到极小 r（避免对数奇异性），钳制到 v_max
+                                    r_extrap = r_min_knot * 0.05  # 5% 的 r_min
+                                    v_extrap_a = float(np.exp(a_fit + b_fit * np.log(max(r_extrap, 1e-12))))
+                                    v_peak_a = float(np.clip(v_extrap_a, v_at_rmin, v_max))
+                                    # 仅当策略 A 给出的峰值明显大于 v_at_rmin 时才采用
+                                    if v_peak_a > v_at_rmin * 1.001 or (v_at_rmin < 1e-6 and v_peak_a > v_at_rmin + 1e-6):
+                                        v_peak = v_peak_a
+                                        strategy_used = 'A'
+                        except Exception as _e_fit:
+                            logger.debug("v_peak 策略 A 拟合失败（%s），使用策略 B (v_max)", _e_fit)
+
+                        logger.info(
+                            "ArcGIS IDW v3.13 中心峰值: v_peak=%.4f (策略=%s), v_at_rmin=%.4f, v_max=%.4f",
+                            v_peak, strategy_used, v_at_rmin, v_max,
+                        )
+
+                        # v3.13 Fix D: 在 [0, r_min] 区间插入虚拟控制点（余弦 ease-in-out 平滑过渡）
+                        # 保证从中心（r=0, v_peak）到最内圈（r=r_min, v_at_rmin）严格单调递减
+                        N_VIRTUAL = 8
+                        if r_min_knot > 1e-9 and v_peak > v_at_rmin:
+                            # 生成 N_VIRTUAL+1 个点（r=0 到 r≈r_min，不含 r_min 端以避免重复）
+                            t_center = np.linspace(0.0, 1.0, N_VIRTUAL + 2)[:-1]  # 0 → 接近1，不含1
+                            r_center = t_center * r_min_knot
+                            # cosine ease-in-out: f(0)=v_peak, f(1)=v_at_rmin, 两端斜率→0
+                            v_center = v_peak - (v_peak - v_at_rmin) * (1.0 - np.cos(np.pi * t_center)) / 2.0
+                            n_virtual_inserted = len(r_center)
+                        else:
+                            # v_peak ≈ v_at_rmin 或 r_min ≈ 0：只追加一个中心点
+                            r_center = np.array([0.0])
+                            v_center = np.array([float(v_peak)])
+                            n_virtual_inserted = 1
+
+                        r_knots_ext = np.concatenate([r_center, r_knots])
+                        v_knots_ext = np.concatenate([v_center, v_knots])
                         n_knots_total = len(r_knots_ext)
 
-                        f_radial = _PchipInterpolator(r_knots_ext, v_knots_ext, extrapolate=True)
+                        logger.info(
+                            "ArcGIS IDW v3.13 虚拟控制点: 插入=%d 个，r_knots_ext 总计=%d 个",
+                            n_virtual_inserted, n_knots_total,
+                        )
+
+                        # v3.13 Fix D（续）: 稠密重采样消除 PCHIP 控制点间梯度跳变（消除同心环带）
+                        # 先用初始 PCHIP 拟合扩展控制点，再在 [0, r_max] 均匀采样 300 点，
+                        # 强制单调并钳制，再重建最终 PCHIP；300 段极短曲线视觉效果接近 C2 连续
+                        f_pchip_initial = _PchipInterpolator(r_knots_ext, v_knots_ext, extrapolate=True)
                         del r_knots_ext, v_knots_ext
 
-                        # v3.12 Fix B: 纯椭圆径向趋势，抑制残差 IDW 引起的同心环带
+                        r_max_knot = float(r_knots[-1])
+                        N_DENSE = 300
+                        r_dense = np.linspace(0.0, r_max_knot, N_DENSE)
+                        v_dense = f_pchip_initial(r_dense)
+                        del f_pchip_initial
+                        # 强制单调不增（外到内递增 <=> r 增大时 v 单调不增）
+                        v_dense = np.minimum.accumulate(v_dense)
+                        # 钳制到采样点范围
+                        v_dense = np.clip(v_dense, v_min, v_max)
+                        # 确保 r=0 处精确等于 v_peak（防止 PCHIP 外推偏差）
+                        v_dense[0] = float(v_peak)
+
+                        f_radial = _PchipInterpolator(r_dense, v_dense, extrapolate=True)
+                        del r_dense, v_dense
+
+                        logger.info(
+                            "ArcGIS IDW v3.13 稠密重采样: 重采样点数=%d，最终 PCHIP 控制点=%d",
+                            N_DENSE, N_DENSE,
+                        )
+
+                        # v3.12 Fix B (保留): 纯椭圆径向趋势，抑制残差 IDW 引起的同心环带
                         # 输入为同心椭圆等值线，理想输出几乎是纯椭圆径向单调场；
                         # 残差 IDW 在等值线间产生"贴最近等值线残差"平台，叠加后形成同心环带。
                         # 将 residual_vals 置零 → chunk 的 IDW 输出 0，最终值 = f_radial 纯径向趋势。
@@ -1268,19 +1359,20 @@ class KmlToIaConverter:
                             axis_angle_deg = 0.0
                         use_radial_assist = True
                         logger.info(
-                            "ArcGIS IDW v3.12 径向辅助场启用: 中心=(%.1f, %.1f), "
-                            "ratio=%.4f, 主轴角=%.1f°, 控制点=%d (含r=0峰值), "
-                            "r_min=%.1f m, v_peak=%.4f, v_max=%.4f, "
+                            "ArcGIS IDW v3.13 径向辅助场启用: 中心=(%.1f, %.1f), "
+                            "ratio=%.4f, 主轴角=%.1f°, 原始控制点=%d (含虚拟中心点+稠密重采样=%d), "
+                            "r_min=%.1f m, v_peak=%.4f (策略=%s), v_max=%.4f, "
                             "原始残差=[%.4f, %.4f] (已抑制为0)",
                             cx, cy, shape_ratio, axis_angle_deg,
-                            n_knots_total, r_min_knot, v_peak, v_max,
+                            n_knots_total, N_DENSE,
+                            r_min_knot, v_peak, strategy_used, v_max,
                             float(raw_residuals.min()), float(raw_residuals.max()),
                         )
                         del raw_residuals
                     else:
                         radial_assist_failed = True
                         logger.warning(
-                            "ArcGIS IDW v3.12 径向辅助场控制点不足（%d），回退到局部 IDW + 高斯降级平滑",
+                            "ArcGIS IDW v3.13 径向辅助场控制点不足（%d），回退到局部 IDW + 高斯降级平滑",
                             len(r_knots),
                         )
                         shape_rotation = None
@@ -1288,7 +1380,7 @@ class KmlToIaConverter:
                     del r_knots, v_knots, r_arr
                 except Exception as _e:
                     radial_assist_failed = True
-                    logger.warning("ArcGIS IDW v3.12 径向辅助场构建失败（%s），回退到局部 IDW + 高斯降级平滑", _e)
+                    logger.warning("ArcGIS IDW v3.13 径向辅助场构建失败（%s），回退到局部 IDW + 高斯降级平滑", _e)
                     f_radial = None
                     shape_rotation = None
                     shape_ratio = 1.0
@@ -1319,7 +1411,7 @@ class KmlToIaConverter:
                 # 降级时给最小非零平滑强度，结合 d_typical 自适应到像素尺度避免环带原样返回
                 effective_sigma_factor = fallback_sigma_factor
                 logger.info(
-                    "ArcGIS IDW v3.12 降级平滑启用自适应 sigma: 原sigma_factor=0，临时使用 %.3f",
+                    "ArcGIS IDW v3.13 降级平滑启用自适应 sigma: 原sigma_factor=0，临时使用 %.3f",
                     effective_sigma_factor,
                 )
             collect_full_arr = bool(smooth_enabled and effective_sigma_factor > 0.0)
@@ -1336,6 +1428,11 @@ class KmlToIaConverter:
                 sigma_pixels = max(1.0, effective_sigma_factor * d_typical / self.resolution)
             else:
                 sigma_pixels = 0.0
+
+            logger.info(
+                "ArcGIS IDW v3.13 高斯后处理: 启用=%s, sigma_factor=%.3f, sigma_pixels=%.2f",
+                apply_gaussian, effective_sigma_factor, sigma_pixels,
+            )
 
             if collect_full_arr:
                 # full_arr 平滑流程额外内存按 5 个 float32 全尺寸数组估算：
@@ -1400,7 +1497,7 @@ class KmlToIaConverter:
 
                 # 径向趋势加回残差场，得到最终 Ia
                 if use_radial_assist and f_radial is not None:
-                    # v3.12 Fix C: 先确定 nodata 掩码，再叠加径向趋势
+                    # v3.12 Fix C (保留): 先确定 nodata 掩码，再叠加径向趋势
                     # 防止 -9999.0 (nodata) + f_radial_val 变成非 nodata 值（如 -9994.0 > -9998 阈值）
                     nodata_flag = chunk_vals < -9998.0
                     centered_q = np.column_stack([pts_query[:, 0] - cx, pts_query[:, 1] - cy])
@@ -1506,13 +1603,13 @@ class KmlToIaConverter:
             band.ComputeStatistics(False)
             band.FlushCache()
 
-            # v3.12: 输出最终栅格 min/max，供验收确认
+            # v3.13: 输出最终栅格 min/max，供验收确认
             try:
                 _band_min = band.GetMinimum()
                 _band_max = band.GetMaximum()
                 if _band_min is not None and _band_max is not None:
                     logger.info(
-                        "ArcGIS IDW v3.12 输出栅格 min/max: %.4f / %.4f (采样点 v_min=%.4f, v_max=%.4f)",
+                        "ArcGIS IDW v3.13 输出栅格 min/max: %.4f / %.4f (采样点 v_min=%.4f, v_max=%.4f)",
                         _band_min, _band_max, v_min, v_max,
                     )
             except Exception:
@@ -2969,7 +3066,7 @@ class KmlToIaConverter:
     def _run_impl(self) -> bool:
         """run() 的实际实现。"""
         logger.info("=" * 60)
-        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.12）")
+        logger.info("KML → Ia 栅格处理程序（QGIS 3.40.15，v3.13）")
         logger.info("插值方法: %s", self.interp_method)
         logger.info("采样间隔: %d，最大采样点数: %d",
                      self.sample_interval, self.max_sample_points)
