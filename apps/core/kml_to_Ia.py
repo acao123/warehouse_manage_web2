@@ -250,6 +250,7 @@ try:
     _HAS_SCIPY = True
 except ImportError:
     _HAS_SCIPY = False
+    _gaussian_filter = None
 
 try:
     from pykrige.ok import OrdinaryKriging as _OrdinaryKriging
@@ -1061,6 +1062,9 @@ class KmlToIaConverter:
         try:
             contour_dist_eps = 1e-12
             gauss_den_eps = 1e-12
+            power_lower_bound = 0.1
+            maximum_sigma_pixels = 3.0
+            inner_core_threshold_ratio = 0.5
 
             pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
             vals_f64 = values.astype(np.float64)
@@ -1068,7 +1072,7 @@ class KmlToIaConverter:
             if contour_values.size == 0:
                 raise ValueError("qgis_idw 无可用等值线分组（values 为空）")
 
-            contour_values = np.sort(contour_values.astype(np.float64))
+            contour_values = contour_values.astype(np.float64)
             contour_groups: List[np.ndarray] = [
                 np.flatnonzero(vals_f64 == v) for v in contour_values
             ]
@@ -1079,7 +1083,15 @@ class KmlToIaConverter:
                 raise ValueError("qgis_idw 等值线 KD-Tree 构建失败")
 
             use_smooth = bool(self.arcgis_idw_smooth)
-            power = max(float(self.qgis_idw_power), 0.1)
+            # 避免 power<=0 导致权重退化或数值不稳定；
+            # 0.1 允许非常平缓但仍保留随距离衰减的加权特性。
+            req_power = float(self.qgis_idw_power)
+            power = max(req_power, power_lower_bound)
+            if req_power < power_lower_bound:
+                logger.warning(
+                    "qgis_idw_power=%.6f 过小，已钳制到 %.2f 以保证距离加权稳定性。",
+                    req_power, power_lower_bound
+                )
             max_dist = self.idw_max_distance
             values_min = float(contour_values[0])
             values_max = float(contour_values[-1])
@@ -1089,7 +1101,7 @@ class KmlToIaConverter:
                 second_inner_idx = int(np.argsort(contour_values)[-2])
             else:
                 inner_idx = 0
-                second_inner_idx = 0
+                second_inner_idx = None
 
             logger.info(
                 "ArcGIS IDW 等值线距离插值: 等值线数=%d, 幂次=%.3f, 最大距离=%s, 平滑=%s",
@@ -1117,8 +1129,9 @@ class KmlToIaConverter:
             chunk_starts = list(range(0, n_rows, chunk_rows))
             full_result = np.full((n_rows, self._n_cols), -9999.0, dtype=np.float32)
             smooth_sigma = max(0.0, float(self.arcgis_idw_smooth_sigma_factor))
-            if smooth_sigma > 0.0 and '_gaussian_filter' in globals():
-                smooth_sigma = min(3.0, smooth_sigma)
+            if smooth_sigma > 0.0 and _gaussian_filter is not None:
+                # 轻量微调上限 3px：避免可选后处理把偏心椭圆圈形抹圆。
+                smooth_sigma = min(maximum_sigma_pixels, smooth_sigma)
 
             # 内层函数：在线程中计算单个分块的 ArcGIS IDW 插值结果
             def _compute_chunk_arcgis_idw(row_start: int) -> Tuple[int, np.ndarray]:
@@ -1157,10 +1170,16 @@ class KmlToIaConverter:
 
                 # 中心高亮区保护：避免最内圈内部出现 donut/亮环
                 if has_multi_contours:
+                    if second_inner_idx is None:
+                        raise RuntimeError(
+                            "Internal state error: second_inner_idx is None while has_multi_contours=True"
+                        )
                     d_inner = dists_per_contour[:, inner_idx]
                     d_second_inner = dists_per_contour[:, second_inner_idx]
                     inside_mask = valid_mask & (d_inner < d_second_inner)
                     if inside_mask.any():
+                        # 按"次内圈距离 - 最内圈距离"占次内圈距离的比例做连续混合，
+                        # 越靠近最内圈，越向最大端值 values_max 过渡。
                         raw_blend = (d_second_inner[inside_mask] - d_inner[inside_mask]) / (
                             d_second_inner[inside_mask] + contour_dist_eps
                         )
@@ -1169,8 +1188,10 @@ class KmlToIaConverter:
                         chunk_vals[inside_mask] = cur_vals + blend * (values_max - cur_vals)
 
                         deep_inside = np.zeros_like(inside_mask)
+                        # 当像素到最内圈距离不超过到次内圈距离的一半时，视为深内区，
+                        # 直接取最大端值，避免中心出现 donut/亮环。
                         deep_inside[inside_mask] = (
-                            d_inner[inside_mask] <= 0.5 * d_second_inner[inside_mask]
+                            d_inner[inside_mask] <= inner_core_threshold_ratio * d_second_inner[inside_mask]
                         )
                         chunk_vals[deep_inside] = values_max
 

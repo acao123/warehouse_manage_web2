@@ -85,7 +85,7 @@ class _FakeTree:
         return d_sorted, order
 
 
-class ArcgisContourDistanceIdwTests(unittest.TestCase):
+class QgisIdwContourDistanceTests(unittest.TestCase):
     def _make_converter(self, n_cols=5, n_rows=1, x_min=0.0, y_max=0.5):
         converter = KML_TO_IA.KmlToIaConverter(
             kml_path="dummy.kml",
