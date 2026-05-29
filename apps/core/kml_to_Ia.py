@@ -1186,9 +1186,7 @@ class KmlToIaConverter:
             chunk_starts = list(range(0, n_rows, chunk_rows))
             sigma_factor = max(0.0, float(self.arcgis_idw_smooth_sigma_factor))
             collect_full_arr = bool(smooth_enabled and sigma_factor > 0.0)
-            apply_gaussian = bool(collect_full_arr and '_gaussian_filter' in globals())
-            if collect_full_arr and not apply_gaussian:
-                logger.warning("ArcGIS IDW 跳过高斯后处理：scipy.ndimage.gaussian_filter 不可用")
+            apply_gaussian = bool(collect_full_arr)
             if collect_full_arr:
                 # 使用采样点 kNN 距离中位数估计典型间距，保证尺度自适应
                 knn_k = min(max(2, n_neighbors), len(x_arr))
@@ -1203,9 +1201,11 @@ class KmlToIaConverter:
                 sigma_pixels = 0.0
 
             if collect_full_arr:
-                _SMOOTH_ARRAY_COUNT = 5
+                # full_arr 平滑流程额外内存按 5 个 float32 全尺寸数组估算：
+                # full_arr + mask + arr_safe + num + den（nodata/valid 掩码为布尔/视图，忽略）
+                SMOOTH_ARRAY_COUNT = 5
                 full_arr_bytes = n_rows * n_cols * 4
-                smooth_mem_bytes = full_arr_bytes * _SMOOTH_ARRAY_COUNT
+                smooth_mem_bytes = full_arr_bytes * SMOOTH_ARRAY_COUNT
                 if smooth_mem_bytes <= self.max_memory_gb * 1e9:
                     full_arr = np.full((n_rows, n_cols), -9999.0, dtype=np.float32)
                 else:
@@ -1328,23 +1328,32 @@ class KmlToIaConverter:
 
             if collect_full_arr and full_arr is not None:
                 if apply_gaussian:
-                    logger.info(
-                        "ArcGIS IDW 执行高斯后处理: sigma_factor=%.3f, sigma_pixels=%.2f",
-                        sigma_factor, sigma_pixels,
-                    )
-                    nodata_mask = full_arr < -9998.0
-                    mask = (~nodata_mask).astype(np.float32)
-                    arr_safe = full_arr.copy()
-                    arr_safe[nodata_mask] = 0.0
-                    num = _gaussian_filter(arr_safe, sigma=sigma_pixels)
-                    den = _gaussian_filter(mask, sigma=sigma_pixels)
-                    valid_den = den > 1e-8
-                    smoothed = np.full_like(full_arr, -9999.0, dtype=np.float32)
-                    smoothed[valid_den] = num[valid_den] / den[valid_den]
-                    np.clip(smoothed, v_min, v_max, out=smoothed)
-                    smoothed[nodata_mask] = -9999.0
-                    band.WriteArray(smoothed, 0, 0)
-                    del nodata_mask, mask, arr_safe, num, den, valid_den, smoothed
+                    try:
+                        logger.info(
+                            "ArcGIS IDW 执行高斯后处理: sigma_factor=%.3f, sigma_pixels=%.2f",
+                            sigma_factor, sigma_pixels,
+                        )
+                        nodata_mask = full_arr < -9998.0
+                        mask = (~nodata_mask).astype(np.float32)
+                        arr_safe = full_arr.copy()
+                        arr_safe[nodata_mask] = 0.0
+                        # _gaussian_filter 来自模块顶部：
+                        # from scipy.ndimage import gaussian_filter as _gaussian_filter
+                        num = _gaussian_filter(arr_safe, sigma=sigma_pixels)
+                        den = _gaussian_filter(mask, sigma=sigma_pixels)
+                        valid_den = den > 1e-8
+                        smoothed = np.full_like(full_arr, -9999.0, dtype=np.float32)
+                        smoothed[valid_den] = num[valid_den] / den[valid_den]
+                        np.clip(smoothed, v_min, v_max, out=smoothed)
+                        smoothed[nodata_mask] = -9999.0
+                        band.WriteArray(smoothed, 0, 0)
+                        del nodata_mask, mask, arr_safe, num, den, valid_den, smoothed
+                    except Exception as _smooth_exc:
+                        logger.warning(
+                            "ArcGIS IDW 高斯后处理失败（%s），回退写入未平滑结果",
+                            _smooth_exc,
+                        )
+                        band.WriteArray(full_arr, 0, 0)
                 else:
                     band.WriteArray(full_arr, 0, 0)
                 del full_arr
