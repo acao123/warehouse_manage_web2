@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.10）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,17 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.10 相较 v3.9）：
+    1. qgis_idw（ArcGIS IDW）重构为“形状感知径向趋势 + 残差局部IDW”：
+       - 先拟合形状感知（协方差归一化距离）的一维径向单调趋势，再对残差做
+         KD-Tree 局部反距离权重插值，从根本上消除离散等值线导致的同心环带。
+       - 保留 ArcGIS IDW 核心语义（qgis_idw_power / idw_num_neighbors /
+         idw_max_distance），并保持分块并行与滑动窗口写盘性能模型。
+       - 新增兼容参数 arcgis_idw_smooth / arcgis_idw_radial_assist（别名）、
+         arcgis_idw_shape_aware、arcgis_idw_smooth_extra_neighbors、
+         arcgis_idw_smooth_sigma_factor（可选轻度高斯后处理）。
+       - 输出值保持在输入样本 min/max 范围内，避免范围漂移。
 
 主要改进（v3.9 相较 v3.8）：
     1. scipy_tin 插值方法完全移除 KD-Tree IDW 填充逻辑：
@@ -131,9 +142,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.9）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.9)
-日期: 2026-04-30
-版本: 3.9
+作者: acao (重构版 v3.10)
+日期: 2026-05-29
+版本: 3.10
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -262,7 +273,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.9）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.10）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -287,7 +298,7 @@ class KmlToIaConverter:
         - 'scipy_idw'  ：scipy RBF插值，速度快，支持邻近点限制，需安装scipy
         - 'kriging'    ：真正对齐 ArcGIS EBK 的子集化克里金，支持多次模拟
                         （ebk_n_simulations 默认 100），需安装 scipy + pykrige
-        - 'qgis_idw'   ：KD-Tree 局部反距离权重插值，与 ArcGIS IDW 对齐，需安装 scipy
+        - 'qgis_idw'   ：形状感知径向趋势 + KD-Tree 局部反距离权重残差插值（ArcGIS IDW 对齐）
         - 'qgis_tin'   ：QGIS三角网插值，基于Delaunay三角剖分，无需额外依赖
 
     用法示例:
@@ -376,6 +387,11 @@ class KmlToIaConverter:
         # ---- ArcGIS IDW 对齐参数（qgis_idw 方法专用）----
         idw_num_neighbors: int = 12,          # KD-Tree 局部搜索邻近点数，与 ArcGIS 默认一致
         idw_max_distance: Optional[float] = None,  # 最大搜索距离（米，UTM坐标），None 表示不限制
+        arcgis_idw_smooth: bool = True,       # v3.10: True=启用径向辅助平滑（推荐）
+        arcgis_idw_radial_assist: Optional[bool] = None,  # v3.10: 兼容别名，优先级高于 arcgis_idw_smooth
+        arcgis_idw_shape_aware: bool = True,  # v3.10: 形状感知径向距离（协方差归一化）
+        arcgis_idw_smooth_extra_neighbors: int = 0,  # v3.10: 残差IDW额外邻居数
+        arcgis_idw_smooth_sigma_factor: float = 0.0,  # v3.10: 可选高斯后处理强度（0=禁用）
 
         # ---- ArcGIS EBK 对齐参数（kriging 方法专用）----
         ebk_subset_size: int = 100,           # 每个子集的采样点数，与 ArcGIS EBK 默认一致
@@ -436,6 +452,17 @@ class KmlToIaConverter:
         # ArcGIS IDW 参数
         self.idw_num_neighbors = idw_num_neighbors
         self.idw_max_distance = idw_max_distance
+        if arcgis_idw_radial_assist is not None:
+            logger.warning(
+                "参数 arcgis_idw_radial_assist 为兼容别名，请改用 arcgis_idw_smooth；"
+                "当前取值将覆盖 arcgis_idw_smooth。"
+            )
+            arcgis_idw_smooth = bool(arcgis_idw_radial_assist)
+        self.arcgis_idw_smooth = bool(arcgis_idw_smooth)
+        self.arcgis_idw_radial_assist = self.arcgis_idw_smooth  # 兼容旧属性名
+        self.arcgis_idw_shape_aware = bool(arcgis_idw_shape_aware)
+        self.arcgis_idw_smooth_extra_neighbors = max(0, int(arcgis_idw_smooth_extra_neighbors))
+        self.arcgis_idw_smooth_sigma_factor = float(arcgis_idw_smooth_sigma_factor)
         # ArcGIS EBK 参数
         self.ebk_subset_size = ebk_subset_size
         self.ebk_overlap_factor = ebk_overlap_factor
@@ -990,7 +1017,7 @@ class KmlToIaConverter:
             del interpolator, layer
             gc.collect()
 
-    # ==================== ArcGIS IDW 插值方法（KD-Tree 局部 IDW）====================
+    # ==================== ArcGIS IDW 插值方法（形状感知径向趋势 + 残差局部 IDW）====================
 
     def _run_arcgis_idw_interpolation(
             self,
@@ -1000,13 +1027,22 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        ArcGIS IDW 风格的局部反距离权重插值（KD-Tree 加速）。
+        ArcGIS IDW 风格的局部反距离权重插值（v3.10：形状感知径向趋势 + 残差IDW）。
 
         与 ArcGIS IDW 工具原理一致：
             - 使用 scipy.spatial.cKDTree 对每个像素查询最近的 N 个采样点
               （默认 N=12，与 ArcGIS IDW 默认 Search Neighborhood 一致）。
             - 反距离权重 w_i = 1 / d_i^power；当 d_i = 0 时直接取该点的值。
             - 支持可选最大搜索距离 idw_max_distance（单位：米，UTM坐标）。
+
+        v3.10 平滑重构：
+            - 当 arcgis_idw_smooth=True（默认）时，先构建径向单调趋势 f_radial：
+              ① 基于采样点协方差构建形状感知径向距离（可退回欧氏距离）；
+              ② 将 (r_i, ia_i) 分 bin 合并后，用 PCHIP 拟合并强制外到内单调递增；
+              ③ 对残差 aux_i = ia_i - f_radial(r_i) 做局部 IDW 插值。
+            - 最终像素值 = f_radial(r_pixel) + IDW_residual(pixel)。
+            - 可选轻度高斯后处理（arcgis_idw_smooth_sigma_factor > 0）进一步抑制细微带状噪声。
+            - 最终值钳制到输入样本 [min(values), max(values)]，保持 min/max 正确。
 
         性能：cKDTree.query 在 C 扩展层释放 GIL，可通过 ThreadPoolExecutor 多线程加速；
               局部搜索复杂度 O(n_pixels × log(n_samples) × N)，
@@ -1027,6 +1063,8 @@ class KmlToIaConverter:
         tree = None
         out_ds = None
         band = None
+        f_radial = None
+        shape_transform = None
 
         try:
             # 建立 KD-Tree（在所有分块插值时共享）
@@ -1038,12 +1076,95 @@ class KmlToIaConverter:
             n_neighbors = min(self.idw_num_neighbors, len(x_arr))
             power = self.qgis_idw_power
             max_dist = self.idw_max_distance
+            smooth_enabled = bool(self.arcgis_idw_smooth and len(x_arr) >= 3)
+            residual_neighbors = min(
+                n_neighbors + self.arcgis_idw_smooth_extra_neighbors,
+                len(x_arr),
+            ) if smooth_enabled else n_neighbors
+            v_min = float(np.min(vals_f64))
+            v_max = float(np.max(vals_f64))
+            cx = float(np.mean(x_arr))
+            cy = float(np.mean(y_arr))
+            residual_vals = vals_f64
 
             logger.info(
-                "ArcGIS IDW (KD-Tree) 插值: 邻近点数=%d, 幂次=%.1f, 最大距离=%s",
-                n_neighbors, power,
+                "ArcGIS IDW (v3.10) 插值: 邻近点数=%d, 残差邻近点数=%d, 幂次=%.1f, "
+                "最大距离=%s, smooth=%s, shape_aware=%s, sigma_factor=%.3f",
+                n_neighbors, residual_neighbors, power,
                 f"{max_dist:.1f} m" if max_dist is not None else "无限制",
+                smooth_enabled, self.arcgis_idw_shape_aware, self.arcgis_idw_smooth_sigma_factor,
             )
+
+            # v3.10：径向辅助场（可选）——先拟合趋势，再插值残差
+            use_radial_assist = False
+            if smooth_enabled:
+                try:
+                    centered_train = np.column_stack([x_arr - cx, y_arr - cy]).astype(np.float64)
+                    if self.arcgis_idw_shape_aware:
+                        cov = np.cov(centered_train.T)
+                        eigvals, eigvecs = np.linalg.eigh(cov)
+                        eigvals = np.maximum(eigvals, 1e-12)
+                        shape_transform = eigvecs @ np.diag(1.0 / np.sqrt(eigvals))
+                        normalized_train = centered_train @ shape_transform
+                        r_arr = np.sqrt((normalized_train ** 2).sum(axis=1))
+                        del cov, eigvals, eigvecs, normalized_train
+                    else:
+                        r_arr = np.sqrt((centered_train ** 2).sum(axis=1))
+                    del centered_train
+
+                    # 按 r 从小到大分 bin 合并均值
+                    sorted_idx = np.argsort(r_arr)
+                    r_sorted = r_arr[sorted_idx]
+                    v_sorted = vals_f64[sorted_idx]
+                    tol_bin = max(self.resolution / 2.0, 1e-6)
+                    merged_r = [float(r_sorted[0])]
+                    merged_v = [float(v_sorted[0])]
+                    running_sum = float(v_sorted[0])
+                    running_cnt = 1
+                    last_r = merged_r[0]
+                    for i in range(1, len(r_sorted)):
+                        _r = float(r_sorted[i])
+                        _v = float(v_sorted[i])
+                        if _r - last_r < tol_bin:
+                            running_sum += _v
+                            running_cnt += 1
+                        else:
+                            merged_v[-1] = running_sum / running_cnt
+                            merged_r.append(_r)
+                            merged_v.append(_v)
+                            last_r = _r
+                            running_sum = _v
+                            running_cnt = 1
+                    merged_v[-1] = running_sum / running_cnt
+                    del sorted_idx, r_sorted, v_sorted
+
+                    r_knots = np.asarray(merged_r, dtype=np.float64)
+                    v_knots = np.asarray(merged_v, dtype=np.float64)
+                    del merged_r, merged_v
+
+                    if len(r_knots) >= 2:
+                        # 外->内单调递增 等价于 r 增大时单调不增
+                        v_knots = np.minimum.accumulate(v_knots)
+                        f_radial = _PchipInterpolator(r_knots, v_knots, extrapolate=True)
+                        residual_vals = vals_f64 - f_radial(r_arr)
+                        use_radial_assist = True
+                        logger.info(
+                            "ArcGIS IDW v3.10 径向辅助场启用: 中心=(%.1f, %.1f), 控制点=%d, 残差范围=[%.4f, %.4f]",
+                            cx, cy, len(r_knots), float(residual_vals.min()), float(residual_vals.max()),
+                        )
+                    else:
+                        logger.warning(
+                            "ArcGIS IDW v3.10 径向辅助场控制点不足（%d），回退到原始局部 IDW",
+                            len(r_knots),
+                        )
+                        shape_transform = None
+                    del r_knots, v_knots, r_arr
+                except Exception as _e:
+                    logger.warning("ArcGIS IDW v3.10 径向辅助场构建失败（%s），回退到原始局部 IDW", _e)
+                    f_radial = None
+                    shape_transform = None
+                    residual_vals = vals_f64
+                    use_radial_assist = False
 
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
             self._ensure_file_writable(output_tif_path)
@@ -1060,8 +1181,43 @@ class KmlToIaConverter:
 
             grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
             n_rows = self._n_rows
+            n_cols = self._n_cols
             chunk_rows = self.chunk_size
             chunk_starts = list(range(0, n_rows, chunk_rows))
+            sigma_factor = max(0.0, float(self.arcgis_idw_smooth_sigma_factor))
+            collect_full_arr = bool(smooth_enabled and sigma_factor > 0.0)
+            apply_gaussian = bool(collect_full_arr)
+            if collect_full_arr:
+                # 使用采样点 kNN 距离中位数估计典型间距，保证尺度自适应
+                knn_k = min(max(2, n_neighbors), len(x_arr))
+                d_knn, _ = tree.query(np.column_stack([x_arr, y_arr]), k=knn_k)
+                if knn_k == 1:
+                    d_typical = float(self.resolution)
+                else:
+                    d_typical = float(np.median(d_knn[:, -1]))
+                del d_knn
+                sigma_pixels = max(1.0, sigma_factor * d_typical / self.resolution)
+            else:
+                sigma_pixels = 0.0
+
+            if collect_full_arr:
+                # full_arr 平滑流程额外内存按 5 个 float32 全尺寸数组估算：
+                # full_arr + mask + arr_safe + num + den（nodata/valid 掩码为布尔/视图，忽略）
+                SMOOTH_ARRAY_COUNT = 5
+                full_arr_bytes = n_rows * n_cols * 4
+                smooth_mem_bytes = full_arr_bytes * SMOOTH_ARRAY_COUNT
+                if smooth_mem_bytes <= self.max_memory_gb * 1e9:
+                    full_arr = np.full((n_rows, n_cols), -9999.0, dtype=np.float32)
+                else:
+                    logger.warning(
+                        "ArcGIS IDW 跳过后处理收集：所需内存 %.2f GB 超过 max_memory_gb=%.1f GB",
+                        smooth_mem_bytes / 1e9, self.max_memory_gb,
+                    )
+                    collect_full_arr = False
+                    apply_gaussian = False
+                    full_arr = None
+            else:
+                full_arr = None
 
             # 内层函数：在线程中计算单个分块的 ArcGIS IDW 插值结果
             def _compute_chunk_arcgis_idw(row_start: int) -> Tuple[int, np.ndarray]:
@@ -1073,10 +1229,10 @@ class KmlToIaConverter:
                 del xx, yy
                 n_pts = pts_query.shape[0]
 
-                # 查询最近的 n_neighbors 个采样点
-                dists, idxs = tree.query(pts_query, k=n_neighbors)
-                # 保证形状为 (n_pts, n_neighbors)，即使 n_neighbors==1 也统一
-                if n_neighbors == 1:
+                # 查询最近的 residual_neighbors 个采样点（平滑模式下可适度增大）
+                dists, idxs = tree.query(pts_query, k=residual_neighbors)
+                # 保证形状为 (n_pts, residual_neighbors)，即使 residual_neighbors==1 也统一
+                if residual_neighbors == 1:
                     dists = dists.reshape(-1, 1)
                     idxs = idxs.reshape(-1, 1)
 
@@ -1097,20 +1253,32 @@ class KmlToIaConverter:
                 # 非精确匹配且权重和 > 0 的像素：加权平均
                 valid_mask = (~exact_mask) & (weight_sum > 0.0)
                 if valid_mask.any():
-                    w = weights[valid_mask]           # (n_valid, n_neighbors)
-                    v = vals_f64[idxs[valid_mask]]    # (n_valid, n_neighbors)
+                    w = weights[valid_mask]                # (n_valid, residual_neighbors)
+                    v = residual_vals[idxs[valid_mask]]    # (n_valid, residual_neighbors)
                     chunk_vals[valid_mask] = (w * v).sum(axis=1) / weight_sum[valid_mask]
 
                 # 精确匹配：直接赋值
                 if exact_mask.any():
-                    chunk_vals[exact_mask] = vals_f64[idxs[exact_mask, 0]]
+                    chunk_vals[exact_mask] = residual_vals[idxs[exact_mask, 0]]
+
+                # 径向趋势加回残差场，得到最终 Ia
+                if use_radial_assist and f_radial is not None:
+                    centered_q = np.column_stack([pts_query[:, 0] - cx, pts_query[:, 1] - cy])
+                    if shape_transform is not None:
+                        norm_q = centered_q @ shape_transform
+                        r_pixels = np.sqrt((norm_q ** 2).sum(axis=1))
+                        del norm_q
+                    else:
+                        r_pixels = np.sqrt((centered_q ** 2).sum(axis=1))
+                    chunk_vals += f_radial(r_pixels)
+                    del centered_q, r_pixels
 
                 del pts_query, dists, idxs, weights, weight_sum
 
                 result = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
                 del chunk_vals
                 nodata_mask = result < -9998.0
-                np.maximum(result, 0.0, out=result)
+                np.clip(result, v_min, v_max, out=result)
                 result[nodata_mask] = -9999.0
                 return row_start, result
 
@@ -1140,7 +1308,10 @@ class KmlToIaConverter:
                         logger.error("ArcGIS IDW 分块 row_start=%d 失败: %s", rs, exc)
                         raise
 
-                    band.WriteArray(chunk_vals, 0, row_start_res)
+                    if collect_full_arr:
+                        full_arr[row_start_res: row_start_res + chunk_vals.shape[0], :] = chunk_vals
+                    else:
+                        band.WriteArray(chunk_vals, 0, row_start_res)
                     del chunk_vals
                     gc.collect()
 
@@ -1154,6 +1325,39 @@ class KmlToIaConverter:
                         elapsed = time.time() - start_time
                         logger.info("ArcGIS IDW 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
                                     row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
+
+            if collect_full_arr and full_arr is not None:
+                if apply_gaussian:
+                    try:
+                        logger.info(
+                            "ArcGIS IDW 执行高斯后处理: sigma_factor=%.3f, sigma_pixels=%.2f",
+                            sigma_factor, sigma_pixels,
+                        )
+                        nodata_mask = full_arr < -9998.0
+                        mask = (~nodata_mask).astype(np.float32)
+                        arr_safe = full_arr.copy()
+                        arr_safe[nodata_mask] = 0.0
+                        # _gaussian_filter 来自模块顶部：
+                        # from scipy.ndimage import gaussian_filter as _gaussian_filter
+                        num = _gaussian_filter(arr_safe, sigma=sigma_pixels)
+                        den = _gaussian_filter(mask, sigma=sigma_pixels)
+                        valid_den = den > 1e-8
+                        smoothed = np.full_like(full_arr, -9999.0, dtype=np.float32)
+                        smoothed[valid_den] = num[valid_den] / den[valid_den]
+                        np.clip(smoothed, v_min, v_max, out=smoothed)
+                        smoothed[nodata_mask] = -9999.0
+                        band.WriteArray(smoothed, 0, 0)
+                        del nodata_mask, mask, arr_safe, num, den, valid_den, smoothed
+                    except Exception as _smooth_exc:
+                        logger.warning(
+                            "ArcGIS IDW 高斯后处理失败（%s），回退写入未平滑结果",
+                            _smooth_exc,
+                        )
+                        band.WriteArray(full_arr, 0, 0)
+                else:
+                    band.WriteArray(full_arr, 0, 0)
+                del full_arr
+                gc.collect()
 
             band.ComputeStatistics(False)
             band.FlushCache()
@@ -1172,6 +1376,10 @@ class KmlToIaConverter:
             band = None
             if tree is not None:
                 del tree
+            if f_radial is not None:
+                del f_radial
+            if shape_transform is not None:
+                del shape_transform
             gc.collect()
 
     # ==================== scipy 插值方法 ====================
