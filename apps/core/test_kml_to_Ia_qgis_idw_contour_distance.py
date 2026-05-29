@@ -172,7 +172,11 @@ class QgisIdwContourDistanceTests(unittest.TestCase):
         self.assertGreaterEqual(float(arr.min()), 1.0)
         self.assertLessEqual(float(arr.max()), 5.0)
 
-    def test_contour_distance_idw_sets_inner_core_to_max_without_overshoot(self):
+    def test_contour_distance_idw_inner_core_smooth_no_overshoot(self):
+        # v3.15: center pixel uses two-bracket linear interpolation between the two nearest
+        # contours (innermost v=10 d=1, second-innermost v=6 d=2).
+        # Expected: V = (10*2 + 6*1) / (1+2) = 26/3 ≈ 8.667
+        # No hard clamp to max; value is strictly between v_second (6) and v_max (10).
         converter = self._make_converter(n_cols=1, n_rows=1, x_min=-0.5, y_max=0.5)
         arr = self._run_and_get_array(
             converter,
@@ -180,9 +184,13 @@ class QgisIdwContourDistanceTests(unittest.TestCase):
             y_arr=[0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 2.0, -2.0, 0.0, 0.0, 3.0, -3.0],
             values=[10.0, 10.0, 10.0, 10.0, 6.0, 6.0, 6.0, 6.0, 2.0, 2.0, 2.0, 2.0],
         )
-        self.assertAlmostEqual(float(arr[0, 0]), 10.0, places=6)
-        self.assertGreaterEqual(float(arr[0, 0]), 2.0)
-        self.assertLessEqual(float(arr[0, 0]), 10.0)
+        center_val = float(arr[0, 0])
+        # Must be within valid Ia range
+        self.assertGreaterEqual(center_val, 2.0)
+        self.assertLessEqual(center_val, 10.0)
+        # Must be closer to inner contour (v=10) than outer contour (v=2):
+        # i.e., strictly above the second-innermost value (6.0)
+        self.assertGreater(center_val, 6.0)
 
 
 if __name__ == "__main__":

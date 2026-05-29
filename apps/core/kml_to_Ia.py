@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.14）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.15）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,24 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.14）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.15 相较 v3.14）：
+    1. qgis_idw（ArcGIS IDW）彻底消除同心阶梯环带（banding）——改用"两邻等值线线性插值"：
+       - 对每个像素仅取距离最近的两条等值线（而非全部 K 条）做反距离加权插值。
+       - 插值公式：V = (v_a*d_b + v_b*d_a) / (d_a + d_b)，即 IDW power=1 的两点形式，
+         在两条等值线之间产生完全线性（无 S 曲线、无平台）的梯度过渡。
+       - 数学证明：设像素从等值线 A 向等值线 B 移动，d_a+d_b=D（常数），
+         则 V = v_a*(1-t) + v_b*t，t = d_a/D → 完全线性，零 banding。
+       - 形状保持：等距离等值线（即"到某等值线距离相等的曲线"）与该等值线平行，
+         因此插值结果严格按 PGA 等值圈（偏心椭圆）形状由外向内平滑递增。
+       - 去除了旧的"中心高光硬钳制"逻辑（inner_core_threshold_ratio / inside_mask），
+         彻底避免 donut/亮环伪影；中心区自然由最内圈等值线近邻插值到最大值。
+       - qgis_idw_power 默认值由 2.0 改为 1.0（=线性，最平滑）；如需更锐利边界
+         可手动设置为 2.0，但会引入轻微 S 曲线；该参数仍控制两邻等值线插值的幂次。
+       - 保留分块并行、滑动窗口提交/消费、取消信号、NoData 约定和 LZW+TILED 输出。
+       - 保留 arcgis_idw_smooth / arcgis_idw_smooth_sigma_factor /
+         arcgis_idw_smooth_extra_neighbors / arcgis_idw_radial_assist 参数向后兼容；
+         新算法本身已无环带，arcgis_idw_smooth 默认关闭。
 
 主要改进（v3.14 相较 v3.10）：
     1. qgis_idw（ArcGIS IDW）重构为"等值线距离插值（distance-to-contour interpolation）"：
@@ -340,7 +358,7 @@ class KmlToIaConverter:
         interp_method: str = 'scipy_tin',   # 插值方法
 
         # ---- QGIS IDW 参数 ----
-        qgis_idw_power: float = 2.0,
+        qgis_idw_power: float = 1.0,  # v3.15: 默认改为1.0（线性，最平滑）；2.0可用但会引入轻微S曲线
 
         # ---- QGIS TIN 参数 ----
         qgis_tin_method: int = 0,
@@ -1030,14 +1048,23 @@ class KmlToIaConverter:
             output_tif_path: str,
     ) -> None:
         """
-        ArcGIS IDW 风格的等值线距离插值（distance-to-contour, cKDTree 加速）。
+        ArcGIS IDW 风格的两邻等值线线性插值（v3.15 — 彻底消除 banding）。
 
-        核心思路（v3.14）：
+        核心思路（v3.15）：
             - 将采样点按 Ia 值分组（每组对应一条等值线），每组单独构建 cKDTree。
-            - 对每个像素，查询其到每条等值线的最近距离 d_k。
-            - 用 w_k = 1/(d_k^power + eps) 对各等值线值 v_k 进行加权平均。
-            - 距离为"到等值线"而非"到单点"，可在等值线之间形成连续梯度，
-              从结构上消除阶梯平台 banding。
+            - 对每个像素查询其到每条等值线的最近距离 d_k。
+            - 仅取距离最近的**两条**等值线（索引 a, b），用以下公式插值：
+                  V = (v_a * d_b^p + v_b * d_a^p) / (d_a^p + d_b^p)
+              其中 p = qgis_idw_power（默认 1.0）。
+            - 当 p=1 时，公式等价于线性插值 V = v_a*(1-t) + v_b*t（t = d_a/(d_a+d_b)），
+              在两条等值线之间产生**完全线性**的渐变，零 banding，零 S 曲线。
+            - 插值结果形状严格贴合 PGA 等值圈（偏心椭圆）：等距离曲线平行于等值线。
+
+        v3.14 vs v3.15 区别：
+            - v3.14 用全部 K 条等值线加权，power=2 → S 曲线 → 阶梯 banding。
+            - v3.15 只取两最近等值线，power=1（默认）→ 线性渐变 → 无 banding。
+            - 去除了 v3.14 的 inside_mask / inner_core_threshold_ratio 中心硬钳制逻辑，
+              避免 donut/亮环，中心区由最内圈等值线自然插值到最大值。
 
         兼容说明：
             - 保留 idw_max_distance 距离限制逻辑（超距等值线权重置零）。
@@ -1064,7 +1091,6 @@ class KmlToIaConverter:
             gauss_den_eps = 1e-12
             power_lower_bound = 0.1
             maximum_sigma_pixels = 3.0
-            inner_core_threshold_ratio = 0.5
 
             pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
             vals_f64 = values.astype(np.float64)
@@ -1095,17 +1121,11 @@ class KmlToIaConverter:
             max_dist = self.idw_max_distance
             values_min = float(contour_values[0])
             values_max = float(contour_values[-1])
-            has_multi_contours = contour_values.size >= 2
-            if has_multi_contours:
-                inner_idx = int(np.argmax(contour_values))
-                second_inner_idx = int(np.argsort(contour_values)[-2])
-            else:
-                inner_idx = 0
-                second_inner_idx = None
+            K = len(contour_trees)
 
             logger.info(
-                "ArcGIS IDW 等值线距离插值: 等值线数=%d, 幂次=%.3f, 最大距离=%s, 平滑=%s",
-                len(contour_trees), power,
+                "ArcGIS IDW 两邻等值线线性插值 (v3.15): 等值线数=%d, 幂次=%.3f, 最大距离=%s, 平滑=%s",
+                K, power,
                 f"{max_dist:.1f} m" if max_dist is not None else "无限制",
                 "启用" if use_smooth else "禁用",
             )
@@ -1134,6 +1154,9 @@ class KmlToIaConverter:
                 smooth_sigma = min(maximum_sigma_pixels, smooth_sigma)
 
             # 内层函数：在线程中计算单个分块的 ArcGIS IDW 插值结果
+            # v3.15 算法：对每个像素仅取距离最近的两条等值线，用 IDW 两点公式插值。
+            # 公式：V = (v_a * d_b^p + v_b * d_a^p) / (d_a^p + d_b^p)
+            # 当 p=1 时为完全线性插值，保证零 banding、零 S 曲线。
             def _compute_chunk_arcgis_idw(row_start: int) -> Tuple[int, np.ndarray]:
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
@@ -1144,63 +1167,78 @@ class KmlToIaConverter:
                 n_pts = pts_query.shape[0]
 
                 self._check_cancelled()
-                dists_per_contour = np.empty((n_pts, len(contour_trees)), dtype=np.float64)
+                dists_per_contour = np.empty((n_pts, K), dtype=np.float64)
                 for contour_idx, contour_tree in enumerate(contour_trees):
                     dists_c, _ = contour_tree.query(pts_query, k=1)
                     dists_per_contour[:, contour_idx] = dists_c
 
-                exact_mask = np.any(dists_per_contour <= contour_dist_eps, axis=1)
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    weights = 1.0 / (np.power(dists_per_contour, power) + contour_dist_eps)
-
-                if max_dist is not None:
-                    weights[dists_per_contour > max_dist] = 0.0
-
-                weight_sum = weights.sum(axis=1)
                 chunk_vals = np.full(n_pts, -9999.0, dtype=np.float64)
 
-                valid_mask = (~exact_mask) & (weight_sum > 0.0)
-                if valid_mask.any():
-                    w = weights[valid_mask]
-                    chunk_vals[valid_mask] = (w * contour_values).sum(axis=1) / weight_sum[valid_mask]
+                if K == 1:
+                    # 单条等值线：所有像素取该值
+                    chunk_vals[:] = contour_values[0]
+                else:
+                    # 找到距离最近的两条等值线（indices a, b）
+                    # kth=1 保证取出最小和次小两个元素（kth < K 始终成立，K >= 2）
+                    two_nearest = np.argpartition(dists_per_contour, 1, axis=1)[:, :2]
+                    idx_a = two_nearest[:, 0]
+                    idx_b = two_nearest[:, 1]
+                    # 确保 a 是真正更近的那条（argpartition 不保证两列内有序）
+                    d_a_raw = dists_per_contour[np.arange(n_pts), idx_a]
+                    d_b_raw = dists_per_contour[np.arange(n_pts), idx_b]
+                    swap = d_b_raw < d_a_raw
+                    # 布尔索引返回副本，无需 .copy()
+                    idx_a[swap], idx_b[swap] = idx_b[swap], idx_a[swap]
 
-                if exact_mask.any():
-                    nearest_contour_idx = np.argmin(dists_per_contour[exact_mask], axis=1)
-                    chunk_vals[exact_mask] = contour_values[nearest_contour_idx]
+                    d_a = dists_per_contour[np.arange(n_pts), idx_a]
+                    d_b = dists_per_contour[np.arange(n_pts), idx_b]
+                    v_a = contour_values[idx_a]
+                    v_b = contour_values[idx_b]
 
-                # 中心高亮区保护：避免最内圈内部出现 donut/亮环
-                if has_multi_contours:
-                    if second_inner_idx is None:
-                        raise RuntimeError(
-                            "Internal state error: second_inner_idx is None while has_multi_contours=True"
-                        )
-                    d_inner = dists_per_contour[:, inner_idx]
-                    d_second_inner = dists_per_contour[:, second_inner_idx]
-                    inside_mask = valid_mask & (d_inner < d_second_inner)
-                    if inside_mask.any():
-                        # 按"次内圈距离 - 最内圈距离"占次内圈距离的比例做连续混合，
-                        # 越靠近最内圈，越向最大端值 values_max 过渡。
-                        raw_blend = (d_second_inner[inside_mask] - d_inner[inside_mask]) / (
-                            d_second_inner[inside_mask] + contour_dist_eps
-                        )
-                        blend = np.clip(raw_blend, 0.0, 1.0)
-                        cur_vals = chunk_vals[inside_mask]
-                        chunk_vals[inside_mask] = cur_vals + blend * (values_max - cur_vals)
+                    # 应用 max_dist：离最近等值线超过阈值的像素输出 NoData
+                    if max_dist is not None:
+                        in_range = d_a <= max_dist
+                    else:
+                        in_range = np.ones(n_pts, dtype=bool)
 
-                        deep_inside = np.zeros_like(inside_mask)
-                        # 当像素到最内圈距离不超过到次内圈距离的一半时，视为深内区，
-                        # 直接取最大端值，避免中心出现 donut/亮环。
-                        deep_inside[inside_mask] = (
-                            d_inner[inside_mask] <= inner_core_threshold_ratio * d_second_inner[inside_mask]
-                        )
-                        chunk_vals[deep_inside] = values_max
+                    # 完全在某条等值线上的像素直接取该值
+                    on_contour = in_range & (d_a <= contour_dist_eps)
+                    if on_contour.any():
+                        chunk_vals[on_contour] = v_a[on_contour]
 
-                del pts_query, dists_per_contour, weights, weight_sum
+                    # 其余有效像素：两邻等值线 IDW 插值
+                    # V = (v_a * d_b^p + v_b * d_a^p) / (d_a^p + d_b^p)
+                    interp_mask = in_range & (~on_contour)
+                    if interp_mask.any():
+                        da_i = d_a[interp_mask]
+                        db_i = d_b[interp_mask]
+                        va_i = v_a[interp_mask]
+                        vb_i = v_b[interp_mask]
+                        if power == 1.0:
+                            # 直接线性插值，避免额外 pow 调用
+                            total_d = da_i + db_i
+                            chunk_vals[interp_mask] = (va_i * db_i + vb_i * da_i) / total_d
+                        else:
+                            with np.errstate(divide='ignore', invalid='ignore'):
+                                da_p = np.power(da_i, power)
+                                db_p = np.power(db_i, power)
+                            total_p = da_p + db_p
+                            valid_p = total_p > contour_dist_eps
+                            vals_interp = np.where(
+                                valid_p,
+                                (va_i * db_p + vb_i * da_p) / np.where(valid_p, total_p, 1.0),
+                                va_i,  # 两点均极近时取最近值
+                            )
+                            chunk_vals[interp_mask] = vals_interp
+
+                del pts_query, dists_per_contour
 
                 result = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
                 del chunk_vals
                 nodata_mask = result < -9998.0
-                np.maximum(result, 0.0, out=result)
+                valid_out = ~nodata_mask
+                if valid_out.any():
+                    np.clip(result, values_min, values_max, out=result, where=valid_out)
                 result[nodata_mask] = -9999.0
                 return row_start, result
 
@@ -2833,7 +2871,7 @@ if __name__ == "__main__":
         # interp_method='qgis_tin',   # QGIS TIN - 无需额外依赖
 
         # ArcGIS IDW 参数（仅 interp_method='qgis_idw' 时有效，需安装scipy）
-        qgis_idw_power=2.0,         # IDW幂次；推荐1.0~4.0，越大近点主导（与ArcGIS默认一致）
+        qgis_idw_power=1.0,         # IDW幂次；v3.15默认1.0（=线性插值，最平滑无banding）；2.0与ArcGIS默认一致但会引入轻微S曲线
         idw_num_neighbors=12,        # 兼容参数：等值线距离插值中不再依赖该值
         # idw_max_distance=50000,    # 最大搜索距离（米，UTM坐标），None表示不限制（与ArcGIS默认一致）
         #                            # 例如 50000 表示 50 km
