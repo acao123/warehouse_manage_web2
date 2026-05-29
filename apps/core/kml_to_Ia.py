@@ -1264,10 +1264,14 @@ class KmlToIaConverter:
                         strategy_used = 'B'
                         v_peak = float(v_max)  # 默认策略 B
 
+                        # 取最内 3~5 个控制点做幂律拟合：既能覆盖中心梯度趋势，
+                        # 又避免外圈离散点污染拟合（5 是经验上足够稳健的上限）
                         n_inner = min(5, len(r_knots))
                         r_inner = r_knots[:n_inner]
                         v_inner = v_knots[:n_inner]
                         try:
+                            # 过滤掉 r/v 极小（接近零）的点以保证对数域安全：
+                            # r > 1e-9 m（亚毫米，实际远不可能），v > 1e-12（防止 log(0)）
                             pos_mask = (r_inner > 1e-9) & (v_inner > 1e-12)
                             if pos_mask.sum() >= 3:
                                 log_r_fit = np.log(r_inner[pos_mask])
@@ -1275,12 +1279,16 @@ class KmlToIaConverter:
                                 coeffs = np.polyfit(log_r_fit, log_v_fit, 1)
                                 b_fit = float(coeffs[0])   # 幂律指数（负值代表 v 随 r 减小而增大）
                                 a_fit = float(coeffs[1])   # 截距
+                                # b_fit < -0.01：要求明显的负幂律（纯数值噪声时 b ≈ 0，不应外推）
                                 if b_fit < -0.01:
-                                    # 外推到极小 r（避免对数奇异性），钳制到 v_max
-                                    r_extrap = r_min_knot * 0.05  # 5% 的 r_min
+                                    # 外推到 r_min 的 5% 处（避免 r→0 的对数奇异性）；
+                                    # 取 5% 是在"足够接近中心"与"对数稳定"之间的经验平衡
+                                    r_extrap = r_min_knot * 0.05
                                     v_extrap_a = float(np.exp(a_fit + b_fit * np.log(max(r_extrap, 1e-12))))
                                     v_peak_a = float(np.clip(v_extrap_a, v_at_rmin, v_max))
-                                    # 仅当策略 A 给出的峰值明显大于 v_at_rmin 时才采用
+                                    # 1.001 倍阈值：要求策略 A 的峰值至少比 v_at_rmin 高 0.1%
+                                    # 才有实质意义（纯噪声误差 < 0.1%）；
+                                    # 绝对值分支处理 v_at_rmin ≈ 0 时 1.001× 无效的边界情况
                                     if v_peak_a > v_at_rmin * 1.001 or (v_at_rmin < 1e-6 and v_peak_a > v_at_rmin + 1e-6):
                                         v_peak = v_peak_a
                                         strategy_used = 'A'
@@ -1294,6 +1302,8 @@ class KmlToIaConverter:
 
                         # v3.13 Fix D: 在 [0, r_min] 区间插入虚拟控制点（余弦 ease-in-out 平滑过渡）
                         # 保证从中心（r=0, v_peak）到最内圈（r=r_min, v_at_rmin）严格单调递减
+                        # 8 个点在 [0, r_min) 上均匀分布，已足够表达余弦曲线的弯曲形状（视觉测试验证）；
+                        # 过多会增加 PCHIP 段数，过少则余弦过渡不够光滑
                         N_VIRTUAL = 8
                         if r_min_knot > 1e-9 and v_peak > v_at_rmin:
                             # 生成 N_VIRTUAL+1 个点（r=0 到 r≈r_min，不含 r_min 端以避免重复）
@@ -1319,7 +1329,9 @@ class KmlToIaConverter:
 
                         # v3.13 Fix D（续）: 稠密重采样消除 PCHIP 控制点间梯度跳变（消除同心环带）
                         # 先用初始 PCHIP 拟合扩展控制点，再在 [0, r_max] 均匀采样 300 点，
-                        # 强制单调并钳制，再重建最终 PCHIP；300 段极短曲线视觉效果接近 C2 连续
+                        # 强制单调并钳制，再重建最终 PCHIP；300 段极短曲线视觉效果接近 C2 连续。
+                        # 300 点的选取依据：原始 4~6 控制点 + 8 虚拟点共 ≤14 段；
+                        # 300 点使每段平均仅跨越 r_max/300，梯度跳变小于人眼可分辨阈值（~1 像素/段）
                         f_pchip_initial = _PchipInterpolator(r_knots_ext, v_knots_ext, extrapolate=True)
                         del r_knots_ext, v_knots_ext
 
