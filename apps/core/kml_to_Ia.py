@@ -1109,6 +1109,10 @@ class KmlToIaConverter:
             # v3.11：径向辅助场（可选）——先拟合趋势，再插值残差
             use_radial_assist = False
             radial_assist_failed = False
+            max_shape_ratio = 50.0
+            # 降级最小平滑系数：与 d_typical/resolution 组合后通常得到 1~2 像素级 sigma
+            # 能抑制环带台阶，但不会抹平主要椭圆梯度结构
+            fallback_sigma_factor = 0.5
             if smooth_enabled:
                 try:
                     centered_train = np.column_stack([x_arr - cx, y_arr - cy]).astype(np.float64)
@@ -1119,16 +1123,26 @@ class KmlToIaConverter:
                     if self.arcgis_idw_shape_aware:
                         cov = np.cov(centered_train.T)
                         eigvals, eigvecs = np.linalg.eigh(cov)
-                        eigvals = np.where(np.isfinite(eigvals), eigvals, 0.0)
+                        finite_mask = np.isfinite(eigvals)
+                        if not np.all(finite_mask):
+                            bad_idx = np.where(~finite_mask)[0].tolist()
+                            logger.warning(
+                                "ArcGIS IDW v3.11 检测到非有限协方差特征值，索引=%s，已按 0 处理",
+                                bad_idx,
+                            )
+                        # 非有限特征值按 0 处理：后续会触发 lam_min/lam_max 阈值保护并回退 ratio=1
+                        eigvals = np.where(finite_mask, eigvals, 0.0)
                         lam_min = float(np.min(eigvals))
                         lam_max = float(np.max(eigvals))
-                        if lam_max > 0.0:
+                        if lam_max > 1e-12:
                             eig_ratio = lam_min / lam_max
                         order = np.argsort(eigvals)[::-1]  # [主轴, 次轴]
                         shape_rotation = eigvecs[:, order]
-                        if lam_min > 1e-12 and lam_max > 0.0:
+                        if lam_min > 1e-12 and lam_max > 1e-12:
                             raw_ratio = float(math.sqrt(lam_max / lam_min))
-                            shape_ratio = float(np.clip(raw_ratio, 1.0, 50.0))
+                            # ratio 上限 max_shape_ratio（50）：经验上已覆盖极端长椭圆圈层，
+                            # 超过该值时结果改进很有限且会明显放大数值噪声
+                            shape_ratio = float(np.clip(raw_ratio, 1.0, max_shape_ratio))
                         else:
                             shape_ratio = 1.0
                         rotated_train = centered_train @ shape_rotation
@@ -1235,7 +1249,8 @@ class KmlToIaConverter:
             sigma_factor = max(0.0, float(self.arcgis_idw_smooth_sigma_factor))
             effective_sigma_factor = sigma_factor
             if smooth_enabled and radial_assist_failed and effective_sigma_factor <= 0.0:
-                effective_sigma_factor = 0.5
+                # 降级时给最小非零平滑强度，结合 d_typical 自适应到像素尺度避免环带原样返回
+                effective_sigma_factor = fallback_sigma_factor
                 logger.info(
                     "ArcGIS IDW v3.11 降级平滑启用自适应 sigma: 原sigma_factor=0，临时使用 %.3f",
                     effective_sigma_factor,
