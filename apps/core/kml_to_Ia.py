@@ -1061,6 +1061,10 @@ class KmlToIaConverter:
         band = None
 
         try:
+            sigma_min_pixels = 0.8
+            sigma_max_pixels = 3.0
+            gauss_den_eps = 1e-12
+
             # 建立 KD-Tree（在所有分块插值时共享）
             pts_train = np.column_stack([x_arr, y_arr]).astype(np.float64)
             tree = _cKDTree(pts_train)
@@ -1073,7 +1077,7 @@ class KmlToIaConverter:
             if use_smooth:
                 n_neighbors_query = min(
                     len(x_arr),
-                    max(n_neighbors, n_neighbors + self.arcgis_idw_smooth_extra_neighbors),
+                    n_neighbors + self.arcgis_idw_smooth_extra_neighbors,
                 )
             power = self.qgis_idw_power
             max_dist = self.idw_max_distance
@@ -1207,12 +1211,12 @@ class KmlToIaConverter:
                         if d_train.ndim == 2 and d_train.shape[1] >= 2:
                             d_typical = float(np.median(d_train[:, 1]))
                             sigma_pixels = max(
-                                0.8,
+                                sigma_min_pixels,  # <1px 时跨等值线带过渡不充分，易残留阶梯环带
                                 self.arcgis_idw_smooth_sigma_factor
                                 * d_typical
                                 / max(self.resolution, 1e-6),
                             )
-                            sigma_pixels = min(3.0, sigma_pixels)
+                            sigma_pixels = min(sigma_max_pixels, sigma_pixels)  # >3px 会明显削弱偏心椭圆圈形
                         del d_train
                     logger.info(
                         "ArcGIS IDW 平滑后处理: sigma=%.3f px, sigma_factor=%.3f",
@@ -1223,7 +1227,7 @@ class KmlToIaConverter:
                     den_mask = valid_mask.astype(np.float64)
                     num = _gaussian_filter(arr_safe, sigma=sigma_pixels, mode='nearest')
                     den = _gaussian_filter(den_mask, sigma=sigma_pixels, mode='nearest')
-                    smoothed = np.divide(num, den, out=arr_safe, where=den > 1e-12)
+                    smoothed = np.divide(num, den, out=arr_safe, where=den > gauss_den_eps)
                     full_result[valid_mask] = smoothed[valid_mask].astype(np.float32)
                     del arr_safe, den_mask, num, den, smoothed
                 else:
@@ -1231,8 +1235,7 @@ class KmlToIaConverter:
                         "ArcGIS IDW 平滑后处理已启用，但 sigma_factor<=0，跳过高斯平滑。"
                     )
 
-                # 端值和值域保护：裁剪并重映射回原始端值范围
-                np.clip(full_result, values_min, values_max, out=full_result)
+                # 端值和值域保护：重映射并裁剪回原始端值范围
                 valid_vals = full_result[valid_mask]
                 cur_min = float(valid_vals.min())
                 cur_max = float(valid_vals.max())
@@ -1241,7 +1244,13 @@ class KmlToIaConverter:
                     full_result[valid_mask] = (
                         (valid_vals - cur_min) * scale + values_min
                     ).astype(np.float32)
+                else:
+                    logger.debug(
+                        "ArcGIS IDW 端值重映射跳过: cur_range=[%.6f, %.6f], src_range=[%.6f, %.6f]",
+                        cur_min, cur_max, values_min, values_max,
+                    )
                 del valid_vals
+                np.clip(full_result, values_min, values_max, out=full_result)
 
             full_result[~valid_mask] = -9999.0
             np.maximum(full_result, 0.0, out=full_result, where=valid_mask)

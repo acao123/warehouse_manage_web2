@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -159,7 +160,7 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
                 np.array([0.0, 1.0, 2.0], dtype=np.float64),
                 np.array([0.0, 1.0, 2.0], dtype=np.float64),
                 np.array([1.0, 2.0, 3.0], dtype=np.float32),
-                "/tmp/arcgis_idw_smooth_test.tif",
+                str(Path(tempfile.gettempdir()) / "arcgis_idw_smooth_test.tif"),
             )
 
         arr = fake_driver.dataset.band.arr
