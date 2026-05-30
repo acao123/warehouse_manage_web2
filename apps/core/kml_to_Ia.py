@@ -300,7 +300,7 @@ try:
         interp1d as _interp1d,
         PchipInterpolator as _PchipInterpolator,
     )
-    from scipy.spatial import cKDTree as _cKDTree, Delaunay as _Delaunay
+    from scipy.spatial import cKDTree as _cKDTree
     from scipy.ndimage import gaussian_filter as _gaussian_filter
     _HAS_SCIPY = True
 except ImportError:
@@ -346,8 +346,8 @@ class KmlToIaConverter:
     支持的插值方法:
         - 'scipy_tin'（默认/推荐）：scipy Delaunay三角网插值，C1/C0连续；
           TIN 外部用 NearestNDInterpolator（纯 scipy TIN/Voronoi 体系）填充；
-          全图一次高斯平滑后处理（sigma 由 scipy_tin_smooth_sigma_factor 控制），
-          彻底消除三角面片棱线条带和同心环带（v3.9 重构，完全移除 IDW 逻辑）
+          可选启用局部 IDW 式平滑重塑（scipy_tin_smooth_sigma_factor>0）：
+          采用“径向趋势 + 局部IDW残差”与 TIN 结果融合，抑制条带/环带
         - 'radial'     ：径向距离1D插值，专为同心圈优化，完美单调递增
         - 'scipy_idw'  ：scipy RBF插值，速度快，支持邻近点限制，需安装scipy
         - 'kriging'    ：真正对齐 ArcGIS EBK 的子集化克里金，支持多次模拟
@@ -361,7 +361,7 @@ class KmlToIaConverter:
             ia_output_path="path/to/Ia.tif",
             interp_method='scipy_tin',
             scipy_tin_smooth=True,
-            scipy_tin_smooth_sigma_factor=0.5,  # v3.7 新增：高斯平滑 sigma 倍率
+            scipy_tin_smooth_sigma_factor=0.5,  # v3.15：IDW式平滑强度（0=禁用）
             scipy_tin_radial_assist=True,       # v3.8 新增：径向辅助场重塑（消除同心环带，推荐）
             sample_interval=5,
             max_sample_points=50000,
@@ -411,11 +411,10 @@ class KmlToIaConverter:
         scipy_tin_blend_far_dist: Optional[float] = None,   # 废弃：IDW 纯用区距离阈值（米）
         scipy_tin_density_safe_factor: float = 0.25,        # 废弃：自适应 d_safe 倍率
         scipy_tin_density_far_factor: float = 1.5,          # 废弃：自适应 d_blend 倍率
-        # 【v3.7 新增】高斯平滑 sigma 倍率：sigma_pixels = max(1, factor * d_typical / resolution)
-        # 设为 0 完全禁用平滑后处理（仅用于调试）；推荐范围 0.3 ~ 1.0
+        # 【v3.15】scipy_tin IDW式平滑强度（0=禁用；>0 启用并按强度融合局部 IDW 结果）
         scipy_tin_smooth_sigma_factor: float = 0.5,
-        scipy_tin_idw_neighbors: int = 24,                  # TIN 外部 IDW 邻近点数，默认 24
-        scipy_tin_idw_power: float = 1.5,                   # TIN 外部 IDW 幂次，默认 1.5
+        scipy_tin_idw_neighbors: int = 24,                  # IDW式平滑邻近点数，默认 24
+        scipy_tin_idw_power: float = 1.5,                   # IDW式平滑幂次，默认 1.5
         # 【v3.8 新增】True=启用径向辅助场重塑（消除同心环带，推荐）；False=退回 v3.7 行为
         scipy_tin_radial_assist: bool = True,
 
@@ -487,7 +486,7 @@ class KmlToIaConverter:
         self.scipy_tin_idw_power = scipy_tin_idw_power
         self.scipy_tin_density_safe_factor = scipy_tin_density_safe_factor  # v3.6 废弃
         self.scipy_tin_density_far_factor = scipy_tin_density_far_factor    # v3.6 废弃
-        self.scipy_tin_smooth_sigma_factor = scipy_tin_smooth_sigma_factor  # v3.7 新增
+        self.scipy_tin_smooth_sigma_factor = scipy_tin_smooth_sigma_factor  # v3.15: IDW式平滑强度
         self.scipy_tin_radial_assist = scipy_tin_radial_assist              # v3.8 新增
         # 径向插值参数
         self.radial_kind = radial_kind
@@ -1022,7 +1021,10 @@ class KmlToIaConverter:
             band = out_ds.GetRasterBand(1)
             band.SetNoDataValue(-9999.0)
 
-            # 预计算列坐标（经度）
+            v_min = float(np.min(values))
+            v_max = float(np.max(values))
+
+            # 预计算列坐标（UTM X）
             grid_x = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
 
             n_rows = self._n_rows
@@ -1042,8 +1044,8 @@ class KmlToIaConverter:
                 for col_idx in range(self._n_cols):
                     x = grid_x[col_idx]
                     success, value = interpolator.interpolatePoint(x, y)
-                    if success == 0:
-                        row_data[col_idx] = max(0.0, value)
+                    if success == 0 and np.isfinite(value):
+                        row_data[col_idx] = float(np.clip(value, v_min, v_max))
 
                 band.WriteArray(row_data.reshape(1, -1), 0, row_idx)
 
@@ -1620,7 +1622,7 @@ class KmlToIaConverter:
 
                 result = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
                 del chunk_vals
-                nodata_mask = result < -9998.0
+                nodata_mask = (~np.isfinite(result)) | (result < -9998.0)
                 np.clip(result, v_min, v_max, out=result)
                 result[nodata_mask] = -9999.0
                 return row_start, result
@@ -1770,6 +1772,8 @@ class KmlToIaConverter:
         band = None
 
         try:
+            v_min = float(np.min(values))
+            v_max = float(np.max(values))
             X_train = np.column_stack([x_arr, y_arr])
             rbf = _RBFInterpolator(
                 X_train,
@@ -1811,7 +1815,9 @@ class KmlToIaConverter:
                 del xx, yy
                 result = rbf(pts).reshape(actual_rows, self._n_cols).astype(np.float32)
                 del pts
-                np.maximum(result, 0.0, out=result)
+                nodata_mask = ~np.isfinite(result)
+                np.clip(result, v_min, v_max, out=result)
+                result[nodata_mask] = -9999.0
                 return row_start, result
 
             start_time = time.time()
@@ -1889,29 +1895,17 @@ class KmlToIaConverter:
         output_tif_path: str,
     ) -> None:
         """
-        使用 scipy Delaunay 三角网插值，分块并行写入 GeoTIFF（v3.9 重构版）。
+        使用 scipy Delaunay 三角网插值，分块并行写入 GeoTIFF（v3.15）。
 
-        重构说明（v3.9）：
-            - 完全移除 KD-Tree IDW 填充逻辑：凸包外部 NaN 像素改用
-              NearestNDInterpolator（scipy 自带最近邻插值，属于 TIN/Voronoi 体系，
-              非 IDW），保持纯 scipy TIN 体系内实现。
-            - sigma 自适应改用 Delaunay 边长中位数（无需 cKDTree 用于数值计算）：
-              从 Delaunay 三角网提取所有边，取边长中位数作为 d_typical，
-              计算 sigma_pixels = max(1, factor * d_typical / resolution)。
-            - 沿用 v3.8 的径向辅助场重塑（scipy_tin_radial_assist，默认 True）。
-            - 沿用 v3.7 的全图高斯平滑后处理（gaussian_filter + mask 归一化）。
-            - 废弃参数新增：scipy_tin_idw_neighbors、scipy_tin_idw_power
-              （已改用 NearestNDInterpolator，传入非默认值输出 deprecation warning）。
-
-        重构说明（v3.8）：
-            - 新增径向辅助场重塑（scipy_tin_radial_assist，默认 True）：
-              ① 计算所有采样点的几何中心 (cx, cy)，对每个采样点计算径向距离 r_i。
-              ② 将 (r_i, ia_i) 按距离分 bin 合并均值，用 PchipInterpolator 拟合
-                 1D 径向趋势曲线 f_radial(r)。
-              ③ 计算残差 aux_i = ia_i - f_radial(r_i)，对残差做 2D TIN 插值。
-              ④ 最终像素值 = f_radial(r_pixel) + TIN_residual(pixel)。
-              此策略从根本上消除同心环带：径向方向由 f_radial 保证平滑，
-              横向局部细节由 TIN 残差场保留。
+        核心流程：
+            - 主插值器仍为 TIN（CloughTocher/Linear）；
+            - 凸包外 NaN 仍用 NearestNDInterpolator 填充；
+            - 可选启用“IDW 式平滑重塑”（不再使用全图高斯卷积）：
+              ① 先构建径向趋势 f_radial（scipy_tin_radial_assist=True 时）；
+              ② 对残差（或原值）做局部 KD-Tree IDW 插值；
+              ③ 与 TIN 结果按 scipy_tin_smooth_sigma_factor（>0 启用）线性融合。
+            - scipy_tin_idw_neighbors / scipy_tin_idw_power 重新启用，
+              分别控制局部 IDW 邻点数和幂次。
 
         参数:
             x_arr: 采样点X坐标（UTM easting，米）
@@ -1942,26 +1936,17 @@ class KmlToIaConverter:
                 ", ".join(_deprecated_nondefault),
             )
 
-        # 检查 v3.9 新废弃的 IDW 参数
-        _deprecated_idw = []
-        if self.scipy_tin_idw_neighbors != 24:
-            _deprecated_idw.append("scipy_tin_idw_neighbors")
-        if self.scipy_tin_idw_power != 1.5:
-            _deprecated_idw.append("scipy_tin_idw_power")
-        if _deprecated_idw:
-            logger.warning(
-                "v3.9+ scipy_tin 已弃用 IDW 相关参数（凸包外部填充已改用 NearestNDInterpolator）；"
-                "传入的值将被忽略: %s",
-                ", ".join(_deprecated_idw),
-            )
-
         interp = None
         nn_interp = None     # NearestNDInterpolator（v3.9：凸包外部填充）
+        tree = None
         f_radial = None
         out_ds = None
         band = None
 
         try:
+            vals_f64 = values.astype(np.float64)
+            v_min = float(np.min(vals_f64))
+            v_max = float(np.max(vals_f64))
             points = np.column_stack([x_arr, y_arr])
 
             # ==================================================================
@@ -1973,7 +1958,7 @@ class KmlToIaConverter:
             # ==================================================================
             use_radial_assist = False
             cx = cy = 0.0
-            tin_values = values.astype(np.float64)  # TIN 使用的值（原始值或残差）
+            tin_values = vals_f64.copy()  # TIN 使用的值（原始值或残差）
 
             if self.scipy_tin_radial_assist and len(x_arr) >= 3:
                 try:
@@ -1987,7 +1972,7 @@ class KmlToIaConverter:
                     # 3. 按距离分 bin（容差 = resolution/2），合并均值
                     sorted_idx = np.argsort(r_arr)
                     r_sorted = r_arr[sorted_idx]
-                    v_sorted = values[sorted_idx].astype(np.float64)
+                    v_sorted = vals_f64[sorted_idx]
 
                     tol_bin = self.resolution / 2.0
                     merged_r = [float(r_sorted[0])]
@@ -2027,7 +2012,7 @@ class KmlToIaConverter:
 
                         # 5. 计算残差：tin_values = ia - f_radial(r)
                         radial_at_samples = f_radial(r_arr)
-                        tin_values = values.astype(np.float64) - radial_at_samples
+                        tin_values = vals_f64 - radial_at_samples
                         del radial_at_samples, r_arr, r_knots, v_knots
                         gc.collect()
 
@@ -2050,13 +2035,13 @@ class KmlToIaConverter:
                         "径向辅助场构建失败（%s），回退到 v3.7 行为", _e
                     )
                     # 异常时回退：使用原始值，use_radial_assist 已为 False
-                    tin_values = values.astype(np.float64)
+                    tin_values = vals_f64.copy()
                     use_radial_assist = False
 
             if use_radial_assist:
-                logger.info("scipy_tin v3.9 模式：径向辅助场重塑（消除同心环带）已启用")
+                logger.info("scipy_tin v3.15：径向辅助场重塑（消除同心环带）已启用")
             else:
-                logger.info("scipy_tin v3.9 模式：直接对原始值 TIN 插值（无径向辅助）")
+                logger.info("scipy_tin v3.15：直接对原始值 TIN 插值（无径向辅助）")
 
             # 构建 TIN 主插值器（使用残差 tin_values 或原始值）
             if self.scipy_tin_smooth:
@@ -2076,50 +2061,37 @@ class KmlToIaConverter:
                 )
                 logger.info("使用 scipy Linear TIN 插值（C0连续，更快，rescale=True）")
 
-            # 构建 NearestNDInterpolator（v3.9：凸包外部 NaN 像素填充，替代 IDW）
+            # 构建 NearestNDInterpolator（凸包外部 NaN 像素填充）
             # 与 TIN 使用相同的采样点和目标值（残差或原始值），保持一致性
             nn_interp = _NearestNDInterpolator(
                 np.column_stack([x_arr, y_arr]), tin_values
             )
+            tree = _cKDTree(np.column_stack([x_arr, y_arr]).astype(np.float64))
 
             del points
             gc.collect()
-
-            # 计算 d_typical：使用 Delaunay 三角网边长中位数（v3.9，不使用 cKDTree）
-            pts_xy = np.column_stack([x_arr, y_arr])
-            tri_for_sigma = _Delaunay(pts_xy)
-            simplices = tri_for_sigma.simplices  # shape (n_simplices, 3)
-            # 提取所有唯一边（numpy 向量化，避免 Python 循环）
-            edges_01 = np.sort(simplices[:, :2], axis=1)
-            edges_02 = np.sort(simplices[:, [0, 2]], axis=1)
-            edges_12 = np.sort(simplices[:, 1:], axis=1)
-            all_edges = np.unique(
-                np.vstack([edges_01, edges_02, edges_12]), axis=0
-            )
-            del edges_01, edges_02, edges_12, simplices, tri_for_sigma
-            edge_vecs = pts_xy[all_edges[:, 0]] - pts_xy[all_edges[:, 1]]
-            edge_lengths = np.sqrt((edge_vecs ** 2).sum(axis=1))
-            d_typical = float(np.median(edge_lengths))
-            del all_edges, edge_vecs, edge_lengths, pts_xy
-            gc.collect()
-
-            # 高斯平滑 sigma（像素数）
             sigma_factor = float(self.scipy_tin_smooth_sigma_factor)
             if sigma_factor < 0.0:
                 logger.warning(
-                    "scipy_tin_smooth_sigma_factor=%.3f 为负数，已重置为 0（禁用平滑）",
+                    "scipy_tin_smooth_sigma_factor=%.3f 为负数，已重置为 0（禁用 IDW 式平滑）",
                     sigma_factor,
                 )
                 sigma_factor = 0.0
-            if sigma_factor > 0.0:
-                sigma_pixels = max(1.0, sigma_factor * d_typical / self.resolution)
-            else:
-                sigma_pixels = 0.0
+            idw_smooth_enabled = sigma_factor > 0.0
+            idw_blend_alpha = min(1.0, sigma_factor) if idw_smooth_enabled else 0.0
+            idw_neighbors = min(max(1, int(self.scipy_tin_idw_neighbors)), len(x_arr))
+            idw_power = float(self.scipy_tin_idw_power)
+            if idw_power <= 0.0:
+                logger.warning(
+                    "scipy_tin_idw_power=%.3f 非正，已重置为 1.0",
+                    idw_power,
+                )
+                idw_power = 1.0
 
             logger.info(
-                "scipy_tin v3.9 参数: d_typical=%.1f m (Delaunay边长中位数), "
-                "sigma_factor=%.2f, sigma_pixels=%.2f px, radial_assist=%s",
-                d_typical, sigma_factor, sigma_pixels, use_radial_assist,
+                "scipy_tin v3.15 参数: idw_smooth=%s, blend_alpha=%.3f, "
+                "idw_neighbors=%d, idw_power=%.3f, radial_assist=%s",
+                idw_smooth_enabled, idw_blend_alpha, idw_neighbors, idw_power, use_radial_assist,
             )
 
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
@@ -2141,27 +2113,6 @@ class KmlToIaConverter:
             n_cols = self._n_cols
             chunk_rows = self.chunk_size
             chunk_starts = list(range(0, n_rows, chunk_rows))
-
-            # 检查是否有足够内存累积完整结果数组用于高斯平滑
-            # 共需 5 个 (n_rows×n_cols) float32 数组：full_arr, mask, arr_safe, num, den
-            _SMOOTH_ARRAY_COUNT = 5
-            full_arr_bytes = n_rows * n_cols * 4
-            smooth_mem_bytes = full_arr_bytes * _SMOOTH_ARRAY_COUNT
-            do_smooth = (
-                sigma_pixels > 0.0
-                and smooth_mem_bytes <= self.max_memory_gb * 1e9
-            )
-            if sigma_pixels > 0.0 and not do_smooth:
-                logger.warning(
-                    "跳过高斯平滑后处理：所需内存 %.2f GB 超过 max_memory_gb=%.1f GB",
-                    smooth_mem_bytes / 1e9, self.max_memory_gb,
-                )
-
-            # 完整结果数组（NoData 填 -9999.0），用于高斯平滑后统一写盘
-            if do_smooth:
-                full_arr = np.full((n_rows, n_cols), -9999.0, dtype=np.float32)
-            else:
-                full_arr = None
 
             # 内层函数：计算单个分块（TIN + NearestNDInterpolator 填充 NaN）
             # 返回 (row_start, result_2d, n_pure_tin, n_nn_filled)
@@ -2194,10 +2145,49 @@ class KmlToIaConverter:
                     chunk_vals_tin += f_radial(r_pixels)
                     del r_pixels
 
+                # v3.15：IDW 式平滑重塑（参考 qgis_idw 的局部 IDW 残差思路）
+                if idw_smooth_enabled:
+                    dists, idxs = tree.query(pts, k=idw_neighbors)
+                    if idw_neighbors == 1:
+                        dists = dists.reshape(-1, 1)
+                        idxs = idxs.reshape(-1, 1)
+
+                    exact_mask = dists[:, 0] == 0.0
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        weights = np.where(dists > 0.0, 1.0 / (dists ** idw_power), 0.0)
+                    weight_sum = weights.sum(axis=1)
+
+                    chunk_vals_idw = np.full(pts.shape[0], -9999.0, dtype=np.float64)
+                    valid_mask = (~exact_mask) & (weight_sum > 0.0)
+                    if valid_mask.any():
+                        w = weights[valid_mask]
+                        v = tin_values[idxs[valid_mask]]
+                        chunk_vals_idw[valid_mask] = (w * v).sum(axis=1) / weight_sum[valid_mask]
+
+                    if exact_mask.any():
+                        chunk_vals_idw[exact_mask] = tin_values[idxs[exact_mask, 0]]
+
+                    if use_radial_assist and f_radial is not None:
+                        nodata_flag = chunk_vals_idw < -9998.0
+                        r_pixels = np.sqrt((pts[:, 0] - cx) ** 2 + (pts[:, 1] - cy) ** 2)
+                        radial_vals = f_radial(r_pixels)
+                        chunk_vals_idw[~nodata_flag] += radial_vals[~nodata_flag]
+                        del nodata_flag, r_pixels, radial_vals
+
+                    valid_idw_mask = chunk_vals_idw > -9998.0
+                    if valid_idw_mask.any():
+                        chunk_vals_tin[valid_idw_mask] = (
+                            (1.0 - idw_blend_alpha) * chunk_vals_tin[valid_idw_mask]
+                            + idw_blend_alpha * chunk_vals_idw[valid_idw_mask]
+                        )
+                    del dists, idxs, weights, weight_sum, chunk_vals_idw, valid_idw_mask
+
                 del pts
 
                 chunk_vals_tin = chunk_vals_tin.reshape(actual_rows, n_cols).astype(np.float32)
-                np.maximum(chunk_vals_tin, 0.0, out=chunk_vals_tin)
+                nodata_mask = (~np.isfinite(chunk_vals_tin)) | (chunk_vals_tin < -9998.0)
+                np.clip(chunk_vals_tin, v_min, v_max, out=chunk_vals_tin)
+                chunk_vals_tin[nodata_mask] = -9999.0
                 return (row_start, chunk_vals_tin, n_pure_tin, n_nn_filled)
 
             start_time = time.time()
@@ -2229,11 +2219,7 @@ class KmlToIaConverter:
                         logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
                         raise
 
-                    # 若需平滑，先累积到 full_arr；否则直接写盘
-                    if do_smooth:
-                        full_arr[row_start_res: row_start_res + chunk_vals.shape[0], :] = chunk_vals
-                    else:
-                        band.WriteArray(chunk_vals, 0, row_start_res)
+                    band.WriteArray(chunk_vals, 0, row_start_res)
                     del chunk_vals
 
                     # 累计统计
@@ -2252,21 +2238,6 @@ class KmlToIaConverter:
                         elapsed = time.time() - start_time
                         logger.info("scipy_tin 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
                                     row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
-
-            # 高斯平滑后处理（v3.7）：对完整栅格做可分离 2D 高斯卷积，消除环带/折线条带
-            if do_smooth and full_arr is not None:
-                logger.info("scipy_tin 高斯平滑后处理: sigma=%.2f px ...", sigma_pixels)
-                mask = (full_arr != -9999.0).astype(np.float32)
-                arr_safe = np.where(mask > 0, full_arr, 0.0).astype(np.float32)
-                num = _gaussian_filter(arr_safe, sigma=sigma_pixels)
-                den = _gaussian_filter(mask, sigma=sigma_pixels)
-                smoothed = np.where(den > 1e-6, num / den, -9999.0).astype(np.float32)
-                del arr_safe, num, den, mask
-                gc.collect()
-                band.WriteArray(smoothed, 0, 0)
-                del smoothed
-                gc.collect()
-                logger.info("scipy_tin 高斯平滑完成")
 
             band.ComputeStatistics(False)
             band.FlushCache()
@@ -2291,9 +2262,12 @@ class KmlToIaConverter:
         finally:
             out_ds = None
             band = None
-            del interp
+            if interp is not None:
+                del interp
             if nn_interp is not None:
                 del nn_interp
+            if tree is not None:
+                del tree
             if f_radial is not None:
                 del f_radial
             gc.collect()
@@ -2330,6 +2304,8 @@ class KmlToIaConverter:
         band = None
 
         try:
+            v_min = float(np.min(values))
+            v_max = float(np.max(values))
             # 计算震中（几何中心，UTM 米坐标）
             center_x = float(np.mean(x_arr))
             center_y = float(np.mean(y_arr))
@@ -2359,12 +2335,13 @@ class KmlToIaConverter:
                 if d - merged_dists[-1] < tol:
                     running_sum += v
                     running_cnt += 1
-                    merged_vals[-1] = running_sum / running_cnt
                 else:
+                    merged_vals[-1] = running_sum / running_cnt
                     merged_dists.append(d)
                     merged_vals.append(v)
                     running_sum = v
                     running_cnt = 1
+            merged_vals[-1] = running_sum / running_cnt
 
             del dist_sorted, val_sorted
             gc.collect()
@@ -2424,7 +2401,9 @@ class KmlToIaConverter:
                     logger.error("radial 插值第 %d 块失败: %s", chunk_idx, exc)
                     raise
                 del pixel_dists
-                np.maximum(chunk_vals, 0.0, out=chunk_vals)
+                nodata_mask = ~np.isfinite(chunk_vals)
+                np.clip(chunk_vals, v_min, v_max, out=chunk_vals)
+                chunk_vals[nodata_mask] = -9999.0
                 band.WriteArray(chunk_vals.astype(np.float32), 0, row_start)
                 del chunk_vals
                 gc.collect()
@@ -2481,6 +2460,8 @@ class KmlToIaConverter:
         band = None
 
         try:
+            v_min = float(np.min(values))
+            v_max = float(np.max(values))
             logger.info("使用 pykrige 普通克里金，变差函数=%s，滞后数=%d，邻近点数=%d",
                         self.kriging_variogram, self.kriging_nlags, self.kriging_neighbors)
 
@@ -2535,7 +2516,9 @@ class KmlToIaConverter:
 
                 chunk_vals = np.array(z, dtype=np.float32)
                 del z
-                np.maximum(chunk_vals, 0.0, out=chunk_vals)
+                nodata_mask = ~np.isfinite(chunk_vals)
+                np.clip(chunk_vals, v_min, v_max, out=chunk_vals)
+                chunk_vals[nodata_mask] = -9999.0
                 band.WriteArray(chunk_vals, 0, row_start)
                 del chunk_vals
                 gc.collect()
@@ -2607,6 +2590,8 @@ class KmlToIaConverter:
         band = None
 
         try:
+            v_min = float(np.min(values))
+            v_max = float(np.max(values))
             n_samples = len(x_arr)
             subset_size = self.ebk_subset_size
             n_simulations = max(1, self.ebk_n_simulations)
@@ -2905,8 +2890,8 @@ class KmlToIaConverter:
                 del weighted_sum, weight_total
 
                 chunk_vals = chunk_vals.reshape(actual_rows, self._n_cols).astype(np.float32)
-                nodata_mask = chunk_vals < -9998.0
-                np.maximum(chunk_vals, 0.0, out=chunk_vals)
+                nodata_mask = (~np.isfinite(chunk_vals)) | (chunk_vals < -9998.0)
+                np.clip(chunk_vals, v_min, v_max, out=chunk_vals)
                 chunk_vals[nodata_mask] = -9999.0
 
                 band.WriteArray(chunk_vals, 0, row_start)
@@ -3292,12 +3277,12 @@ if __name__ == "__main__":
 
         # scipy TIN 参数（仅 interp_method='scipy_tin' 时有效，需安装scipy）
         scipy_tin_smooth=True,  # True=CloughTocher(C1最平滑), False=Linear(C0更快)
-        scipy_tin_smooth_sigma_factor=0.5,   # (v3.7 新增) 高斯平滑 sigma 倍率；推荐 0.3~1.0；0=禁用平滑
+        scipy_tin_smooth_sigma_factor=0.5,   # (v3.15) IDW式平滑强度；0=禁用，>0 启用
         # (v3.8 新增) 径向辅助场重塑，消除同心环带（推荐 True）；False=退回 v3.7 行为
         scipy_tin_radial_assist=True,
+        scipy_tin_idw_neighbors=24,          # (v3.15) IDW式平滑邻近点数
+        scipy_tin_idw_power=1.5,             # (v3.15) IDW式平滑幂次
         # 以下参数已废弃（向后兼容保留，内部不使用）：
-        # scipy_tin_idw_neighbors=24,        # 废弃：v3.9+ 已改用 NearestNDInterpolator
-        # scipy_tin_idw_power=1.5,           # 废弃：v3.9+ 已改用 NearestNDInterpolator
         # scipy_tin_blend_safe_dist=None,    # 废弃：v3.5/v3.6 TIN 纯用距离阈值（米）
         # scipy_tin_blend_far_dist=None,     # 废弃：v3.5/v3.6 IDW 纯用距离阈值（米）
         # scipy_tin_density_safe_factor=0.25,# 废弃：v3.6 自适应 d_safe 倍率

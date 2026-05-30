@@ -168,6 +168,107 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         self.assertGreaterEqual(float(arr.min()), 1.0)
         self.assertLessEqual(float(arr.max()), 3.0)
 
+    def test_scipy_tin_idw_smooth_blend_and_clip(self):
+        converter = KML_TO_IA.KmlToIaConverter(
+            kml_path="dummy.kml",
+            ia_output_path="dummy.tif",
+            interp_method="scipy_tin",
+            chunk_size=1,
+            max_interp_workers=1,
+            scipy_tin_smooth=True,
+            scipy_tin_smooth_sigma_factor=0.5,
+            scipy_tin_idw_neighbors=1,
+            scipy_tin_idw_power=2.0,
+            scipy_tin_radial_assist=False,
+        )
+        converter._n_cols = 1
+        converter._n_rows = 1
+        converter._x_min = 0.0
+        converter._y_max = 1.0
+        converter._res_lon = 1.0
+        converter._res_lat = 1.0
+        converter._geo_transform = (0, 1, 0, 0, 0, -1)
+        converter._utm_srs = types.SimpleNamespace(ExportToWkt=lambda: "WKT")
+        converter._ensure_file_writable = lambda _: None
+
+        class _FakeBand:
+            def __init__(self):
+                self.arr = None
+
+            def SetNoDataValue(self, _):
+                return None
+
+            def WriteArray(self, arr, _xoff, _yoff):
+                self.arr = np.array(arr, copy=True)
+
+            def ComputeStatistics(self, _):
+                return None
+
+            def FlushCache(self):
+                return None
+
+        class _FakeDataset:
+            def __init__(self):
+                self.band = _FakeBand()
+
+            def SetGeoTransform(self, _):
+                return None
+
+            def SetProjection(self, _):
+                return None
+
+            def GetRasterBand(self, _):
+                return self.band
+
+        class _FakeDriver:
+            def __init__(self):
+                self.dataset = _FakeDataset()
+
+            def Create(self, *_args, **_kwargs):
+                return self.dataset
+
+        class _FakeTin:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, pts):
+                return np.full(pts.shape[0], 10.0, dtype=np.float64)
+
+        class _FakeNN:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, pts):
+                return np.full(pts.shape[0], 10.0, dtype=np.float64)
+
+        class _FakeTree:
+            def query(self, pts, k):
+                d = np.ones((pts.shape[0], k), dtype=np.float64)
+                i = np.zeros((pts.shape[0], k), dtype=np.int64)
+                return d, i
+
+        fake_driver = _FakeDriver()
+        fake_gdal = types.SimpleNamespace(
+            GDT_Float32=6,
+            GetDriverByName=lambda _name: fake_driver,
+        )
+
+        with patch.object(KML_TO_IA, "_HAS_SCIPY", True), \
+                patch.object(KML_TO_IA, "_CloughTocher2DInterpolator", _FakeTin, create=True), \
+                patch.object(KML_TO_IA, "_NearestNDInterpolator", _FakeNN, create=True), \
+                patch.object(KML_TO_IA, "_cKDTree", lambda _pts: _FakeTree(), create=True), \
+                patch.object(KML_TO_IA, "gdal", fake_gdal):
+            converter._run_scipy_tin_interpolation(
+                np.array([0.0, 2.0], dtype=np.float64),
+                np.array([0.0, 0.0], dtype=np.float64),
+                np.array([1.0, 3.0], dtype=np.float32),
+                str(Path(tempfile.gettempdir()) / "scipy_tin_idw_smooth_test.tif"),
+            )
+
+        arr = fake_driver.dataset.band.arr
+        self.assertEqual(arr.shape, (1, 1))
+        self.assertAlmostEqual(float(arr[0, 0]), 3.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
