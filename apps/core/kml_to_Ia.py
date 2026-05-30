@@ -1933,14 +1933,14 @@ class KmlToIaConverter:
                     maxiter=400,
                     rescale=True,
                 )
-                logger.info("使用 scipy CloughTocher TIN 插值（C1连续）")
+                logger.info("使用 scipy CloughTocher TIN 插值（C1连续，rescale=True）")
             else:
                 interp = _LinearNDInterpolator(
                     points, values.astype(np.float64),
                     fill_value=np.nan,
                     rescale=True,
                 )
-                logger.info("使用 scipy Linear TIN 插值（C0连续）")
+                logger.info("使用 scipy Linear TIN 插值（C0连续，rescale=True）")
 
             # 构建 NearestNDInterpolator（凸包外部 NaN 像素填充）
             nn_interp = _NearestNDInterpolator(
