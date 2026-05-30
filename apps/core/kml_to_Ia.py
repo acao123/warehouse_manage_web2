@@ -432,7 +432,7 @@ class KmlToIaConverter:
         max_memory_gb: float = 10.0,
 
         # ---- 并行插值参数 ----
-        max_interp_workers: int = 4,        # scipy插值并行线程数，推荐 1~4
+        max_interp_workers: int = 2,        # scipy插值并行线程数，推荐 1~4
 
         # ---- 取消信号参数 ----
         cancel_event: Optional[threading.Event] = None,  # 取消事件，set()后立即停止插值
@@ -3047,7 +3047,7 @@ class KmlToIaConverter:
 if __name__ == "__main__":
     converter = KmlToIaConverter(
         kml_path="E:\\code\\python\\地质\\PGA666.kml",  # 输入KML文件路径
-        ia_output_path="E:\\code\\python\\地质\\Ia66.tif",  # Ia输出路径
+        ia_output_path="E:\\code\\python\\地质\\Ia6688.tif",  # Ia输出路径
 
         # PGA输出（可选，使用矢量栅格化非插值）
         pga_output_path="../../data/geology/kml/PGA.tif",  # 不需要PGA时设为None
@@ -3062,7 +3062,7 @@ if __name__ == "__main__":
 
         # ========== 选择插值方法 ==========
         # 推荐方法（平滑，无突变）
-        interp_method='qgis_idw',  # ArcGIS IDW (KD-Tree局部IDW，与ArcGIS默认对齐，需scipy)
+        interp_method='scipy_tin',  # ArcGIS IDW (KD-Tree局部IDW，与ArcGIS默认对齐，需scipy)
         # interp_method='radial',   # 径向插值 - 专为同心圈，完美单调递增
 
         # 其他可用方法
