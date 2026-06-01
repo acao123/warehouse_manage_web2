@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.16）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.17）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -11,6 +11,20 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.16）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
 
+主要改进（v3.17 相较 v3.16）：
+    1. 修复 scipy_tin 进程崩溃（0xC0000005 / Windows 访问冲突）：
+       - 根因：v3.16 的 ThreadPoolExecutor 令多个线程并发调用同一个
+         CloughTocher2DInterpolator / LinearNDInterpolator / NearestNDInterpolator
+         实例；scipy 插值器的 __call__ 依赖底层 qhull，不是线程安全的，
+         在 Windows 上并发调用会触发 C 级别访问冲突，进程崩溃（exit code -1073741819）。
+       - 修复：将 scipy_tin 分块计算改为串行循环，移除 ThreadPoolExecutor；
+         CloughTocher/LinearND/NearestND 内部已是 C 级向量化调用，多线程无加速收益。
+    2. 保留 v3.16 全部性能优化（不回退）：
+       - 预分配坐标缓冲（np.empty + np.tile + np.repeat）；
+       - 仅对 TIN 返回 NaN 的像素调用最近邻填充；
+       - 预构建等值线锁定像素行索引数组，向量化赋值；
+       - 增强日志：阶段耗时与像素统计。
+
 主要改进（v3.16 相较 v3.15）：
     1. 修复 scipy_tin 输出 GeoTIFF 在 ArcGIS Pro 中偶发不可打开的问题：
        - 对齐稳定写盘流程：GDT_Float32 + NoData(-9999.0) + UTM投影 + GeoTransform +
@@ -18,7 +32,8 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.16）
        - 写入结束后显式执行 band.ComputeStatistics(False)、band.FlushCache()、
          out_ds.FlushCache() 并释放数据集句柄，确保缓存落盘与文件结构完整。
     2. scipy_tin 性能优化（在内存约束内）：
-       - 保持“计算并行、写盘串行”的线程安全模型；
+      - 保持"计算并行、写盘串行"的线程安全模型（注：该并行模型在 v3.17 中已因
+        插值器线程不安全问题改为串行）；
        - 分块计算改为预分配坐标缓冲，减少 meshgrid/column_stack 临时数组；
        - 仅对 NaN 像素调用最近邻填充；预构建等值线锁定像素数组，减少循环内开销；
        - 增强日志：输出关键阶段耗时与像素统计。
@@ -218,9 +233,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.16）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.15)
+作者: acao (重构版 v3.17)
 日期: 2026-06-01
-版本: 3.15
+版本: 3.17
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -349,7 +364,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.15）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.17）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -2279,54 +2294,36 @@ class KmlToIaConverter:
                 )
 
             start_time = time.time()
-            logger.info("scipy_tin 插值开始，分块数=%d，并行计算线程数=%d（写盘串行）",
-                        len(chunk_starts), max_workers)
+            logger.info("scipy_tin 插值开始，分块数=%d（串行计算，避免插值器线程不安全崩溃）",
+                        len(chunk_starts))
 
             total_interp_valid = 0
             total_nn_filled = 0
             total_breakline_locked = 0
 
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=max_workers
-            ) as executor:
-                pending: dict = {}
-                submit_ptr = 0
+            for chunk_idx, rs in enumerate(chunk_starts):
+                self._check_cancelled()
+                try:
+                    (row_start_res, chunk_vals,
+                     n_interp_valid_chunk, n_nn_filled_chunk,
+                     n_breakline_locked_chunk) = _compute_chunk_tin(rs)
+                except Exception as exc:
+                    logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
+                    raise
 
-                while submit_ptr < len(chunk_starts) and submit_ptr < max_workers:
-                    rs = chunk_starts[submit_ptr]
-                    pending[rs] = executor.submit(_compute_chunk_tin, rs)
-                    submit_ptr += 1
+                band.WriteArray(chunk_vals, 0, row_start_res)
+                del chunk_vals
 
-                for chunk_idx, rs in enumerate(chunk_starts):
-                    if self._cancel_event is not None and self._cancel_event.is_set():
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise TaskCancelledException("任务已被取消")
-                    try:
-                        (row_start_res, chunk_vals,
-                         n_interp_valid_chunk, n_nn_filled_chunk,
-                         n_breakline_locked_chunk) = pending.pop(rs).result()
-                    except Exception as exc:
-                        logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
-                        raise
+                # 累计统计
+                total_interp_valid += n_interp_valid_chunk
+                total_nn_filled += n_nn_filled_chunk
+                total_breakline_locked += n_breakline_locked_chunk
 
-                    band.WriteArray(chunk_vals, 0, row_start_res)
-                    del chunk_vals
-
-                    # 累计统计
-                    total_interp_valid += n_interp_valid_chunk
-                    total_nn_filled += n_nn_filled_chunk
-                    total_breakline_locked += n_breakline_locked_chunk
-
-                    if submit_ptr < len(chunk_starts):
-                        next_rs = chunk_starts[submit_ptr]
-                        pending[next_rs] = executor.submit(_compute_chunk_tin, next_rs)
-                        submit_ptr += 1
-
-                    row_end = min(rs + chunk_rows, n_rows)
-                    if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
-                        elapsed = time.time() - start_time
-                        logger.info("scipy_tin 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
-                                    row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
+                row_end = min(rs + chunk_rows, n_rows)
+                if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
+                    elapsed = time.time() - start_time
+                    logger.info("scipy_tin 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
+                                row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
 
             band.ComputeStatistics(False)
             band.FlushCache()
