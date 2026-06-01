@@ -305,6 +305,220 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         self.assertIn("scipy_tin_idw_neighbors=8", warning_args[1])
         self.assertIn("scipy_tin_blend_safe_dist=5.0", warning_args[1])
 
+    def test_prepare_breakline_prefers_nearest_contour_for_same_pixel(self):
+        converter = KML_TO_IA.KmlToIaConverter(
+            "dummy.kml", "dummy.tif", interp_method="scipy_tin", resolution=1.0
+        )
+        converter._x_min = 0.0
+        converter._y_max = 1.0
+        converter._res_lon = 1.0
+        converter._res_lat = 1.0
+        converter._n_cols = 1
+        converter._n_rows = 1
+        converter._coord_transform = types.SimpleNamespace(
+            TransformPoints=lambda pts: [(lon, lat, 0.0) for lon, lat in pts]
+        )
+        converter._contours = [
+            {"coordinates": [(0.0, 0.51), (1.0, 0.51)], "ia": 2.0},
+            {"coordinates": [(0.0, 0.99), (1.0, 0.99)], "ia": 5.0},
+        ]
+
+        _, _, breakline_cells, _, _ = converter._prepare_scipy_tin_breakline_support(
+            np.array([0.0, 1.0], dtype=np.float64),
+            np.array([0.0, 0.0], dtype=np.float64),
+            np.array([1.0, 3.0], dtype=np.float32),
+        )
+        self.assertAlmostEqual(float(breakline_cells[0][0]), 2.0, places=6)
+
+    def test_scipy_tin_clamp_uses_interp_values_range(self):
+        converter = KML_TO_IA.KmlToIaConverter(
+            "dummy.kml", "dummy.tif", interp_method="scipy_tin", resolution=1.0
+        )
+        converter._n_cols = 1
+        converter._n_rows = 1
+        converter._x_min = 0.0
+        converter._y_max = 1.0
+        converter._res_lon = 1.0
+        converter._res_lat = 1.0
+        converter._geo_transform = (0, 1, 0, 0, 0, -1)
+        converter._utm_srs = types.SimpleNamespace(ExportToWkt=lambda: "WKT")
+        converter._ensure_file_writable = lambda _: None
+
+        class _FakeBand:
+            def __init__(self):
+                self.arr = None
+
+            def SetNoDataValue(self, _):
+                return None
+
+            def WriteArray(self, arr, _xoff, _yoff):
+                self.arr = np.array(arr, copy=True)
+
+            def ComputeStatistics(self, _):
+                return None
+
+            def FlushCache(self):
+                return None
+
+        class _FakeDataset:
+            def __init__(self):
+                self.band = _FakeBand()
+
+            def SetGeoTransform(self, _):
+                return None
+
+            def SetProjection(self, _):
+                return None
+
+            def GetRasterBand(self, _):
+                return self.band
+
+            def FlushCache(self):
+                return None
+
+        class _FakeDriver:
+            def __init__(self):
+                self.dataset = _FakeDataset()
+
+            def Create(self, *_args, **_kwargs):
+                return self.dataset
+
+        class _FakeTin:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, pts):
+                return np.full(pts.shape[0], 4.0, dtype=np.float64)
+
+        class _FakeNN:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, pts):
+                return np.full(pts.shape[0], 4.0, dtype=np.float64)
+
+        fake_driver = _FakeDriver()
+        fake_gdal = types.SimpleNamespace(
+            GDT_Float32=6,
+            GetDriverByName=lambda _name: fake_driver,
+        )
+
+        with patch.object(KML_TO_IA, "_HAS_SCIPY", True), \
+                patch.object(KML_TO_IA, "_CloughTocher2DInterpolator", _FakeTin, create=True), \
+                patch.object(KML_TO_IA, "_NearestNDInterpolator", _FakeNN, create=True), \
+                patch.object(
+                    KML_TO_IA.KmlToIaConverter,
+                    "_prepare_scipy_tin_breakline_support",
+                    return_value=(
+                        np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64),
+                        np.array([1.0, 5.0], dtype=np.float64),
+                        {},
+                        0,
+                        0,
+                    ),
+                ), \
+                patch.object(KML_TO_IA, "gdal", fake_gdal):
+            converter._run_scipy_tin_interpolation(
+                np.array([0.0, 1.0], dtype=np.float64),
+                np.array([0.0, 0.0], dtype=np.float64),
+                np.array([1.0, 3.0], dtype=np.float32),
+                str(Path(tempfile.gettempdir()) / "scipy_tin_clamp_range_test.tif"),
+            )
+
+        self.assertAlmostEqual(float(fake_driver.dataset.band.arr[0, 0]), 4.0, places=6)
+
+    def test_scipy_tin_keeps_outside_hull_as_nodata(self):
+        converter = KML_TO_IA.KmlToIaConverter(
+            "dummy.kml", "dummy.tif", interp_method="scipy_tin", resolution=1.0
+        )
+        converter._n_cols = 1
+        converter._n_rows = 1
+        converter._x_min = 0.0
+        converter._y_max = 1.0
+        converter._res_lon = 1.0
+        converter._res_lat = 1.0
+        converter._geo_transform = (0, 1, 0, 0, 0, -1)
+        converter._utm_srs = types.SimpleNamespace(ExportToWkt=lambda: "WKT")
+        converter._ensure_file_writable = lambda _: None
+        converter._contours = []
+        converter._coord_transform = None
+
+        class _FakeBand:
+            def __init__(self):
+                self.arr = None
+
+            def SetNoDataValue(self, _):
+                return None
+
+            def WriteArray(self, arr, _xoff, _yoff):
+                self.arr = np.array(arr, copy=True)
+
+            def ComputeStatistics(self, _):
+                return None
+
+            def FlushCache(self):
+                return None
+
+        class _FakeDataset:
+            def __init__(self):
+                self.band = _FakeBand()
+
+            def SetGeoTransform(self, _):
+                return None
+
+            def SetProjection(self, _):
+                return None
+
+            def GetRasterBand(self, _):
+                return self.band
+
+            def FlushCache(self):
+                return None
+
+        class _FakeDriver:
+            def __init__(self):
+                self.dataset = _FakeDataset()
+
+            def Create(self, *_args, **_kwargs):
+                return self.dataset
+
+        class _FakeTri:
+            def find_simplex(self, pts):
+                return np.full(pts.shape[0], -1, dtype=np.int64)
+
+        class _FakeTin:
+            def __init__(self, *_args, **_kwargs):
+                self.tri = _FakeTri()
+
+            def __call__(self, pts):
+                return np.full(pts.shape[0], np.nan, dtype=np.float64)
+
+        class _FakeNN:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, pts):
+                return np.full(pts.shape[0], 8.0, dtype=np.float64)
+
+        fake_driver = _FakeDriver()
+        fake_gdal = types.SimpleNamespace(
+            GDT_Float32=6,
+            GetDriverByName=lambda _name: fake_driver,
+        )
+
+        with patch.object(KML_TO_IA, "_HAS_SCIPY", True), \
+                patch.object(KML_TO_IA, "_CloughTocher2DInterpolator", _FakeTin, create=True), \
+                patch.object(KML_TO_IA, "_NearestNDInterpolator", _FakeNN, create=True), \
+                patch.object(KML_TO_IA, "gdal", fake_gdal):
+            converter._run_scipy_tin_interpolation(
+                np.array([0.0, 1.0], dtype=np.float64),
+                np.array([0.0, 0.0], dtype=np.float64),
+                np.array([1.0, 3.0], dtype=np.float32),
+                str(Path(tempfile.gettempdir()) / "scipy_tin_outside_hull_test.tif"),
+            )
+
+        self.assertAlmostEqual(float(fake_driver.dataset.band.arr[0, 0]), -9999.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
