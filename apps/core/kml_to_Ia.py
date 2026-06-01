@@ -2257,6 +2257,9 @@ class KmlToIaConverter:
 
             ct_tol = 1e-4
             ct_maxiter = 100
+            sample_rate_threshold = 5000.0
+            progress_log_interval_chunks = 5
+            slow_chunk_log_seconds = 30.0
 
             def _build_linear_interp():
                 return _LinearNDInterpolator(
@@ -2318,9 +2321,10 @@ class KmlToIaConverter:
                             "scipy_tin CloughTocher 试评估: 样本像素=%d, 耗时=%.2fs, 速度=%.0f 像素/秒",
                             sample_eval_pts.shape[0], sample_elapsed, sample_rate,
                         )
-                        if sample_rate < 5000.0:
+                        if sample_rate < sample_rate_threshold:
                             fallback_reason = (
-                                "试评估速度过慢（%.0f 像素/秒 < 5000 像素/秒）" % sample_rate
+                                "试评估速度过慢（%.0f 像素/秒 < %.0f 像素/秒）"
+                                % (sample_rate, sample_rate_threshold)
                             )
                     except Exception as exc:
                         fallback_reason = f"试评估异常（{exc}）"
@@ -2500,7 +2504,11 @@ class KmlToIaConverter:
                 row_end = min(rs + chunk_rows, n_rows)
                 chunk_elapsed = time.time() - chunk_start_time
                 elapsed = time.time() - start_time
-                if (chunk_idx + 1) % 5 == 0 or row_end == n_rows or chunk_elapsed > 30.0:
+                if (
+                    (chunk_idx + 1) % progress_log_interval_chunks == 0
+                    or row_end == n_rows
+                    or chunk_elapsed > slow_chunk_log_seconds
+                ):
                     logger.info(
                         "scipy_tin 进度: 已完成 %d/%d 行 (%.1f%%), chunk 用时: %.1fs, 累计已用时: %.1fs",
                         row_end, n_rows, 100.0 * row_end / n_rows, chunk_elapsed, elapsed,
