@@ -998,9 +998,10 @@ class KmlToIaConverter:
 
                 if line.shape[0] >= 2:
                     diff = np.diff(line, axis=0)
-                    dup_tol = max(1e-6, float(self.resolution) * 0.01)
+                    # line 已转换到 UTM 米坐标，阈值单位为“米”
+                    duplicate_tolerance = max(1e-6, float(self.resolution) * 0.01)
                     keep_mask = np.ones(line.shape[0], dtype=bool)
-                    keep_mask[1:] = np.any(np.abs(diff) > dup_tol, axis=1)
+                    keep_mask[1:] = np.any(np.abs(diff) > duplicate_tolerance, axis=1)
                     line = line[keep_mask]
                 if line.shape[0] < 2:
                     del line
@@ -1099,6 +1100,7 @@ class KmlToIaConverter:
             }
 
             rounded = np.round(points, decimals=3)
+            rounding_tol_m = 1e-3
             points, inv = np.unique(rounded, axis=0, return_inverse=True)
             value_sum = np.zeros(points.shape[0], dtype=np.float64)
             value_cnt = np.zeros(points.shape[0], dtype=np.int64)
@@ -1112,9 +1114,9 @@ class KmlToIaConverter:
             conflict_count = int(np.count_nonzero((value_max - value_min) > 1e-6))
             if conflict_count > 0:
                 logger.warning(
-                    "scipy_tin 检测到 %.3f 米去重坐标存在不同 Ia 值（%d 处），"
+                    "scipy_tin 检测到 %.3f 米坐标去重存在不同 Ia 值（%d 处），"
                     "已按同坐标平均值合并。",
-                    1e-3,
+                    rounding_tol_m,
                     conflict_count,
                 )
             n_locked_pixels = int(sum(len(cols) for cols in breakline_cells.values()))
@@ -2328,7 +2330,7 @@ class KmlToIaConverter:
             breakline_row_arrays = {
                 row_idx: (
                     np.fromiter(cells.keys(), dtype=np.int64, count=len(cells)),
-                    np.fromiter(cells.values(), dtype=np.float64, count=len(cells)),
+                    np.fromiter(cells.values(), dtype=np.float32, count=len(cells)),
                 )
                 for row_idx, cells in breakline_cells.items()
             }
@@ -2336,7 +2338,8 @@ class KmlToIaConverter:
             has_find_simplex = tri_obj is not None and hasattr(tri_obj, "find_simplex")
 
             full_grid_points = n_rows * n_cols
-            full_eval_bytes = full_grid_points * 40  # 坐标+插值结果+掩码近似开销
+            # 估算：点坐标(2*8) + 结果值(8) + 掩码/索引/临时数组约 16 字节 ≈ 40 字节/像素
+            full_eval_bytes = full_grid_points * 40
             full_eval_limit = int(self.max_memory_gb * 1e9 * 0.8)
             use_full_grid_eval = full_eval_bytes <= full_eval_limit
 
@@ -2349,9 +2352,9 @@ class KmlToIaConverter:
                 actual_rows = row_end - row_start
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
                 pts = np.empty((actual_rows * n_cols, 2), dtype=np.float64)
-                pts_3d = pts.reshape(actual_rows, n_cols, 2)
-                pts_3d[:, :, 0] = grid_x
-                pts_3d[:, :, 1] = grid_y[:, None]
+                pts_grid = pts.reshape(actual_rows, n_cols, 2)
+                pts_grid[:, :, 0] = grid_x
+                pts_grid[:, :, 1] = grid_y[:, None]
 
                 chunk_vals_tin = interp(pts)
                 if hasattr(chunk_vals_tin, "filled"):
@@ -2419,9 +2422,9 @@ class KmlToIaConverter:
                 self._check_cancelled()
                 grid_y_full = self._y_max - (np.arange(n_rows) + 0.5) * self._res_lat
                 pts_full = np.empty((full_grid_points, 2), dtype=np.float64)
-                pts_full_3d = pts_full.reshape(n_rows, n_cols, 2)
-                pts_full_3d[:, :, 0] = grid_x
-                pts_full_3d[:, :, 1] = grid_y_full[:, None]
+                pts_full_grid = pts_full.reshape(n_rows, n_cols, 2)
+                pts_full_grid[:, :, 0] = grid_x
+                pts_full_grid[:, :, 1] = grid_y_full[:, None]
 
                 vals_full = interp(pts_full)
                 if hasattr(vals_full, "filled"):
