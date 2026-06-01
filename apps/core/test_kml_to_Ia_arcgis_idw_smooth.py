@@ -168,18 +168,16 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         self.assertGreaterEqual(float(arr.min()), 1.0)
         self.assertLessEqual(float(arr.max()), 3.0)
 
-    def test_scipy_tin_idw_smooth_blend_and_clip(self):
+    def test_scipy_tin_uses_breakline_points_and_locks_contour_cells(self):
         converter = KML_TO_IA.KmlToIaConverter(
             kml_path="dummy.kml",
             ia_output_path="dummy.tif",
             interp_method="scipy_tin",
+            resolution=1.0,
             chunk_size=1,
             max_interp_workers=1,
             scipy_tin_smooth=True,
             scipy_tin_smooth_sigma_factor=0.5,
-            scipy_tin_idw_neighbors=1,
-            scipy_tin_idw_power=2.0,
-            scipy_tin_radial_assist=False,
         )
         converter._n_cols = 1
         converter._n_rows = 1
@@ -190,6 +188,12 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         converter._geo_transform = (0, 1, 0, 0, 0, -1)
         converter._utm_srs = types.SimpleNamespace(ExportToWkt=lambda: "WKT")
         converter._ensure_file_writable = lambda _: None
+        converter._coord_transform = types.SimpleNamespace(
+            TransformPoints=lambda pts: [(lon, lat, 0.0) for lon, lat in pts]
+        )
+        converter._contours = [
+            {"coordinates": [(0.0, 0.5), (1.0, 0.5)], "ia": 2.0}
+        ]
 
         class _FakeBand:
             def __init__(self):
@@ -227,9 +231,12 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
             def Create(self, *_args, **_kwargs):
                 return self.dataset
 
+        capture = {}
+
         class _FakeTin:
-            def __init__(self, *_args, **_kwargs):
-                pass
+            def __init__(self, points, values, **_kwargs):
+                capture["points"] = np.array(points, copy=True)
+                capture["values"] = np.array(values, copy=True)
 
             def __call__(self, pts):
                 return np.full(pts.shape[0], 10.0, dtype=np.float64)
@@ -241,12 +248,6 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
             def __call__(self, pts):
                 return np.full(pts.shape[0], 10.0, dtype=np.float64)
 
-        class _FakeTree:
-            def query(self, pts, k):
-                d = np.ones((pts.shape[0], k), dtype=np.float64)
-                i = np.zeros((pts.shape[0], k), dtype=np.int64)
-                return d, i
-
         fake_driver = _FakeDriver()
         fake_gdal = types.SimpleNamespace(
             GDT_Float32=6,
@@ -256,18 +257,42 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         with patch.object(KML_TO_IA, "_HAS_SCIPY", True), \
                 patch.object(KML_TO_IA, "_CloughTocher2DInterpolator", _FakeTin, create=True), \
                 patch.object(KML_TO_IA, "_NearestNDInterpolator", _FakeNN, create=True), \
-                patch.object(KML_TO_IA, "_cKDTree", lambda _pts: _FakeTree(), create=True), \
                 patch.object(KML_TO_IA, "gdal", fake_gdal):
             converter._run_scipy_tin_interpolation(
-                np.array([0.0, 2.0], dtype=np.float64),
+                np.array([0.0, 1.0], dtype=np.float64),
                 np.array([0.0, 0.0], dtype=np.float64),
                 np.array([1.0, 3.0], dtype=np.float32),
-                str(Path(tempfile.gettempdir()) / "scipy_tin_idw_smooth_test.tif"),
+                str(Path(tempfile.gettempdir()) / "scipy_tin_breakline_test.tif"),
             )
 
         arr = fake_driver.dataset.band.arr
         self.assertEqual(arr.shape, (1, 1))
-        self.assertAlmostEqual(float(arr[0, 0]), 3.0, places=6)
+        self.assertGreater(capture["points"].shape[0], 2)
+        self.assertIn(2.0, capture["values"])
+        self.assertAlmostEqual(float(arr[0, 0]), 2.0, places=6)
+
+    def test_scipy_tin_warns_for_legacy_compat_params(self):
+        converter = KML_TO_IA.KmlToIaConverter(
+            kml_path="dummy.kml",
+            ia_output_path="dummy.tif",
+            interp_method="scipy_tin",
+            scipy_tin_smooth=False,
+            scipy_tin_smooth_sigma_factor=0.0,
+            scipy_tin_idw_neighbors=8,
+            scipy_tin_idw_power=2.0,
+            scipy_tin_radial_assist=False,
+            scipy_tin_blend_safe_dist=5.0,
+        )
+
+        with patch.object(KML_TO_IA.logger, "warning") as warning_mock:
+            converter._warn_scipy_tin_compat_params()
+
+        warning_mock.assert_called_once()
+        warning_args = warning_mock.call_args[0]
+        self.assertIn("scipy_tin", warning_args[0])
+        self.assertIn("scipy_tin_smooth=False", warning_args[1])
+        self.assertIn("scipy_tin_idw_neighbors=8", warning_args[1])
+        self.assertIn("scipy_tin_blend_safe_dist=5.0", warning_args[1])
 
 
 if __name__ == "__main__":
