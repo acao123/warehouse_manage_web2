@@ -123,6 +123,7 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         class _FakeDataset:
             def __init__(self):
                 self.band = _FakeBand()
+                self.flush_called = False
 
             def SetGeoTransform(self, _):
                 return None
@@ -132,6 +133,10 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
 
             def GetRasterBand(self, _):
                 return self.band
+
+            def FlushCache(self):
+                self.flush_called = True
+                return None
 
         class _FakeDriver:
             def __init__(self):
@@ -214,6 +219,7 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         class _FakeDataset:
             def __init__(self):
                 self.band = _FakeBand()
+                self.flush_called = False
 
             def SetGeoTransform(self, _):
                 return None
@@ -223,6 +229,10 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
 
             def GetRasterBand(self, _):
                 return self.band
+
+            def FlushCache(self):
+                self.flush_called = True
+                return None
 
         class _FakeDriver:
             def __init__(self):
@@ -270,6 +280,7 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         self.assertGreater(capture["points"].shape[0], 2)
         self.assertIn(2.0, capture["values"])
         self.assertAlmostEqual(float(arr[0, 0]), 2.0, places=6)
+        self.assertTrue(fake_driver.dataset.flush_called)
 
     def test_scipy_tin_warns_for_legacy_compat_params(self):
         converter = KML_TO_IA.KmlToIaConverter(
