@@ -447,12 +447,18 @@
             if(isNaN(lon) || lon < 0){
                 layer.msg('经度必须为非负整数或小数'); return false;
             }
+            if(lon > 180){
+                layer.msg('经度必须在 0 ~ 180 之间，请检查是否与纬度填反'); return false;
+            }
         }
         // 校验纬度
         if(latitude !== ''){
             var lat = parseFloat(latitude);
             if(isNaN(lat) || lat < 0){
                 layer.msg('纬度必须为非负整数或小数'); return false;
+            }
+            if(lat > 90){
+                layer.msg('纬度必须在 0 ~ 90 之间，请检查是否与经度填反'); return false;
             }
         }
         // 校验震级
