@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.17）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.18）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,26 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.17）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.18 相较 v3.17）：
+    1. scipy_tin 逻辑正确性修复：
+       - 断裂线锁定像素不再按“最后覆盖”写入，改为“距离像素中心最近的等值线”优先，
+         避免多条等值线穿过同像素时出现不稳定覆盖；
+       - 值域钳制改为基于实际插值输入点（含断裂线加密点）计算，避免仅按离散采样点
+         计算导致的过度钳制；
+       - CloughTocher -> LinearND 回退链增加二级异常保护，线性插值器也失败时给出
+         明确错误；
+       - 顶点去重容差由固定 1e-9m 调整为 max(1e-6m, 0.01*resolution)，避免米制坐标
+         下的过严阈值造成无意义顶点保留。
+    2. scipy_tin 关键性能优化（保持线程安全）：
+       - 新增“全图一次性向量化调用”路径：在内存允许时一次调用 scipy 插值器，减少
+         Python 分块循环与函数调度开销；
+       - 分块路径改为广播写入坐标缓冲（避免每块 np.tile/np.repeat 大量重复分配）；
+       - 断裂线加密采样改为累计长度 + np.interp 向量化重采样，减少逐线段 Python 循环；
+       - 最近邻填充仅针对凸包内部 NaN，凸包外保留 NoData，降低离散补丁伪影风险。
+    3. 预期效果：
+       - 中大栅格在内存允许时可较 v3.17 获得约 1.5x~3x 加速（取决于网格大小与 NaN 比例）；
+       - 分块模式下也可获得更稳定的 CPU 利用与更低临时内存分配。
 
 主要改进（v3.17 相较 v3.16）：
     1. 修复 scipy_tin 进程崩溃（0xC0000005 / Windows 访问冲突）：
@@ -950,7 +970,8 @@ class KmlToIaConverter:
 
             breakline_point_blocks: List[np.ndarray] = []
             breakline_value_blocks: List[np.ndarray] = []
-            breakline_cells: dict = {}
+            # row -> col -> (ia_value, squared_distance_to_pixel_center)
+            breakline_cells_with_dist: dict = {}
             n_breakline_points = 0
             sample_step = max(float(self.resolution) * 0.5, 1.0)
 
@@ -977,29 +998,46 @@ class KmlToIaConverter:
 
                 if line.shape[0] >= 2:
                     diff = np.diff(line, axis=0)
+                    # line 已转换到 UTM 米坐标，阈值单位为“米”
+                    duplicate_tolerance = max(1e-6, float(self.resolution) * 0.01)
                     keep_mask = np.ones(line.shape[0], dtype=bool)
-                    keep_mask[1:] = np.any(np.abs(diff) > 1e-9, axis=1)
+                    keep_mask[1:] = np.any(np.abs(diff) > duplicate_tolerance, axis=1)
                     line = line[keep_mask]
                 if line.shape[0] < 2:
                     del line
                     continue
 
-                densified_segments: List[np.ndarray] = [line[:1]]
-                for p0, p1 in zip(line[:-1], line[1:]):
-                    seg = p1 - p0
-                    seg_len = float(np.hypot(seg[0], seg[1]))
-                    if seg_len <= 0.0:
-                        continue
-                    n_steps = max(1, int(math.ceil(seg_len / sample_step)))
-                    t_vals = np.linspace(0.0, 1.0, n_steps + 1, dtype=np.float64)[1:]
-                    seg_pts = p0 + np.outer(t_vals, seg)
-                    densified_segments.append(seg_pts)
-
-                if not densified_segments:
+                seg_vec = np.diff(line, axis=0)
+                seg_len = np.hypot(seg_vec[:, 0], seg_vec[:, 1])
+                valid_seg_mask = seg_len > 0.0
+                if not np.any(valid_seg_mask):
                     del line
                     continue
 
-                line_dense = np.vstack(densified_segments).astype(np.float64, copy=False)
+                if not np.all(valid_seg_mask):
+                    keep_vertices = np.ones(line.shape[0], dtype=bool)
+                    keep_vertices[1:] = valid_seg_mask
+                    line = line[keep_vertices]
+                    seg_vec = np.diff(line, axis=0)
+                    seg_len = np.hypot(seg_vec[:, 0], seg_vec[:, 1])
+                    if line.shape[0] < 2 or seg_len.size == 0:
+                        del line
+                        continue
+
+                cum_len = np.concatenate(([0.0], np.cumsum(seg_len)))
+                total_len = float(cum_len[-1])
+                if total_len <= 0.0:
+                    del line, cum_len, seg_len, seg_vec
+                    continue
+
+                sample_d = np.arange(0.0, total_len, sample_step, dtype=np.float64)
+                if sample_d.size == 0 or sample_d[-1] < total_len:
+                    sample_d = np.append(sample_d, total_len)
+
+                dense_x = np.interp(sample_d, cum_len, line[:, 0])
+                dense_y = np.interp(sample_d, cum_len, line[:, 1])
+                line_dense = np.column_stack([dense_x, dense_y]).astype(np.float64, copy=False)
+
                 ia_float = float(ia_val)
                 line_values = np.full(line_dense.shape[0], ia_float, dtype=np.float64)
                 breakline_point_blocks.append(line_dense)
@@ -1012,15 +1050,39 @@ class KmlToIaConverter:
                     (rows >= 0) & (rows < self._n_rows) &
                     (cols >= 0) & (cols < self._n_cols)
                 )
-                for row_idx, col_idx in zip(rows[valid_mask], cols[valid_mask]):
-                    row_cells = breakline_cells.setdefault(int(row_idx), {})
-                    row_cells[int(col_idx)] = ia_float
+                if np.any(valid_mask):
+                    rows_valid = rows[valid_mask]
+                    cols_valid = cols[valid_mask]
+                    pts_valid = line_dense[valid_mask]
+                    rc = np.column_stack([rows_valid, cols_valid])
+                    uniq_rc, inv = np.unique(rc, axis=0, return_inverse=True)
+
+                    pix_x = self._x_min + (uniq_rc[:, 1].astype(np.float64) + 0.5) * self._res_lon
+                    pix_y = self._y_max - (uniq_rc[:, 0].astype(np.float64) + 0.5) * self._res_lat
+                    dist2_all = (
+                        (pts_valid[:, 0] - pix_x[inv]) ** 2 +
+                        (pts_valid[:, 1] - pix_y[inv]) ** 2
+                    )
+                    min_dist2 = np.full(uniq_rc.shape[0], np.inf, dtype=np.float64)
+                    np.minimum.at(min_dist2, inv, dist2_all)
+
+                    for (row_i, col_i), dist2 in zip(uniq_rc, min_dist2):
+                        row_i_int = int(row_i)
+                        col_i_int = int(col_i)
+                        row_cells = breakline_cells_with_dist.setdefault(row_i_int, {})
+                        old = row_cells.get(col_i_int)
+                        if old is None or dist2 < old[1]:
+                            row_cells[col_i_int] = (ia_float, float(dist2))
+
+                    del rows_valid, cols_valid, pts_valid, rc, uniq_rc
+                    del inv, pix_x, pix_y, dist2_all, min_dist2
 
                 logger.debug(
                     "scipy_tin 断裂线[%d] 加密采样完成: 原始顶点=%d, 加密后=%d, Ia=%.6f",
                     contour_idx, line.shape[0], line_dense.shape[0], ia_float,
                 )
                 del cols, rows, valid_mask, line_values, line_dense, line
+                del seg_vec, seg_len, cum_len, sample_d, dense_x, dense_y
 
             if not breakline_point_blocks:
                 logger.warning(
@@ -1032,16 +1094,36 @@ class KmlToIaConverter:
             breakline_values = np.concatenate(breakline_value_blocks)
             points = np.vstack([base_points, breakline_points])
             point_values = np.concatenate([base_values, breakline_values])
+            breakline_cells = {
+                row_i: {col_i: ia_dist[0] for col_i, ia_dist in cols_map.items()}
+                for row_i, cols_map in breakline_cells_with_dist.items()
+            }
 
             rounded = np.round(points, decimals=3)
-            _, unique_idx = np.unique(rounded, axis=0, return_index=True)
-            unique_idx.sort()
-            points = points[unique_idx]
-            point_values = point_values[unique_idx]
+            rounding_tol_m = 1e-3
+            points, inv = np.unique(rounded, axis=0, return_inverse=True)
+            value_sum = np.zeros(points.shape[0], dtype=np.float64)
+            value_cnt = np.zeros(points.shape[0], dtype=np.int64)
+            value_min = np.full(points.shape[0], np.inf, dtype=np.float64)
+            value_max = np.full(points.shape[0], -np.inf, dtype=np.float64)
+            np.add.at(value_sum, inv, point_values)
+            np.add.at(value_cnt, inv, 1)
+            np.minimum.at(value_min, inv, point_values)
+            np.maximum.at(value_max, inv, point_values)
+            point_values = value_sum / np.maximum(value_cnt, 1)
+            conflict_count = int(np.count_nonzero((value_max - value_min) > 1e-6))
+            if conflict_count > 0:
+                logger.warning(
+                    "scipy_tin 检测到 %.3f 米坐标去重存在不同 Ia 值（%d 处），"
+                    "已按同坐标平均值合并。",
+                    rounding_tol_m,
+                    conflict_count,
+                )
             n_locked_pixels = int(sum(len(cols) for cols in breakline_cells.values()))
 
             del breakline_point_blocks, breakline_value_blocks
-            del breakline_points, breakline_values, rounded, unique_idx
+            del breakline_points, breakline_values, rounded, inv
+            del value_sum, value_cnt, value_min, value_max, breakline_cells_with_dist
             gc.collect()
 
             logger.info(
@@ -2122,10 +2204,10 @@ class KmlToIaConverter:
                - 写入完成后执行 band.ComputeStatistics(False)、band.FlushCache()、
                  out_ds.FlushCache() 并释放句柄。
             2. 性能优化且保持质量：
-               - 计算并行、写盘串行（避免并行写盘竞争）；
-               - 分块内复用/预分配坐标缓冲，减少临时数组；
-               - 仅对 TIN 返回 NaN 的像素执行最近邻填充；
-               - 最终值钳制到输入样本 [min(values), max(values)]。
+               - 内存允许时优先全图一次性向量化调用 scipy 插值器；
+               - 分块路径使用广播写入坐标缓冲，减少 np.tile/np.repeat 分配；
+               - 仅对凸包内部 TIN NaN 像素执行最近邻填充，凸包外保留 NoData；
+               - 最终值钳制到实际插值输入 [min(interp_values), max(interp_values)]。
 
         ArcGIS Pro 参考流程对应关系：
             1. Create TIN(Hard Line)：
@@ -2139,8 +2221,8 @@ class KmlToIaConverter:
 
         其他约束：
             - 输出仍为 30m（或 self.resolution）分辨率 GeoTIFF；
-            - 结果值钳制到输入 Ia 的 [min(values), max(values)]；
-            - 约束三角网/凸包外部像素使用最近邻填充；
+            - 结果值钳制到插值输入 Ia 的有效范围；
+            - 约束三角网/凸包外部像素保留 NoData；
             - 对等值线穿过的栅格像素执行 Ia 锁定，强化 Hard Line 效果。
 
         参数:
@@ -2165,11 +2247,11 @@ class KmlToIaConverter:
             self._warn_scipy_tin_compat_params()
             prep_start_time = time.time()
 
-            v_min = float(np.min(values))
-            v_max = float(np.max(values))
             points, interp_values, breakline_cells, n_breakline_points, n_locked_pixels = (
                 self._prepare_scipy_tin_breakline_support(x_arr, y_arr, values)
             )
+            v_min = float(np.min(interp_values))
+            v_max = float(np.max(interp_values))
             prep_elapsed = time.time() - prep_start_time
             logger.info("scipy_tin 断裂线约束准备耗时: %.2fs", prep_elapsed)
 
@@ -2190,11 +2272,17 @@ class KmlToIaConverter:
                     "ArcGIS Natural Neighbors 语义将退化为线性 TIN。",
                     exc,
                 )
-                interp = _LinearNDInterpolator(
-                    points, interp_values,
-                    fill_value=np.nan,
-                    rescale=True,
-                )
+                try:
+                    interp = _LinearNDInterpolator(
+                        points, interp_values,
+                        fill_value=np.nan,
+                        rescale=True,
+                    )
+                except Exception as linear_exc:
+                    raise RuntimeError(
+                        "scipy_tin 插值器构建失败：CloughTocher 与 LinearND 均不可用，"
+                        "请检查输入点是否退化（共线/重复过多）。"
+                    ) from linear_exc
             interp_build_elapsed = time.time() - interp_build_start_time
             logger.info(
                 "scipy_tin 已对齐 ArcGIS Create TIN(Hard Line) + "
@@ -2246,6 +2334,14 @@ class KmlToIaConverter:
                 )
                 for row_idx, cells in breakline_cells.items()
             }
+            tri_obj = getattr(interp, "tri", None)
+            has_find_simplex = tri_obj is not None and hasattr(tri_obj, "find_simplex")
+
+            full_grid_points = n_rows * n_cols
+            # 估算：点坐标(2*8) + 结果值(8) + 掩码/索引/临时数组约 16 字节 ≈ 40 字节/像素
+            full_eval_bytes = full_grid_points * 40
+            full_eval_limit = int(self.max_memory_gb * 1e9 * 0.8)
+            use_full_grid_eval = full_eval_bytes <= full_eval_limit
 
             # 内层函数：计算单个分块（高阶 TIN + 最近邻填充 + 等值线锁定）
             # 返回 (row_start, result_2d, n_interp_valid, n_nn_filled, n_breakline_locked)
@@ -2256,8 +2352,9 @@ class KmlToIaConverter:
                 actual_rows = row_end - row_start
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
                 pts = np.empty((actual_rows * n_cols, 2), dtype=np.float64)
-                pts[:, 0] = np.tile(grid_x, actual_rows)
-                pts[:, 1] = np.repeat(grid_y, n_cols)
+                pts_grid = pts.reshape(actual_rows, n_cols, 2)
+                pts_grid[:, :, 0] = grid_x
+                pts_grid[:, :, 1] = grid_y[:, None]
 
                 chunk_vals_tin = interp(pts)
                 if hasattr(chunk_vals_tin, "filled"):
@@ -2265,17 +2362,28 @@ class KmlToIaConverter:
                 chunk_vals_tin = np.asarray(chunk_vals_tin, dtype=np.float64)
 
                 nan_mask = ~np.isfinite(chunk_vals_tin)
-                n_nn_filled = int(np.count_nonzero(nan_mask))
-                n_interp_valid = int(chunk_vals_tin.size - n_nn_filled)
+                n_nan = int(np.count_nonzero(nan_mask))
+                n_interp_valid = int(chunk_vals_tin.size - n_nan)
+                n_nn_filled = 0
 
-                if n_nn_filled > 0:
-                    nan_pts = pts[nan_mask]
-                    chunk_vals_tin[nan_mask] = nn_interp(nan_pts)
-                    del nan_pts
+                if n_nan > 0:
+                    nan_idx = np.flatnonzero(nan_mask)
+                    nan_pts = pts[nan_idx]
+                    if has_find_simplex:
+                        inside_nan = tri_obj.find_simplex(nan_pts) >= 0
+                        fill_idx = nan_idx[inside_nan]
+                    else:
+                        fill_idx = nan_idx
+                    n_nn_filled = int(fill_idx.size)
+                    if n_nn_filled > 0:
+                        chunk_vals_tin[fill_idx] = nn_interp(pts[fill_idx])
+                    del nan_idx, nan_pts, fill_idx
+                    if has_find_simplex:
+                        del inside_nan
 
                 del pts
 
-                chunk_vals_tin = chunk_vals_tin.reshape(actual_rows, n_cols).astype(np.float32)
+                chunk_vals_tin = chunk_vals_tin.reshape(actual_rows, n_cols)
                 n_breakline_locked = 0
                 for local_row, global_row in enumerate(range(row_start, row_end)):
                     row_arrays = breakline_row_arrays.get(global_row)
@@ -2288,42 +2396,94 @@ class KmlToIaConverter:
                 nodata_mask = (~np.isfinite(chunk_vals_tin)) | (chunk_vals_tin < -9998.0)
                 np.clip(chunk_vals_tin, v_min, v_max, out=chunk_vals_tin)
                 chunk_vals_tin[nodata_mask] = -9999.0
+                chunk_vals_tin = chunk_vals_tin.astype(np.float32, copy=False)
                 return (
                     row_start, chunk_vals_tin,
                     n_interp_valid, n_nn_filled, n_breakline_locked,
                 )
 
             start_time = time.time()
-            logger.info("scipy_tin 插值开始，分块数=%d（串行计算，避免插值器线程不安全崩溃）",
-                        len(chunk_starts))
+            if use_full_grid_eval:
+                logger.info(
+                    "scipy_tin 插值开始：采用全图一次性向量化调用（像素=%d, 估算内存=%.2fGB）。",
+                    full_grid_points, full_eval_bytes / 1e9,
+                )
+            else:
+                logger.info(
+                    "scipy_tin 插值开始：采用分块串行计算（分块数=%d，避免插值器线程不安全崩溃）。",
+                    len(chunk_starts),
+                )
 
             total_interp_valid = 0
             total_nn_filled = 0
             total_breakline_locked = 0
 
-            for chunk_idx, rs in enumerate(chunk_starts):
+            if use_full_grid_eval:
                 self._check_cancelled()
-                try:
-                    (row_start_res, chunk_vals,
-                     n_interp_valid_chunk, n_nn_filled_chunk,
-                     n_breakline_locked_chunk) = _compute_chunk_tin(rs)
-                except Exception as exc:
-                    logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
-                    raise
+                grid_y_full = self._y_max - (np.arange(n_rows) + 0.5) * self._res_lat
+                pts_full = np.empty((full_grid_points, 2), dtype=np.float64)
+                pts_full_grid = pts_full.reshape(n_rows, n_cols, 2)
+                pts_full_grid[:, :, 0] = grid_x
+                pts_full_grid[:, :, 1] = grid_y_full[:, None]
 
-                band.WriteArray(chunk_vals, 0, row_start_res)
-                del chunk_vals
+                vals_full = interp(pts_full)
+                if hasattr(vals_full, "filled"):
+                    vals_full = vals_full.filled(np.nan)
+                vals_full = np.asarray(vals_full, dtype=np.float64)
+                nan_mask_full = ~np.isfinite(vals_full)
+                n_nan_full = int(np.count_nonzero(nan_mask_full))
+                total_interp_valid = int(vals_full.size - n_nan_full)
 
-                # 累计统计
-                total_interp_valid += n_interp_valid_chunk
-                total_nn_filled += n_nn_filled_chunk
-                total_breakline_locked += n_breakline_locked_chunk
+                if n_nan_full > 0:
+                    nan_idx_full = np.flatnonzero(nan_mask_full)
+                    nan_pts_full = pts_full[nan_idx_full]
+                    if has_find_simplex:
+                        inside_nan_full = tri_obj.find_simplex(nan_pts_full) >= 0
+                        fill_idx_full = nan_idx_full[inside_nan_full]
+                    else:
+                        fill_idx_full = nan_idx_full
+                    total_nn_filled = int(fill_idx_full.size)
+                    if total_nn_filled > 0:
+                        vals_full[fill_idx_full] = nn_interp(pts_full[fill_idx_full])
+                    del nan_idx_full, nan_pts_full, fill_idx_full
+                    if has_find_simplex:
+                        del inside_nan_full
 
-                row_end = min(rs + chunk_rows, n_rows)
-                if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
-                    elapsed = time.time() - start_time
-                    logger.info("scipy_tin 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
-                                row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
+                vals_full = vals_full.reshape(n_rows, n_cols)
+                for global_row, row_arrays in breakline_row_arrays.items():
+                    cols, vals = row_arrays
+                    vals_full[global_row, cols] = vals
+                    total_breakline_locked += int(cols.size)
+
+                nodata_mask_full = (~np.isfinite(vals_full)) | (vals_full < -9998.0)
+                np.clip(vals_full, v_min, v_max, out=vals_full)
+                vals_full[nodata_mask_full] = -9999.0
+                band.WriteArray(vals_full.astype(np.float32, copy=False), 0, 0)
+                del vals_full, pts_full, grid_y_full, nan_mask_full, nodata_mask_full
+            else:
+                for chunk_idx, rs in enumerate(chunk_starts):
+                    self._check_cancelled()
+                    try:
+                        (row_start_res, chunk_vals,
+                         n_interp_valid_chunk, n_nn_filled_chunk,
+                         n_breakline_locked_chunk) = _compute_chunk_tin(rs)
+                    except Exception as exc:
+                        logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
+                        raise
+
+                    band.WriteArray(chunk_vals, 0, row_start_res)
+                    del chunk_vals
+
+                    # 累计统计
+                    total_interp_valid += n_interp_valid_chunk
+                    total_nn_filled += n_nn_filled_chunk
+                    total_breakline_locked += n_breakline_locked_chunk
+
+                    row_end = min(rs + chunk_rows, n_rows)
+                    if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
+                        elapsed = time.time() - start_time
+                        logger.info("scipy_tin 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
+                                    row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
 
             band.ComputeStatistics(False)
             band.FlushCache()
@@ -2341,7 +2501,7 @@ class KmlToIaConverter:
             total_time = time.time() - start_time
             all_elapsed = time.time() - total_start_time
             logger.info(
-                "scipy_tin 插值完成（约束三角网外部像素使用最近邻填充），"
+                "scipy_tin 插值完成（凸包外保留 NoData，仅对凸包内 NaN 使用最近邻填充），"
                 "分块耗时: %.1fs，总耗时: %.1fs, 已保存: %s",
                 total_time, all_elapsed, output_tif_path,
             )
@@ -2352,8 +2512,8 @@ class KmlToIaConverter:
             logger.error("scipy_tin 插值失败: %s", exc, exc_info=True)
             raise
         finally:
-            out_ds = None
             band = None
+            out_ds = None
             if interp is not None:
                 del interp
             if nn_interp is not None:
