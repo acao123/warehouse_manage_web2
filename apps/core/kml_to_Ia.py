@@ -21,6 +21,7 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.16）
        - 保持“计算并行、写盘串行”的线程安全模型；
        - 分块计算改为预分配坐标缓冲，减少 meshgrid/column_stack 临时数组；
        - 仅对 NaN 像素调用最近邻填充；预构建等值线锁定像素数组，减少循环内开销；
+       - CloughTocher 参数调优（tol=1e-5、maxiter=200）以平衡计算耗时与平滑质量；
        - 增强日志：输出关键阶段耗时与像素统计。
 
 主要改进（v3.15 相较 v3.14）：
@@ -2161,6 +2162,8 @@ class KmlToIaConverter:
             interp_method_name = "CloughTocher2DInterpolator"
             interp_build_start_time = time.time()
             try:
+                # tol/maxiter 相比旧值(1e-6/400)适度放宽：
+                # 在保持平滑质量与值域稳定的同时，降低大样本下的迭代开销。
                 interp = _CloughTocher2DInterpolator(
                     points, interp_values,
                     fill_value=np.nan,
@@ -2348,8 +2351,7 @@ class KmlToIaConverter:
             logger.error("scipy_tin 插值失败: %s", exc, exc_info=True)
             raise
         finally:
-            if band is not None:
-                band = None
+            band = None
             out_ds = None
             if interp is not None:
                 del interp
