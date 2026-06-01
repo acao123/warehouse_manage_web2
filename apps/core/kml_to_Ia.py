@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.14）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.15）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,16 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.14）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.15 相较 v3.14）：
+    1. scipy_tin 重构为“等值线 Hard Line 约束采样 + 自然邻域语义平滑栅格化”：
+       - 不再只依赖离散采样点；会直接读取完整等值线几何并转换到 UTM 米坐标。
+       - 按输出分辨率对每条等值线折线段做加密采样，作为硬断裂线约束点加入 TIN。
+       - 栅格化阶段优先使用 CloughTocher 高阶曲面，作为 ArcGIS Pro
+         Create TIN(Hard Line) + TIN To Raster(NATURAL_NEIGHBORS, CELLSIZE=30)
+         的稳定数学近似；若构建失败则回退到 LinearNDInterpolator，并记录日志。
+       - 对栅格中的等值线像素执行“断裂线锁定”，确保等值线位置保持原始 Ia 值；
+         约束三角网外部像素仍按最近邻填充，并输出像素统计。
 
 主要改进（v3.14 相较 v3.13）：
     1. 彻底修复中心平顶（根因修复）：
@@ -196,13 +206,13 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.14）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.14)
-日期: 2026-05-29
-版本: 3.14
+作者: acao (重构版 v3.15)
+日期: 2026-06-01
+版本: 3.15
 QGIS版本: 3.40.15
 
 支持插值方法:
-    - 'scipy_tin' : scipy Delaunay三角网插值（默认，平滑无突变，推荐）
+    - 'scipy_tin' : 完整等值线 Hard Line 约束 + 自然邻域语义平滑 TIN（默认，推荐）
     - 'radial'    : 径向距离1D插值（专为同心圈优化，完美单调递增）
     - 'scipy_idw' : scipy RBFInterpolator（速度快，支持邻近点限制）
     - 'kriging'   : 简化版 Empirical Bayesian Kriging（与 ArcGIS EBK 对齐，需 scipy + pykrige）
@@ -327,7 +337,7 @@ class TaskCancelledException(Exception):
 
 class KmlToIaConverter:
     """
-    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.14）
+    KML转Ia栅格文件转换器（QGIS 3.40.15，内存优化版 v3.15）
 
     将地震局提供的KML格式PGA等值线文件，经过解析、插值计算后，
     输出Ia.tif栅格文件（可选输出PGA.tif，使用矢量栅格化非插值）。
@@ -344,10 +354,10 @@ class KmlToIaConverter:
         - 所有关键方法添加try-except + logger日志 + 异常向上抛出
 
     支持的插值方法:
-        - 'scipy_tin'（默认/推荐）：scipy Delaunay三角网插值，C1/C0连续；
-          TIN 外部用 NearestNDInterpolator（纯 scipy TIN/Voronoi 体系）填充；
-          可选启用局部 IDW 式平滑重塑（scipy_tin_smooth_sigma_factor>0）：
-          采用“径向趋势 + 局部IDW残差”与 TIN 结果融合，抑制条带/环带
+        - 'scipy_tin'（默认/推荐）：完整等值线 Hard Line 约束采样 +
+          ArcGIS Natural Neighbors 语义平滑栅格化；
+          当前在 scipy 体系下优先使用 CloughTocher 高阶曲面近似自然邻域，
+          并对等值线像素执行锁定；三角网外部用 NearestNDInterpolator 填充
         - 'radial'     ：径向距离1D插值，专为同心圈优化，完美单调递增
         - 'scipy_idw'  ：scipy RBF插值，速度快，支持邻近点限制，需安装scipy
         - 'kriging'    ：真正对齐 ArcGIS EBK 的子集化克里金，支持多次模拟
@@ -360,9 +370,9 @@ class KmlToIaConverter:
             kml_path="path/to/source.kml",
             ia_output_path="path/to/Ia.tif",
             interp_method='scipy_tin',
-            scipy_tin_smooth=True,
-            scipy_tin_smooth_sigma_factor=0.5,  # v3.15：IDW式平滑强度（0=禁用）
-            scipy_tin_radial_assist=True,       # v3.8 新增：径向辅助场重塑（消除同心环带，推荐）
+            scipy_tin_smooth=True,              # 兼容保留；当前固定采用高阶平滑 TIN
+            scipy_tin_smooth_sigma_factor=0.5,  # 兼容保留；非默认值仅记录弃用提示
+            scipy_tin_radial_assist=True,       # 兼容保留；非默认值仅记录弃用提示
             sample_interval=5,
             max_sample_points=50000,
         )
@@ -835,6 +845,192 @@ class KmlToIaConverter:
             raise
         except Exception as exc:
             logger.error("_prepare_sample_points 异常: %s", exc, exc_info=True)
+            raise
+
+    def _warn_scipy_tin_compat_params(self) -> None:
+        """记录 scipy_tin 兼容参数的弃用提示，不影响现有调用方。"""
+        compat_params = []
+        if self.scipy_tin_smooth is not True:
+            compat_params.append(
+                f"scipy_tin_smooth={self.scipy_tin_smooth}"
+            )
+        if self.scipy_tin_smooth_sigma_factor != 0.5:
+            compat_params.append(
+                f"scipy_tin_smooth_sigma_factor={self.scipy_tin_smooth_sigma_factor}"
+            )
+        if self.scipy_tin_idw_neighbors != 24:
+            compat_params.append(
+                f"scipy_tin_idw_neighbors={self.scipy_tin_idw_neighbors}"
+            )
+        if abs(float(self.scipy_tin_idw_power) - 1.5) > 1e-12:
+            compat_params.append(
+                f"scipy_tin_idw_power={self.scipy_tin_idw_power}"
+            )
+        if self.scipy_tin_radial_assist is not True:
+            compat_params.append(
+                f"scipy_tin_radial_assist={self.scipy_tin_radial_assist}"
+            )
+        if self.scipy_tin_blend_safe_dist is not None:
+            compat_params.append(
+                f"scipy_tin_blend_safe_dist={self.scipy_tin_blend_safe_dist}"
+            )
+        if self.scipy_tin_blend_far_dist is not None:
+            compat_params.append(
+                f"scipy_tin_blend_far_dist={self.scipy_tin_blend_far_dist}"
+            )
+        if abs(float(self.scipy_tin_density_safe_factor) - 0.25) > 1e-12:
+            compat_params.append(
+                f"scipy_tin_density_safe_factor={self.scipy_tin_density_safe_factor}"
+            )
+        if abs(float(self.scipy_tin_density_far_factor) - 1.5) > 1e-12:
+            compat_params.append(
+                f"scipy_tin_density_far_factor={self.scipy_tin_density_far_factor}"
+            )
+        if compat_params:
+            logger.warning(
+                "scipy_tin 已切换为“等值线 Hard Line 约束 + 自然邻域语义平滑”实现；"
+                "以下旧参数仅为向后兼容保留，当前不会改变算法行为: %s",
+                ", ".join(compat_params),
+            )
+
+    def _prepare_scipy_tin_breakline_support(
+        self,
+        x_arr: np.ndarray,
+        y_arr: np.ndarray,
+        values: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, dict, int, int]:
+        """
+        为 scipy_tin 构建等值线 Hard Line 约束采样点与等值线锁定像素。
+
+        返回:
+            tuple:
+                - points: 插值输入点坐标 (N, 2)，UTM 米坐标
+                - point_values: 对应 Ia 值 (N,)
+                - breakline_cells: {row: {col: ia_value}} 等值线锁定像素
+                - n_breakline_points: 由完整等值线加密得到的断裂线采样点数
+                - n_locked_pixels: 栅格中被等值线锁定的唯一像素数
+        """
+        try:
+            base_points = np.column_stack([x_arr, y_arr]).astype(np.float64, copy=False)
+            base_values = values.astype(np.float64, copy=False)
+
+            if not self._contours or self._coord_transform is None:
+                logger.warning(
+                    "scipy_tin 未检测到完整等值线几何，回退为离散采样点插值；"
+                    "无法施加 Hard Line 断裂线约束。"
+                )
+                return base_points, base_values, {}, 0, 0
+
+            breakline_point_blocks: List[np.ndarray] = []
+            breakline_value_blocks: List[np.ndarray] = []
+            breakline_cells: dict = {}
+            n_breakline_points = 0
+            sample_step = max(float(self.resolution) * 0.5, 1.0)
+
+            for contour_idx, contour in enumerate(self._contours):
+                self._check_cancelled()
+                coords = contour.get('coordinates') or []
+                ia_val = contour.get('ia')
+                if ia_val is None or len(coords) < 2:
+                    continue
+
+                pts_lonlat = [
+                    (float(lon), float(lat))
+                    for lon, lat in coords
+                ]
+                transformed = self._coord_transform.TransformPoints(pts_lonlat)
+                line = np.array(
+                    [(float(pt[0]), float(pt[1])) for pt in transformed],
+                    dtype=np.float64,
+                )
+                del transformed, pts_lonlat
+
+                if line.shape[0] < 2:
+                    del line
+                    continue
+
+                if line.shape[0] >= 2:
+                    diff = np.diff(line, axis=0)
+                    keep_mask = np.ones(line.shape[0], dtype=bool)
+                    keep_mask[1:] = np.any(np.abs(diff) > 1e-9, axis=1)
+                    line = line[keep_mask]
+                if line.shape[0] < 2:
+                    del line
+                    continue
+
+                densified_segments: List[np.ndarray] = [line[:1]]
+                for p0, p1 in zip(line[:-1], line[1:]):
+                    seg = p1 - p0
+                    seg_len = float(np.hypot(seg[0], seg[1]))
+                    if seg_len <= 0.0:
+                        continue
+                    n_steps = max(1, int(math.ceil(seg_len / sample_step)))
+                    t_vals = np.linspace(0.0, 1.0, n_steps + 1, dtype=np.float64)[1:]
+                    seg_pts = p0 + np.outer(t_vals, seg)
+                    densified_segments.append(seg_pts)
+
+                if not densified_segments:
+                    del line
+                    continue
+
+                line_dense = np.vstack(densified_segments).astype(np.float64, copy=False)
+                ia_float = float(ia_val)
+                line_values = np.full(line_dense.shape[0], ia_float, dtype=np.float64)
+                breakline_point_blocks.append(line_dense)
+                breakline_value_blocks.append(line_values)
+                n_breakline_points += int(line_dense.shape[0])
+
+                cols = np.floor((line_dense[:, 0] - self._x_min) / self._res_lon).astype(np.int64)
+                rows = np.floor((self._y_max - line_dense[:, 1]) / self._res_lat).astype(np.int64)
+                valid_mask = (
+                    (rows >= 0) & (rows < self._n_rows) &
+                    (cols >= 0) & (cols < self._n_cols)
+                )
+                for row_idx, col_idx in zip(rows[valid_mask], cols[valid_mask]):
+                    row_cells = breakline_cells.setdefault(int(row_idx), {})
+                    row_cells[int(col_idx)] = ia_float
+
+                logger.debug(
+                    "scipy_tin 断裂线[%d] 加密采样完成: 原始顶点=%d, 加密后=%d, Ia=%.6f",
+                    contour_idx, line.shape[0], line_dense.shape[0], ia_float,
+                )
+                del cols, rows, valid_mask, line_values, line_dense, line
+                gc.collect()
+
+            if not breakline_point_blocks:
+                logger.warning(
+                    "scipy_tin 未生成有效的断裂线加密采样点，回退为离散采样点插值。"
+                )
+                return base_points, base_values, {}, 0, 0
+
+            breakline_points = np.vstack(breakline_point_blocks)
+            breakline_values = np.concatenate(breakline_value_blocks)
+            points = np.vstack([base_points, breakline_points])
+            point_values = np.concatenate([base_values, breakline_values])
+
+            rounded = np.round(points, decimals=3)
+            _, unique_idx = np.unique(rounded, axis=0, return_index=True)
+            unique_idx.sort()
+            points = points[unique_idx]
+            point_values = point_values[unique_idx]
+            n_locked_pixels = int(sum(len(cols) for cols in breakline_cells.values()))
+
+            del breakline_point_blocks, breakline_value_blocks
+            del breakline_points, breakline_values, rounded, unique_idx
+            gc.collect()
+
+            logger.info(
+                "scipy_tin 断裂线约束准备完成: 等值线=%d, 加密断裂线采样点=%d, "
+                "去重后插值点=%d, 锁定像素=%d, 采样步长≈%.2fm",
+                len(self._contours), n_breakline_points, len(points),
+                n_locked_pixels, sample_step,
+            )
+            return points, point_values, breakline_cells, n_breakline_points, n_locked_pixels
+
+        except TaskCancelledException:
+            raise
+        except Exception as exc:
+            logger.error("准备 scipy_tin 断裂线约束失败: %s", exc, exc_info=True)
             raise
 
     # ==================== 栅格网格构建 ====================
@@ -1895,12 +2091,23 @@ class KmlToIaConverter:
         output_tif_path: str,
     ) -> None:
         """
-        使用原生 scipy Delaunay 三角网（TIN）插值，分块并行写入 GeoTIFF。
+        使用“完整等值线 Hard Line 约束采样 + 自然邻域语义平滑”方式执行 scipy_tin。
 
-        已删除所有平滑处理，使用原生 scipy TIN 插值：
-            - 主插值器为 TIN（CloughTocher/Linear），直接对原始 Ia 值插值；
-            - 凸包外 NaN 像素用 NearestNDInterpolator 填充；
-            - 无径向辅助场重塑、无 IDW 融合、无高斯平滑。
+        ArcGIS Pro 参考流程对应关系：
+            1. Create TIN(Hard Line)：
+               - 从 self._contours 读取完整等值线几何并转换到 UTM 米坐标；
+               - 按输出分辨率对折线段加密采样，把整条等值线作为硬约束点带入 TIN。
+            2. TIN To Raster(NATURAL_NEIGHBORS, CELLSIZE=30)：
+               - scipy 无原生 Sibson Natural Neighbors；
+               - 当前优先使用 CloughTocher2DInterpolator 构建高阶平滑曲面，
+                 作为自然邻域语义的稳定近似；
+               - 若 CloughTocher 构建失败，则回退到 LinearNDInterpolator，并记录日志。
+
+        其他约束：
+            - 输出仍为 30m（或 self.resolution）分辨率 GeoTIFF；
+            - 结果值钳制到输入 Ia 的 [min(values), max(values)]；
+            - 约束三角网/凸包外部像素使用最近邻填充；
+            - 对等值线穿过的栅格像素执行 Ia 锁定，强化 Hard Line 效果。
 
         参数:
             x_arr: 采样点X坐标（UTM easting，米）
@@ -1920,34 +2127,50 @@ class KmlToIaConverter:
         band = None
 
         try:
+            self._warn_scipy_tin_compat_params()
+            self._check_cancelled()
+
             v_min = float(np.min(values))
             v_max = float(np.max(values))
-            points = np.column_stack([x_arr, y_arr])
+            points, interp_values, breakline_cells, n_breakline_points, n_locked_pixels = (
+                self._prepare_scipy_tin_breakline_support(x_arr, y_arr, values)
+            )
 
-            # 构建 TIN 主插值器（直接对原始值插值）
-            if self.scipy_tin_smooth:
+            interp_method_name = "CloughTocher2DInterpolator"
+            try:
                 interp = _CloughTocher2DInterpolator(
-                    points, values.astype(np.float64),
+                    points, interp_values,
                     fill_value=np.nan,
                     tol=1e-6,
                     maxiter=400,
                     rescale=True,
                 )
-                logger.info("使用 scipy CloughTocher TIN 插值（C1连续，rescale=True）")
-            else:
+            except Exception as exc:
+                interp_method_name = "LinearNDInterpolator"
+                logger.warning(
+                    "scipy_tin 高阶平滑曲面构建失败（%s），回退到 LinearNDInterpolator。"
+                    "ArcGIS Natural Neighbors 语义将退化为线性 TIN。",
+                    exc,
+                )
                 interp = _LinearNDInterpolator(
-                    points, values.astype(np.float64),
+                    points, interp_values,
                     fill_value=np.nan,
                     rescale=True,
                 )
-                logger.info("使用 scipy Linear TIN 插值（C0连续，rescale=True）")
-
-            # 构建 NearestNDInterpolator（凸包外部 NaN 像素填充）
-            nn_interp = _NearestNDInterpolator(
-                np.column_stack([x_arr, y_arr]), values.astype(np.float64)
+            logger.info(
+                "scipy_tin 已对齐 ArcGIS Create TIN(Hard Line) + "
+                "TIN To Raster(NATURAL_NEIGHBORS, CELLSIZE=%.1f) 语义；"
+                "实际插值器=%s，断裂线采样点=%d，锁定像素=%d",
+                float(self.resolution), interp_method_name,
+                n_breakline_points, n_locked_pixels,
             )
 
-            del points
+            # 构建 NearestNDInterpolator（约束三角网/凸包外部像素填充）
+            nn_interp = _NearestNDInterpolator(
+                points, interp_values
+            )
+
+            del interp_values
             gc.collect()
 
             os.makedirs(os.path.dirname(os.path.abspath(output_tif_path)), exist_ok=True)
@@ -1970,11 +2193,12 @@ class KmlToIaConverter:
             chunk_rows = self.chunk_size
             chunk_starts = list(range(0, n_rows, chunk_rows))
 
-            # 内层函数：计算单个分块（TIN + NearestNDInterpolator 填充 NaN）
-            # 返回 (row_start, result_2d, n_pure_tin, n_nn_filled)
+            # 内层函数：计算单个分块（高阶 TIN + 最近邻填充 + 等值线锁定）
+            # 返回 (row_start, result_2d, n_interp_valid, n_nn_filled, n_breakline_locked)
             def _compute_chunk_tin(
                 row_start: int,
-            ) -> Tuple[int, np.ndarray, int, int]:
+            ) -> Tuple[int, np.ndarray, int, int, int]:
+                self._check_cancelled()
                 row_end = min(row_start + chunk_rows, n_rows)
                 actual_rows = row_end - row_start
                 grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
@@ -1982,14 +2206,15 @@ class KmlToIaConverter:
                 pts = np.column_stack([xx.ravel(), yy.ravel()])
                 del xx, yy
 
-                # 原生 TIN 插值（三角网外部像素返回 NaN）
                 chunk_vals_tin = interp(pts)
+                if hasattr(chunk_vals_tin, "filled"):
+                    chunk_vals_tin = chunk_vals_tin.filled(np.nan)
+                chunk_vals_tin = np.asarray(chunk_vals_tin, dtype=np.float64)
 
-                nan_mask = np.isnan(chunk_vals_tin)
-                n_pure_tin = int((~nan_mask).sum())
+                nan_mask = ~np.isfinite(chunk_vals_tin)
+                n_interp_valid = int((~nan_mask).sum())
                 n_nn_filled = int(nan_mask.sum())
 
-                # 仅对 NaN 像素执行 NearestNDInterpolator 填充
                 if nan_mask.any():
                     nan_pts = pts[nan_mask]
                     chunk_vals_tin[nan_mask] = nn_interp(nan_pts)
@@ -1998,17 +2223,31 @@ class KmlToIaConverter:
                 del pts
 
                 chunk_vals_tin = chunk_vals_tin.reshape(actual_rows, n_cols).astype(np.float32)
+                n_breakline_locked = 0
+                for local_row, global_row in enumerate(range(row_start, row_end)):
+                    row_cells = breakline_cells.get(global_row)
+                    if not row_cells:
+                        continue
+                    cols = np.fromiter(row_cells.keys(), dtype=np.int64)
+                    vals = np.fromiter(row_cells.values(), dtype=np.float32)
+                    chunk_vals_tin[local_row, cols] = vals
+                    n_breakline_locked += len(cols)
+
                 nodata_mask = (~np.isfinite(chunk_vals_tin)) | (chunk_vals_tin < -9998.0)
                 np.clip(chunk_vals_tin, v_min, v_max, out=chunk_vals_tin)
                 chunk_vals_tin[nodata_mask] = -9999.0
-                return (row_start, chunk_vals_tin, n_pure_tin, n_nn_filled)
+                return (
+                    row_start, chunk_vals_tin,
+                    n_interp_valid, n_nn_filled, n_breakline_locked,
+                )
 
             start_time = time.time()
             logger.info("scipy_tin 插值开始，分块数=%d，并行线程数=%d",
                         len(chunk_starts), self.max_interp_workers)
 
-            total_pure_tin = 0
+            total_interp_valid = 0
             total_nn_filled = 0
+            total_breakline_locked = 0
 
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.max_interp_workers
@@ -2027,7 +2266,8 @@ class KmlToIaConverter:
                         raise TaskCancelledException("任务已被取消")
                     try:
                         (row_start_res, chunk_vals,
-                         n_pure_tin_chunk, n_nn_filled_chunk) = pending.pop(rs).result()
+                         n_interp_valid_chunk, n_nn_filled_chunk,
+                         n_breakline_locked_chunk) = pending.pop(rs).result()
                     except Exception as exc:
                         logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
                         raise
@@ -2036,8 +2276,9 @@ class KmlToIaConverter:
                     del chunk_vals
 
                     # 累计统计
-                    total_pure_tin += n_pure_tin_chunk
+                    total_interp_valid += n_interp_valid_chunk
                     total_nn_filled += n_nn_filled_chunk
+                    total_breakline_locked += n_breakline_locked_chunk
 
                     gc.collect()
 
@@ -2057,13 +2298,15 @@ class KmlToIaConverter:
 
             total_pixels = self._n_rows * self._n_cols
             logger.info(
-                "scipy_tin 像素统计（纯TIN / NN最近邻填充）: 纯TIN=%d (%.2f%%), NN填充=%d (%.2f%%)",
-                total_pure_tin, 100.0 * total_pure_tin / total_pixels,
+                "scipy_tin 像素统计（高阶TIN / 最近邻填充 / 断裂线锁定）: "
+                "高阶TIN=%d (%.2f%%), 最近邻填充=%d (%.2f%%), 断裂线锁定=%d (%.2f%%)",
+                total_interp_valid, 100.0 * total_interp_valid / total_pixels,
                 total_nn_filled, 100.0 * total_nn_filled / total_pixels,
+                total_breakline_locked, 100.0 * total_breakline_locked / total_pixels,
             )
 
             total_time = time.time() - start_time
-            logger.info("scipy_tin 插值完成，总耗时: %.1fs, 已保存: %s",
+            logger.info("scipy_tin 插值完成（约束三角网外部像素使用最近邻填充），总耗时: %.1fs, 已保存: %s",
                         total_time, output_tif_path)
 
         except TaskCancelledException:
