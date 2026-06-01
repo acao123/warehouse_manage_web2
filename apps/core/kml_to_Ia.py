@@ -2198,6 +2198,8 @@ class KmlToIaConverter:
             nn_build_elapsed = time.time() - nn_build_start_time
             logger.info("scipy_tin 最近邻填充器构建耗时: %.2fs", nn_build_elapsed)
 
+            self._check_cancelled()
+
             del interp_values
             gc.collect()
 
@@ -2296,6 +2298,9 @@ class KmlToIaConverter:
                     submit_ptr += 1
 
                 for chunk_idx, rs in enumerate(chunk_starts):
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise TaskCancelledException("任务已被取消")
                     try:
                         (row_start_res, chunk_vals,
                          n_interp_valid_chunk, n_nn_filled_chunk,
@@ -2344,13 +2349,14 @@ class KmlToIaConverter:
                 total_time, all_elapsed, output_tif_path,
             )
 
+        except TaskCancelledException:
+            raise
         except Exception as exc:
             logger.error("scipy_tin 插值失败: %s", exc, exc_info=True)
             raise
         finally:
-            if band is not None:
-                band = None
             out_ds = None
+            band = None
             if interp is not None:
                 del interp
             if nn_interp is not None:
