@@ -2255,14 +2255,27 @@ class KmlToIaConverter:
             prep_elapsed = time.time() - prep_start_time
             logger.info("scipy_tin 断裂线约束准备耗时: %.2fs", prep_elapsed)
 
+            ct_tol = 1e-4
+            ct_maxiter = 100
+            sample_rate_threshold = 5000.0
+            progress_log_interval_chunks = 5
+            slow_chunk_log_seconds = 30.0
+
+            def _build_linear_interp():
+                return _LinearNDInterpolator(
+                    points, interp_values,
+                    fill_value=np.nan,
+                    rescale=True,
+                )
+
             interp_method_name = "CloughTocher2DInterpolator"
             interp_build_start_time = time.time()
             try:
                 interp = _CloughTocher2DInterpolator(
                     points, interp_values,
                     fill_value=np.nan,
-                    tol=1e-5,
-                    maxiter=200,
+                    tol=ct_tol,
+                    maxiter=ct_maxiter,
                     rescale=True,
                 )
             except Exception as exc:
@@ -2273,24 +2286,79 @@ class KmlToIaConverter:
                     exc,
                 )
                 try:
-                    interp = _LinearNDInterpolator(
-                        points, interp_values,
-                        fill_value=np.nan,
-                        rescale=True,
-                    )
+                    interp = _build_linear_interp()
                 except Exception as linear_exc:
                     raise RuntimeError(
                         "scipy_tin 插值器构建失败：CloughTocher 与 LinearND 均不可用，"
                         "请检查输入点是否退化（共线/重复过多）。"
                     ) from linear_exc
             interp_build_elapsed = time.time() - interp_build_start_time
+            tri_obj = getattr(interp, "tri", None)
+            has_find_simplex = tri_obj is not None and hasattr(tri_obj, "find_simplex")
+
+            if interp_method_name == "CloughTocher2DInterpolator":
+                sample_grid_y = self._y_max - (np.array([0], dtype=np.float64) + 0.5) * self._res_lat
+                sample_pts = np.empty((self._n_cols, 2), dtype=np.float64)
+                sample_pts[:, 0] = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
+                sample_pts[:, 1] = sample_grid_y[0]
+                if has_find_simplex:
+                    sample_inside_mask = tri_obj.find_simplex(sample_pts) >= 0
+                    sample_eval_pts = sample_pts[sample_inside_mask]
+                else:
+                    sample_inside_mask = None
+                    sample_eval_pts = sample_pts
+
+                if sample_eval_pts.size > 0:
+                    sample_eval_start = time.time()
+                    fallback_reason = None
+                    try:
+                        sample_vals = interp(sample_eval_pts)
+                        if hasattr(sample_vals, "filled"):
+                            sample_vals = sample_vals.filled(np.nan)
+                        sample_elapsed = max(time.time() - sample_eval_start, 1e-9)
+                        sample_rate = float(sample_eval_pts.shape[0]) / sample_elapsed
+                        logger.info(
+                            "scipy_tin CloughTocher 试评估: 样本像素=%d, 耗时=%.2fs, 速度=%.0f 像素/秒",
+                            sample_eval_pts.shape[0], sample_elapsed, sample_rate,
+                        )
+                        if sample_rate < sample_rate_threshold:
+                            fallback_reason = (
+                                "试评估速度过慢（%.0f 像素/秒 < %.0f 像素/秒）"
+                                % (sample_rate, sample_rate_threshold)
+                            )
+                    except Exception as exc:
+                        fallback_reason = f"试评估异常（{exc}）"
+
+                    if fallback_reason is not None:
+                        logger.warning(
+                            "scipy_tin CloughTocher 自检失败，回退到 LinearNDInterpolator：%s",
+                            fallback_reason,
+                        )
+                        try:
+                            del interp
+                            interp = _build_linear_interp()
+                            interp_method_name = "LinearNDInterpolator"
+                            tri_obj = getattr(interp, "tri", None)
+                            has_find_simplex = tri_obj is not None and hasattr(tri_obj, "find_simplex")
+                        except Exception as linear_exc:
+                            raise RuntimeError(
+                                "scipy_tin 插值器构建失败：CloughTocher 自检失败后，"
+                                "LinearND 也不可用，请检查输入点是否退化（共线/重复过多）。"
+                            ) from linear_exc
+
+                del sample_pts
+                if sample_inside_mask is not None:
+                    del sample_inside_mask
+                if sample_eval_pts.size > 0:
+                    del sample_eval_pts
             logger.info(
                 "scipy_tin 已对齐 ArcGIS Create TIN(Hard Line) + "
                 "TIN To Raster(NATURAL_NEIGHBORS, CELLSIZE=%.1f) 语义；"
                 "实际插值器=%s，断裂线采样点=%d，锁定像素=%d，"
-                "插值器构建耗时=%.2fs（tol=1e-5,maxiter=200）",
+                "插值器构建耗时=%.2fs（tol=%g,maxiter=%d）",
                 float(self.resolution), interp_method_name,
                 n_breakline_points, n_locked_pixels, interp_build_elapsed,
+                ct_tol, ct_maxiter,
             )
 
             # 构建 NearestNDInterpolator（约束三角网/凸包外部像素填充）
@@ -2325,7 +2393,6 @@ class KmlToIaConverter:
             n_cols = self._n_cols
             chunk_rows = self.chunk_size
             chunk_starts = list(range(0, n_rows, chunk_rows))
-            max_workers = max(1, int(self.max_interp_workers))
 
             breakline_row_arrays = {
                 row_idx: (
@@ -2334,14 +2401,6 @@ class KmlToIaConverter:
                 )
                 for row_idx, cells in breakline_cells.items()
             }
-            tri_obj = getattr(interp, "tri", None)
-            has_find_simplex = tri_obj is not None and hasattr(tri_obj, "find_simplex")
-
-            full_grid_points = n_rows * n_cols
-            # 估算：点坐标(2*8) + 结果值(8) + 掩码/索引/临时数组约 16 字节 ≈ 40 字节/像素
-            full_eval_bytes = full_grid_points * 40
-            full_eval_limit = int(self.max_memory_gb * 1e9 * 0.8)
-            use_full_grid_eval = full_eval_bytes <= full_eval_limit
 
             # 内层函数：计算单个分块（高阶 TIN + 最近邻填充 + 等值线锁定）
             # 返回 (row_start, result_2d, n_interp_valid, n_nn_filled, n_breakline_locked)
@@ -2356,30 +2415,41 @@ class KmlToIaConverter:
                 pts_grid[:, :, 0] = grid_x
                 pts_grid[:, :, 1] = grid_y[:, None]
 
-                chunk_vals_tin = interp(pts)
-                if hasattr(chunk_vals_tin, "filled"):
-                    chunk_vals_tin = chunk_vals_tin.filled(np.nan)
-                chunk_vals_tin = np.asarray(chunk_vals_tin, dtype=np.float64)
+                chunk_vals_tin = np.full(pts.shape[0], np.nan, dtype=np.float64)
+                if has_find_simplex:
+                    inside_mask = tri_obj.find_simplex(pts) >= 0
+                    interp_idx = np.flatnonzero(inside_mask)
+                else:
+                    inside_mask = None
+                    interp_idx = np.arange(pts.shape[0], dtype=np.int64)
+
+                if interp_idx.size > 0:
+                    interp_vals = interp(pts[interp_idx])
+                    if hasattr(interp_vals, "filled"):
+                        interp_vals = interp_vals.filled(np.nan)
+                    interp_vals = np.asarray(interp_vals, dtype=np.float64)
+                    chunk_vals_tin[interp_idx] = interp_vals
+                    n_interp_valid = int(np.count_nonzero(np.isfinite(interp_vals)))
+                    del interp_vals
+                else:
+                    n_interp_valid = 0
 
                 nan_mask = ~np.isfinite(chunk_vals_tin)
-                n_nan = int(np.count_nonzero(nan_mask))
-                n_interp_valid = int(chunk_vals_tin.size - n_nan)
                 n_nn_filled = 0
 
-                if n_nan > 0:
-                    nan_idx = np.flatnonzero(nan_mask)
-                    nan_pts = pts[nan_idx]
+                if np.any(nan_mask):
                     if has_find_simplex:
-                        inside_nan = tri_obj.find_simplex(nan_pts) >= 0
-                        fill_idx = nan_idx[inside_nan]
+                        fill_idx = np.flatnonzero(nan_mask & inside_mask)
                     else:
-                        fill_idx = nan_idx
+                        fill_idx = np.flatnonzero(nan_mask)
                     n_nn_filled = int(fill_idx.size)
                     if n_nn_filled > 0:
                         chunk_vals_tin[fill_idx] = nn_interp(pts[fill_idx])
-                    del nan_idx, nan_pts, fill_idx
-                    if has_find_simplex:
-                        del inside_nan
+                    del fill_idx
+
+                del interp_idx
+                if inside_mask is not None:
+                    del inside_mask
 
                 del pts
 
@@ -2403,87 +2473,46 @@ class KmlToIaConverter:
                 )
 
             start_time = time.time()
-            if use_full_grid_eval:
-                logger.info(
-                    "scipy_tin 插值开始：采用全图一次性向量化调用（像素=%d, 估算内存=%.2fGB）。",
-                    full_grid_points, full_eval_bytes / 1e9,
-                )
-            else:
-                logger.info(
-                    "scipy_tin 插值开始：采用分块串行计算（分块数=%d，避免插值器线程不安全崩溃）。",
-                    len(chunk_starts),
-                )
+            logger.info(
+                "scipy_tin 插值开始：采用分块串行计算（分块数=%d，避免插值器线程不安全崩溃）。",
+                len(chunk_starts),
+            )
 
             total_interp_valid = 0
             total_nn_filled = 0
             total_breakline_locked = 0
 
-            if use_full_grid_eval:
+            for chunk_idx, rs in enumerate(chunk_starts):
                 self._check_cancelled()
-                grid_y_full = self._y_max - (np.arange(n_rows) + 0.5) * self._res_lat
-                pts_full = np.empty((full_grid_points, 2), dtype=np.float64)
-                pts_full_grid = pts_full.reshape(n_rows, n_cols, 2)
-                pts_full_grid[:, :, 0] = grid_x
-                pts_full_grid[:, :, 1] = grid_y_full[:, None]
+                chunk_start_time = time.time()
+                try:
+                    (row_start_res, chunk_vals,
+                     n_interp_valid_chunk, n_nn_filled_chunk,
+                     n_breakline_locked_chunk) = _compute_chunk_tin(rs)
+                except Exception as exc:
+                    logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
+                    raise
 
-                vals_full = interp(pts_full)
-                if hasattr(vals_full, "filled"):
-                    vals_full = vals_full.filled(np.nan)
-                vals_full = np.asarray(vals_full, dtype=np.float64)
-                nan_mask_full = ~np.isfinite(vals_full)
-                n_nan_full = int(np.count_nonzero(nan_mask_full))
-                total_interp_valid = int(vals_full.size - n_nan_full)
+                band.WriteArray(chunk_vals, 0, row_start_res)
+                del chunk_vals
 
-                if n_nan_full > 0:
-                    nan_idx_full = np.flatnonzero(nan_mask_full)
-                    nan_pts_full = pts_full[nan_idx_full]
-                    if has_find_simplex:
-                        inside_nan_full = tri_obj.find_simplex(nan_pts_full) >= 0
-                        fill_idx_full = nan_idx_full[inside_nan_full]
-                    else:
-                        fill_idx_full = nan_idx_full
-                    total_nn_filled = int(fill_idx_full.size)
-                    if total_nn_filled > 0:
-                        vals_full[fill_idx_full] = nn_interp(pts_full[fill_idx_full])
-                    del nan_idx_full, nan_pts_full, fill_idx_full
-                    if has_find_simplex:
-                        del inside_nan_full
+                # 累计统计
+                total_interp_valid += n_interp_valid_chunk
+                total_nn_filled += n_nn_filled_chunk
+                total_breakline_locked += n_breakline_locked_chunk
 
-                vals_full = vals_full.reshape(n_rows, n_cols)
-                for global_row, row_arrays in breakline_row_arrays.items():
-                    cols, vals = row_arrays
-                    vals_full[global_row, cols] = vals
-                    total_breakline_locked += int(cols.size)
-
-                nodata_mask_full = (~np.isfinite(vals_full)) | (vals_full < -9998.0)
-                np.clip(vals_full, v_min, v_max, out=vals_full)
-                vals_full[nodata_mask_full] = -9999.0
-                band.WriteArray(vals_full.astype(np.float32, copy=False), 0, 0)
-                del vals_full, pts_full, grid_y_full, nan_mask_full, nodata_mask_full
-            else:
-                for chunk_idx, rs in enumerate(chunk_starts):
-                    self._check_cancelled()
-                    try:
-                        (row_start_res, chunk_vals,
-                         n_interp_valid_chunk, n_nn_filled_chunk,
-                         n_breakline_locked_chunk) = _compute_chunk_tin(rs)
-                    except Exception as exc:
-                        logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
-                        raise
-
-                    band.WriteArray(chunk_vals, 0, row_start_res)
-                    del chunk_vals
-
-                    # 累计统计
-                    total_interp_valid += n_interp_valid_chunk
-                    total_nn_filled += n_nn_filled_chunk
-                    total_breakline_locked += n_breakline_locked_chunk
-
-                    row_end = min(rs + chunk_rows, n_rows)
-                    if (chunk_idx + 1) % 5 == 0 or row_end == n_rows:
-                        elapsed = time.time() - start_time
-                        logger.info("scipy_tin 进度: %d/%d 行 (%.1f%%), 已用时: %.1fs",
-                                    row_end, n_rows, 100.0 * row_end / n_rows, elapsed)
+                row_end = min(rs + chunk_rows, n_rows)
+                chunk_elapsed = time.time() - chunk_start_time
+                elapsed = time.time() - start_time
+                if (
+                    (chunk_idx + 1) % progress_log_interval_chunks == 0
+                    or row_end == n_rows
+                    or chunk_elapsed > slow_chunk_log_seconds
+                ):
+                    logger.info(
+                        "scipy_tin 进度: 已完成 %d/%d 行 (%.1f%%), chunk 用时: %.1fs, 累计已用时: %.1fs",
+                        row_end, n_rows, 100.0 * row_end / n_rows, chunk_elapsed, elapsed,
+                    )
 
             band.ComputeStatistics(False)
             band.FlushCache()
