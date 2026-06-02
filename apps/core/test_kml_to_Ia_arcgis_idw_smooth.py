@@ -532,15 +532,16 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
             GetDriverByName=lambda _name: fake_driver,
         )
 
+        # v3.19: 使用真实 ConvexHull，提供三个明确落在像素 (0.5,0.5) 下方的输入点，
+        # 使凸包三角形完全在 y<=0 区域内，从而令唯一栅格像素落在凸包外 → 结果应为 NoData。
         with patch.object(KML_TO_IA, "_HAS_SCIPY", True), \
                 patch.object(KML_TO_IA, "_CloughTocher2DInterpolator", _FakeTin, create=True), \
                 patch.object(KML_TO_IA, "_NearestNDInterpolator", _FakeNN, create=True), \
-                patch("scipy.spatial.Delaunay", _FakeHullTri), \
                 patch.object(KML_TO_IA, "gdal", fake_gdal):
             converter._run_scipy_tin_interpolation(
-                np.array([0.0, 1.0], dtype=np.float64),
-                np.array([0.0, 0.0], dtype=np.float64),
-                np.array([1.0, 3.0], dtype=np.float32),
+                np.array([0.0, 1.0, 0.5], dtype=np.float64),   # 三点：x
+                np.array([-2.0, -2.0, -3.0], dtype=np.float64), # 三点：y（全在像素下方）
+                np.array([1.0, 3.0, 2.0], dtype=np.float32),    # 三点的值
                 str(Path(tempfile.gettempdir()) / "scipy_tin_outside_hull_test.tif"),
             )
 
@@ -599,15 +600,11 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
             def Create(self, *_args, **_kwargs):
                 return self.dataset
 
-        class _FakeTri:
-            def find_simplex(self, pts):
-                return np.where(pts[:, 0] < 1.0, 0, -1).astype(np.int64)
-
         capture = {"call_sizes": []}
 
         class _FakeTin:
             def __init__(self, *_args, **_kwargs):
-                self.tri = _FakeTri()
+                pass
 
             def __call__(self, pts):
                 capture["call_sizes"].append(int(pts.shape[0]))
@@ -620,29 +617,23 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
             def __call__(self, pts):
                 raise AssertionError("outside-hull pixels should not use nearest-neighbor fill")
 
-        class _FakeHullTri:
-            def __init__(self, _points):
-                pass
-
-            def find_simplex(self, pts):
-                return np.where(pts[:, 0] < 1.0, 0, -1).astype(np.int64)
-
         fake_driver = _FakeDriver()
         fake_gdal = types.SimpleNamespace(
             GDT_Float32=6,
             GetDriverByName=lambda _name: fake_driver,
         )
 
+        # v3.19: 使用真实 ConvexHull。三个非共线点 (0,0)、(0.8,0)、(0,1.5) 形成凸包三角形，
+        # 使得 x=0.5 像素（中心 (0.5,0.5)）在凸包内，x=1.5 像素（中心 (1.5,0.5)）在凸包外。
         with patch.object(KML_TO_IA, "_HAS_SCIPY", True), \
                 patch.object(KML_TO_IA, "_CloughTocher2DInterpolator", _FakeTin, create=True), \
                 patch.object(KML_TO_IA, "_NearestNDInterpolator", _FakeNN, create=True), \
-                patch("scipy.spatial.Delaunay", _FakeHullTri), \
                 patch.object(
                     KML_TO_IA.KmlToIaConverter,
                     "_prepare_scipy_tin_breakline_support",
                     return_value=(
-                        np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64),
-                        np.array([1.0, 3.0], dtype=np.float64),
+                        np.array([[0.0, 0.0], [0.8, 0.0], [0.0, 1.5]], dtype=np.float64),
+                        np.array([1.0, 3.0, 2.0], dtype=np.float64),
                         {},
                         0,
                         0,
