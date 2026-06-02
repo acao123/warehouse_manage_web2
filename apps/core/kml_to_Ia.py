@@ -2490,12 +2490,19 @@ class KmlToIaConverter:
 
             # ----------------------------------------------------------------
             # 决定是否走"全图向量化"路径：估算峰值内存占用
-            # 每个像素约需 2 个 float64（坐标）+ 1 个 float64（结果）= 24 bytes
-            # CloughTocher 内部临时约 3x 结果数组，再乘以系数 6
+            # 内存系数 6 来自：
+            #   坐标缓冲 x/y 各 1 个 float64（2×8 bytes/pixel）
+            #   + 结果数组 1 个 float64（8 bytes/pixel）
+            #   + CloughTocher 内部临时缓冲约 3 倍结果数组（3×8 bytes/pixel）
+            #   合计 ≈ 6×8 bytes/pixel
+            # 内存预算取 max_memory_gb 的 60%，留 40% 给其他运行时开销
+            # （GDAL 波段写入缓冲、Python 对象元数据、OS 页面缓存等）
             # ----------------------------------------------------------------
             total_pixels = n_rows * n_cols
-            estimated_gb = total_pixels * 8 * 6 / (1024 ** 3)
-            mem_budget_gb = float(getattr(self, "max_memory_gb", 2.0)) * 0.6
+            _MEM_FACTOR = 6          # 峰值内存系数（见上方注释）
+            _MEM_BUDGET_FRAC = 0.6   # 只使用可用内存的 60%，留余量给运行时开销
+            estimated_gb = total_pixels * 8 * _MEM_FACTOR / (1024 ** 3)
+            mem_budget_gb = float(getattr(self, "max_memory_gb", 2.0)) * _MEM_BUDGET_FRAC
             use_full_image_path = estimated_gb <= mem_budget_gb
 
             start_time = time.time()
