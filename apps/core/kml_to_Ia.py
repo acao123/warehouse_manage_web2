@@ -2260,6 +2260,20 @@ class KmlToIaConverter:
             sample_rate_threshold = 5000.0
             progress_log_interval_chunks = 5
             slow_chunk_log_seconds = 30.0
+            hull_tri = None
+            has_hull_find_simplex = False
+
+            try:
+                from scipy.spatial import Delaunay as _ScipyDelaunay
+                hull_tri = _ScipyDelaunay(points)
+                has_hull_find_simplex = hasattr(hull_tri, "find_simplex")
+            except Exception as hull_exc:
+                logger.warning(
+                    "scipy_tin 凸包预筛选 Delaunay 构建失败，退化为全像素参与插值判定: %s",
+                    hull_exc,
+                )
+                hull_tri = None
+                has_hull_find_simplex = False
 
             def _build_linear_interp():
                 return _LinearNDInterpolator(
@@ -2293,16 +2307,14 @@ class KmlToIaConverter:
                         "请检查输入点是否退化（共线/重复过多）。"
                     ) from linear_exc
             interp_build_elapsed = time.time() - interp_build_start_time
-            tri_obj = getattr(interp, "tri", None)
-            has_find_simplex = tri_obj is not None and hasattr(tri_obj, "find_simplex")
 
             if interp_method_name == "CloughTocher2DInterpolator":
                 sample_grid_y = self._y_max - (np.array([0], dtype=np.float64) + 0.5) * self._res_lat
                 sample_pts = np.empty((self._n_cols, 2), dtype=np.float64)
                 sample_pts[:, 0] = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
                 sample_pts[:, 1] = sample_grid_y[0]
-                if has_find_simplex:
-                    sample_inside_mask = tri_obj.find_simplex(sample_pts) >= 0
+                if has_hull_find_simplex:
+                    sample_inside_mask = hull_tri.find_simplex(sample_pts) >= 0
                     sample_eval_pts = sample_pts[sample_inside_mask]
                 else:
                     sample_inside_mask = None
@@ -2338,8 +2350,6 @@ class KmlToIaConverter:
                             del interp
                             interp = _build_linear_interp()
                             interp_method_name = "LinearNDInterpolator"
-                            tri_obj = getattr(interp, "tri", None)
-                            has_find_simplex = tri_obj is not None and hasattr(tri_obj, "find_simplex")
                         except Exception as linear_exc:
                             raise RuntimeError(
                                 "scipy_tin 插值器构建失败：CloughTocher 自检失败后，"
@@ -2416,8 +2426,8 @@ class KmlToIaConverter:
                 pts_grid[:, :, 1] = grid_y[:, None]
 
                 chunk_vals_tin = np.full(pts.shape[0], np.nan, dtype=np.float64)
-                if has_find_simplex:
-                    inside_mask = tri_obj.find_simplex(pts) >= 0
+                if has_hull_find_simplex:
+                    inside_mask = hull_tri.find_simplex(pts) >= 0
                     interp_idx = np.flatnonzero(inside_mask)
                 else:
                     inside_mask = None
@@ -2438,14 +2448,17 @@ class KmlToIaConverter:
                 n_nn_filled = 0
 
                 if np.any(nan_mask):
-                    if has_find_simplex:
-                        fill_idx = np.flatnonzero(nan_mask & inside_mask)
+                    if has_hull_find_simplex:
+                        nan_inside_mask = hull_tri.find_simplex(pts) >= 0
+                        fill_idx = np.flatnonzero(nan_mask & nan_inside_mask)
                     else:
                         fill_idx = np.flatnonzero(nan_mask)
                     n_nn_filled = int(fill_idx.size)
                     if n_nn_filled > 0:
                         chunk_vals_tin[fill_idx] = nn_interp(pts[fill_idx])
                     del fill_idx
+                    if has_hull_find_simplex:
+                        del nan_inside_mask
 
                 del interp_idx
                 if inside_mask is not None:
