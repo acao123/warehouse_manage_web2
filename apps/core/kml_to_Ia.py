@@ -2449,16 +2449,16 @@ class KmlToIaConverter:
 
                 if np.any(nan_mask):
                     if has_hull_find_simplex:
-                        nan_inside_mask = hull_tri.find_simplex(pts) >= 0
-                        fill_idx = np.flatnonzero(nan_mask & nan_inside_mask)
+                        nan_idx = np.flatnonzero(nan_mask)
+                        nan_inside_mask = hull_tri.find_simplex(pts[nan_idx]) >= 0
+                        fill_idx = nan_idx[nan_inside_mask]
+                        del nan_idx
                     else:
                         fill_idx = np.flatnonzero(nan_mask)
                     n_nn_filled = int(fill_idx.size)
                     if n_nn_filled > 0:
                         chunk_vals_tin[fill_idx] = nn_interp(pts[fill_idx])
                     del fill_idx
-                    if has_hull_find_simplex:
-                        del nan_inside_mask
 
                 del interp_idx
                 if inside_mask is not None:
