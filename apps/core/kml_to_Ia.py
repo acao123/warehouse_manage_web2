@@ -2231,7 +2231,7 @@ class KmlToIaConverter:
             形状 (N,) 的布尔数组，True 表示在凸包内（含边界容差范围内）
         """
         points = np.asarray(points_xy, dtype=np.float64)
-        verts = np.asarray(hull_vertices_xy, dtype=np.float64)  # (V, 2)
+        verts = np.asarray(hull_vertices_xy, dtype=np.float64).copy()  # (V, 2)
         n_points = points.shape[0]
         n_v = verts.shape[0]
         if n_points == 0:
@@ -2246,6 +2246,9 @@ class KmlToIaConverter:
         if signed_area < 0.0:
             verts = verts[::-1]
 
+        BATCH_THRESHOLD = 2_000_000  # Auto-batch very large point sets to keep peak memory predictable.
+        BATCH_SIZE = 1_000_000       # 1M points/batch balances memory safety and vectorized throughput.
+
         def _inside_for_batch(batch_points: np.ndarray) -> np.ndarray:
             inside_batch = np.ones(batch_points.shape[0], dtype=bool)
             px = batch_points[:, 0]
@@ -2255,15 +2258,12 @@ class KmlToIaConverter:
                 x2, y2 = verts[(i + 1) % n_v]
                 cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
                 inside_batch &= (cross >= -eps)
-                if not inside_batch.any():
-                    break
             return inside_batch
 
-        if n_points > 2_000_000:
-            batch_size = 1_000_000
+        if n_points > BATCH_THRESHOLD:
             inside = np.empty(n_points, dtype=bool)
-            for start in range(0, n_points, batch_size):
-                end = min(start + batch_size, n_points)
+            for start in range(0, n_points, BATCH_SIZE):
+                end = min(start + BATCH_SIZE, n_points)
                 inside[start:end] = _inside_for_batch(points[start:end])
             return inside
 

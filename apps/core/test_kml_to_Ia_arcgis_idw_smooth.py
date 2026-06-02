@@ -881,7 +881,8 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         np.testing.assert_array_equal(inside, np.array([True, False, True], dtype=bool))
 
     def test_points_in_convex_hull_batches_large_inputs(self):
-        n_points = 2_000_001
+        # Slightly above the implementation batch threshold to exercise auto-batching path.
+        n_points = 2_000_100
         points = np.empty((n_points, 2), dtype=np.float64)
         points[:, 0] = 0.25
         points[:, 1] = 0.25
