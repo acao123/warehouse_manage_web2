@@ -2405,13 +2405,18 @@ class KmlToIaConverter:
                 raw_hull_vertices = points[_ch.vertices]  # (V, 2)，顶点顺序由 ConvexHull 给出
                 del _ch
                 hull_vertices = self._simplify_convex_polygon(raw_hull_vertices, hull_collinear_tol)
+                removed_hull_vertices = int(raw_hull_vertices.shape[0] - hull_vertices.shape[0])
                 logger.info(
                     "scipy_tin 凸包构建完成: 原始顶点=%d, 简化后=%d, 容差 eps=%.3gm, 共线容差=%.3gm",
                     raw_hull_vertices.shape[0], hull_vertices.shape[0], hull_eps, hull_collinear_tol,
                 )
                 logger.info(
-                    "scipy_tin 凸包顶点简化: 原始顶点=%d, 简化后=%d, 共线容差=%.3gm",
-                    raw_hull_vertices.shape[0], hull_vertices.shape[0], hull_collinear_tol,
+                    "scipy_tin 凸包顶点简化: 原始顶点=%d, 简化后=%d, 删除=%d (%.2f%%), 共线容差=%.3gm",
+                    raw_hull_vertices.shape[0],
+                    hull_vertices.shape[0],
+                    removed_hull_vertices,
+                    100.0 * float(removed_hull_vertices) / max(float(raw_hull_vertices.shape[0]), 1.0),
+                    hull_collinear_tol,
                 )
                 if hull_vertices.shape[0] > 1000:
                     logger.warning(

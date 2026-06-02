@@ -924,7 +924,7 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
             atol=1e-9,
         )
 
-    def test_simplify_convex_polygon_handles_foldback_ac_overlap(self):
+    def test_simplify_convex_polygon_handles_zero_length_ac_edge(self):
         hull = np.array(
             [
                 [0.0, 0.0],
