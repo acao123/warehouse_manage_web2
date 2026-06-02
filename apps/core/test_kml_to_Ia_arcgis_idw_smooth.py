@@ -896,6 +896,60 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         self.assertTrue(bool(np.all(inside[:-1])))
         self.assertFalse(bool(inside[-1]))
 
+    def test_simplify_convex_polygon_removes_collinear_vertices(self):
+        hull = np.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [2.0, 0.0],
+                [3.0, 0.0],
+                [3.0, 2.0],
+                [0.0, 2.0],
+            ],
+            dtype=np.float64,
+        )
+        simplified = KML_TO_IA.KmlToIaConverter._simplify_convex_polygon(hull, collinear_tol=0.5)
+        self.assertEqual(simplified.shape[0], 4)
+        np.testing.assert_allclose(
+            simplified,
+            np.array(
+                [
+                    [0.0, 0.0],
+                    [3.0, 0.0],
+                    [3.0, 2.0],
+                    [0.0, 2.0],
+                ],
+                dtype=np.float64,
+            ),
+            atol=1e-9,
+        )
+
+    def test_simplify_convex_polygon_handles_foldback_ac_overlap(self):
+        hull = np.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 1.0],
+                [-1.0, 0.0],
+            ],
+            dtype=np.float64,
+        )
+        simplified = KML_TO_IA.KmlToIaConverter._simplify_convex_polygon(hull, collinear_tol=0.01)
+        self.assertGreaterEqual(simplified.shape[0], 3)
+        np.testing.assert_allclose(
+            simplified,
+            np.array(
+                [
+                    [0.0, 0.0],
+                    [0.0, 1.0],
+                    [-1.0, 0.0],
+                ],
+                dtype=np.float64,
+            ),
+            atol=1e-9,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
