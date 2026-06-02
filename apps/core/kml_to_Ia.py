@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.19）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.20）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -10,6 +10,12 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.19）
     4. 使用插值算法对Ia进行插值计算（支持6种插值方法）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
+
+主要改进（v3.20 相较 v3.19）：
+    1. 紧急修复 _points_in_convex_hull 内存爆炸问题：
+       - 废弃 (N, V, 2) 三维广播中间数组，改为沿凸包边迭代并对点集做向量化叉积判定；
+       - 内存复杂度由 O(N·V) 中间峰值降为 O(N+V)，避免 7M 点场景 OOM；
+       - 对超大点集（N > 2,000,000）自动按 1,000,000 分批判定，降低峰值内存并提升稳定性。
 
 主要改进（v3.19 相较 v3.18）：
     1. scipy_tin NoData 横向条纹根因修复：
@@ -270,9 +276,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.19）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.19)
+作者: acao (重构版 v3.20)
 日期: 2026-06-02
-版本: 3.19
+版本: 3.20
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -2212,46 +2218,56 @@ class KmlToIaConverter:
         eps: float = 1e-6,
     ) -> np.ndarray:
         """
-        判断一批点是否在凸多边形内（向量化叉积法，O(N·V)，纯 numpy）。
+        判断一批点是否在凸多边形内（沿边迭代叉积法，O(N·V)，纯 numpy）。
 
         参数:
             points_xy:        形状 (N, 2) 的查询点坐标数组
             hull_vertices_xy: 形状 (V, 2) 的凸包顶点坐标数组（按 ConvexHull.vertices 顺序，
-                              逆时针或顺时针均可，本函数自动处理两种方向）
+                              本函数会通过 shoelace 公式校验方向并统一为逆时针）
             eps:              边界容差。在凸包边界附近 eps 范围内的点也视为内部，
                               避免浮点误差导致边界像素被错判为外部。
 
         返回:
             形状 (N,) 的布尔数组，True 表示在凸包内（含边界容差范围内）
         """
-        verts = hull_vertices_xy  # (V, 2)
+        points = np.asarray(points_xy, dtype=np.float64)
+        verts = np.asarray(hull_vertices_xy, dtype=np.float64)  # (V, 2)
+        n_points = points.shape[0]
         n_v = verts.shape[0]
+        if n_points == 0:
+            return np.zeros(0, dtype=bool)
         if n_v < 3:
             # 退化多边形（少于3个顶点）：无法判定内外，全部视为外部
-            return np.zeros(points_xy.shape[0], dtype=bool)
+            return np.zeros(n_points, dtype=bool)
 
-        v_next = np.roll(verts, -1, axis=0)  # (V, 2)
-        edge = v_next - verts                 # (V, 2)  边向量
+        # 用有符号面积（shoelace 公式）校验顶点顺序，统一为 CCW，便于使用 cross >= -eps 判定
+        v_next = np.roll(verts, -1, axis=0)
+        signed_area = 0.5 * float(np.sum(verts[:, 0] * v_next[:, 1] - v_next[:, 0] * verts[:, 1]))
+        if signed_area < 0.0:
+            verts = verts[::-1]
 
-        # pts_rel[i, j] = points_xy[i] - verts[j]   形状 (N, V, 2)
-        pts_rel = points_xy[:, np.newaxis, :] - verts[np.newaxis, :, :]
-        # 叉积 z 分量：cross[i,j] = edge[j,0]*rel[i,j,1] - edge[j,1]*rel[i,j,0]
-        cross = (edge[np.newaxis, :, 0] * pts_rel[:, :, 1]
-                 - edge[np.newaxis, :, 1] * pts_rel[:, :, 0])  # (N, V)
+        def _inside_for_batch(batch_points: np.ndarray) -> np.ndarray:
+            inside_batch = np.ones(batch_points.shape[0], dtype=bool)
+            px = batch_points[:, 0]
+            py = batch_points[:, 1]
+            for i in range(n_v):
+                x1, y1 = verts[i]
+                x2, y2 = verts[(i + 1) % n_v]
+                cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
+                inside_batch &= (cross >= -eps)
+                if not inside_batch.any():
+                    break
+            return inside_batch
 
-        # 用有符号面积（shoelace 公式）判断顶点顺序：正值=逆时针(CCW)，负值=顺时针(CW)
-        signed_area = 0.5 * float(np.sum(
-            verts[:, 0] * v_next[:, 1] - v_next[:, 0] * verts[:, 1]
-        ))
+        if n_points > 2_000_000:
+            batch_size = 1_000_000
+            inside = np.empty(n_points, dtype=bool)
+            for start in range(0, n_points, batch_size):
+                end = min(start + batch_size, n_points)
+                inside[start:end] = _inside_for_batch(points[start:end])
+            return inside
 
-        if signed_area >= 0:
-            # CCW：内部点对所有边的叉积 >= 0；加容差为 >= -eps
-            inside = np.all(cross >= -eps, axis=1)
-        else:
-            # CW：内部点对所有边的叉积 <= 0；加容差为 <= eps
-            inside = np.all(cross <= eps, axis=1)
-
-        return inside
+        return _inside_for_batch(points)
 
     def _run_scipy_tin_interpolation(
         self,
@@ -2334,6 +2350,12 @@ class KmlToIaConverter:
                 hull_vertices = points[_ch.vertices]  # (V, 2)，顶点顺序由 ConvexHull 给出
                 del _ch
                 logger.info("scipy_tin 凸包构建完成: 顶点数=%d, 容差 eps=%.3g", hull_vertices.shape[0], hull_eps)
+                if hull_vertices.shape[0] > 1000:
+                    logger.warning(
+                        "scipy_tin 凸包顶点数异常偏大: V=%d（可能存在断裂线高密度边界点），"
+                        "将继续使用凸包判定流程。",
+                        hull_vertices.shape[0],
+                    )
             except Exception as hull_exc:
                 logger.warning(
                     "scipy_tin 凸包构建失败，退化为全像素参与插值判定: %s",
@@ -2380,7 +2402,19 @@ class KmlToIaConverter:
                 sample_pts[:, 0] = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
                 sample_pts[:, 1] = sample_grid_y[0]
                 if hull_vertices is not None:
+                    logger.info(
+                        "scipy_tin 凸包内判定开始: 点数 N=%d, 凸包顶点数 V=%d",
+                        sample_pts.shape[0], hull_vertices.shape[0],
+                    )
+                    sample_inside_start = time.time()
                     sample_inside_mask = self._points_in_convex_hull(sample_pts, hull_vertices, eps=hull_eps)
+                    sample_inside_elapsed = time.time() - sample_inside_start
+                    sample_inside_count = int(np.count_nonzero(sample_inside_mask))
+                    logger.info(
+                        "scipy_tin 凸包内判定完成: 点数 N=%d, 凸包顶点数 V=%d, 耗时=%.2fs, inside=%d (%.2f%%)",
+                        sample_pts.shape[0], hull_vertices.shape[0], sample_inside_elapsed,
+                        sample_inside_count, 100.0 * sample_inside_count / max(sample_pts.shape[0], 1),
+                    )
                     sample_eval_pts = sample_pts[sample_inside_mask]
                 else:
                     sample_inside_mask = None
@@ -2485,7 +2519,22 @@ class KmlToIaConverter:
             def _make_inside_mask(pts_2d: np.ndarray) -> np.ndarray:
                 """返回布尔掩码，True 表示在凸包内（或无凸包时全 True）。"""
                 if hull_vertices is not None:
-                    return self._points_in_convex_hull(pts_2d, hull_vertices, eps=hull_eps)
+                    n_pts = int(pts_2d.shape[0])
+                    n_verts = int(hull_vertices.shape[0])
+                    logger.info(
+                        "scipy_tin 凸包内判定开始: 点数 N=%d, 凸包顶点数 V=%d",
+                        n_pts, n_verts,
+                    )
+                    inside_start = time.time()
+                    inside = self._points_in_convex_hull(pts_2d, hull_vertices, eps=hull_eps)
+                    inside_elapsed = time.time() - inside_start
+                    inside_count = int(np.count_nonzero(inside))
+                    logger.info(
+                        "scipy_tin 凸包内判定完成: 点数 N=%d, 凸包顶点数 V=%d, 耗时=%.2fs, inside=%d (%.2f%%)",
+                        n_pts, n_verts, inside_elapsed,
+                        inside_count, 100.0 * inside_count / max(n_pts, 1),
+                    )
+                    return inside
                 return np.ones(pts_2d.shape[0], dtype=bool)
 
             # ----------------------------------------------------------------
@@ -2501,9 +2550,11 @@ class KmlToIaConverter:
             total_pixels = n_rows * n_cols
             _MEM_FACTOR = 6          # 峰值内存系数（见上方注释）
             _MEM_BUDGET_FRAC = 0.6   # 只使用可用内存的 60%，留余量给运行时开销
-            estimated_gb = total_pixels * 8 * _MEM_FACTOR / (1024 ** 3)
-            mem_budget_gb = float(getattr(self, "max_memory_gb", 2.0)) * _MEM_BUDGET_FRAC
-            use_full_image_path = estimated_gb <= mem_budget_gb
+            estimated_bytes = total_pixels * 8 * _MEM_FACTOR
+            mem_budget_bytes = float(getattr(self, "max_memory_gb", 2.0)) * (1024 ** 3) * _MEM_BUDGET_FRAC
+            estimated_gb = estimated_bytes / (1024 ** 3)
+            mem_budget_gb = mem_budget_bytes / (1024 ** 3)
+            use_full_image_path = estimated_bytes <= mem_budget_bytes
 
             start_time = time.time()
             total_interp_valid = 0
