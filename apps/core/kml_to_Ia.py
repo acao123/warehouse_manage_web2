@@ -17,6 +17,12 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.20）
        - 内存复杂度由 O(N·V) 中间峰值降为 O(N+V)，避免 7M 点场景 OOM；
        - 对超大点集（N > 2,000,000）自动按 1,000,000 分批判定，降低峰值内存并提升稳定性。
 
+主要改进（v3.21 相较 v3.20）：
+    1. scipy_tin 凸包判定性能优化：
+       - 在 ConvexHull 构建后增加共线顶点简化，删除边界上的近共线伪顶点；
+       - 凸包内/外判定改用简化后的凸包顶点，显著降低大栅格场景 O(N·V) 中的 V；
+       - 保持 hull_eps 判定容差与最终栅格语义不变，兼顾性能与结果一致性。
+
 主要改进（v3.19 相较 v3.18）：
     1. scipy_tin NoData 横向条纹根因修复：
        - 废弃 Delaunay.find_simplex 做凸包内/外预筛选（该方法在像素恰好落在三角边上
@@ -2212,6 +2218,54 @@ class KmlToIaConverter:
     # ==================== scipy TIN 插值方法 ====================
 
     @staticmethod
+    def _simplify_convex_polygon(
+        hull_vertices_xy: np.ndarray,
+        collinear_tol: float,
+    ) -> np.ndarray:
+        """
+        简化凸多边形顶点：若连续三点 A-B-C 中，B 到 AC 的垂距小于阈值则删除 B。
+        反复迭代直至稳定；至少保留 3 个顶点，否则回退原始顶点。
+        """
+        verts = np.asarray(hull_vertices_xy, dtype=np.float64)
+        if verts.shape[0] < 4:
+            return verts.copy()
+
+        simplified = verts.copy()
+        tol = float(max(0.0, collinear_tol))
+        ac_min_len = 1e-12
+
+        while simplified.shape[0] > 3:
+            removed = False
+            n_v = simplified.shape[0]
+            for i in range(n_v):
+                a = simplified[(i - 1) % n_v]
+                b = simplified[i]
+                c = simplified[(i + 1) % n_v]
+
+                ac_x = c[0] - a[0]
+                ac_y = c[1] - a[1]
+                ac_len = float(np.hypot(ac_x, ac_y))
+
+                if ac_len <= ac_min_len:
+                    simplified = np.delete(simplified, i, axis=0)
+                    removed = True
+                    break
+
+                cross = ac_x * (b[1] - a[1]) - ac_y * (b[0] - a[0])
+                dist = abs(cross) / ac_len
+                if dist < tol:
+                    simplified = np.delete(simplified, i, axis=0)
+                    removed = True
+                    break
+
+            if not removed:
+                break
+
+        if simplified.shape[0] < 3:
+            return verts.copy()
+        return simplified
+
+    @staticmethod
     def _points_in_convex_hull(
         points_xy: np.ndarray,
         hull_vertices_xy: np.ndarray,
@@ -2343,13 +2397,27 @@ class KmlToIaConverter:
             slow_chunk_log_seconds = 30.0
             hull_vertices = None   # (V, 2) 凸包顶点坐标，按顺序排列
             hull_eps = max(1e-6, 0.5 * float(self.resolution))
+            hull_collinear_tol = max(1e-3, 0.5 * float(self.resolution))
 
             try:
                 from scipy.spatial import ConvexHull as _ScipyConvexHull
                 _ch = _ScipyConvexHull(points)
-                hull_vertices = points[_ch.vertices]  # (V, 2)，顶点顺序由 ConvexHull 给出
+                raw_hull_vertices = points[_ch.vertices]  # (V, 2)，顶点顺序由 ConvexHull 给出
                 del _ch
-                logger.info("scipy_tin 凸包构建完成: 顶点数=%d, 容差 eps=%.3g", hull_vertices.shape[0], hull_eps)
+                hull_vertices = self._simplify_convex_polygon(raw_hull_vertices, hull_collinear_tol)
+                removed_hull_vertices = int(raw_hull_vertices.shape[0] - hull_vertices.shape[0])
+                logger.info(
+                    "scipy_tin 凸包构建完成: 原始顶点=%d, 简化后=%d, 容差 eps=%.3gm, 共线容差=%.3gm",
+                    raw_hull_vertices.shape[0], hull_vertices.shape[0], hull_eps, hull_collinear_tol,
+                )
+                logger.info(
+                    "scipy_tin 凸包顶点简化: 原始顶点=%d, 简化后=%d, 删除=%d (%.2f%%), 共线容差=%.3gm",
+                    raw_hull_vertices.shape[0],
+                    hull_vertices.shape[0],
+                    removed_hull_vertices,
+                    100.0 * float(removed_hull_vertices) / max(float(raw_hull_vertices.shape[0]), 1.0),
+                    hull_collinear_tol,
+                )
                 if hull_vertices.shape[0] > 1000:
                     logger.warning(
                         "scipy_tin 凸包顶点数异常偏大: V=%d（可能存在断裂线高密度边界点），"
