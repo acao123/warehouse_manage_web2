@@ -868,6 +868,34 @@ class ArcgisIdwSmoothTests(unittest.TestCase):
         self.assertEqual(capture["linear_builds"], 1)
         self.assertAlmostEqual(float(fake_driver.dataset.band.arr[0, 0]), 2.5, places=6)
 
+    def test_points_in_convex_hull_accepts_cw_vertices(self):
+        points = np.array(
+            [[0.5, 0.5], [1.5, 0.5], [0.0, 0.0]],
+            dtype=np.float64,
+        )
+        hull_cw = np.array(
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+            dtype=np.float64,
+        )
+        inside = KML_TO_IA.KmlToIaConverter._points_in_convex_hull(points, hull_cw, eps=1e-9)
+        np.testing.assert_array_equal(inside, np.array([True, False, True], dtype=bool))
+
+    def test_points_in_convex_hull_batches_large_inputs(self):
+        # Slightly above the implementation batch threshold to exercise auto-batching path.
+        n_points = 2_000_100
+        points = np.empty((n_points, 2), dtype=np.float64)
+        points[:, 0] = 0.25
+        points[:, 1] = 0.25
+        points[-1] = np.array([1.5, 0.25], dtype=np.float64)
+        hull_ccw = np.array(
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            dtype=np.float64,
+        )
+        inside = KML_TO_IA.KmlToIaConverter._points_in_convex_hull(points, hull_ccw, eps=1e-9)
+        self.assertEqual(inside.shape[0], n_points)
+        self.assertTrue(bool(np.all(inside[:-1])))
+        self.assertFalse(bool(inside[-1]))
+
 
 if __name__ == "__main__":
     unittest.main()
