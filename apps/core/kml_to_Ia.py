@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.18）
+KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.19）
 基于QGIS 3.40.15 Python环境
 
 功能：
@@ -11,9 +11,26 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.18）
     5. 只输出Ia.tif；如需PGA.tif，使用矢量栅格化方式（非插值）
     6. 分辨率固定为30米×30米
 
+主要改进（v3.19 相较 v3.18）：
+    1. scipy_tin NoData 横向条纹根因修复：
+       - 废弃 Delaunay.find_simplex 做凸包内/外预筛选（该方法在像素恰好落在三角边上
+         或存在浮点误差时会返回 -1，将边界像素错判为凸包外，导致成行 NoData 条纹）；
+       - 改用 scipy.spatial.ConvexHull 计算采样点凸包，再以向量化叉积法
+         （_points_in_convex_hull）做点是否在凸多边形内的判定；
+       - 在凸包边界附近留 eps = max(1e-6, 0.5 * resolution) 容差，避免边界像素被漏判；
+       - 单一判定路径：凸包内 CloughTocher 返回 NaN 的像素直接由 NN 填充，
+         不再做第二次 find_simplex 判定，消除双重筛选盲区。
+    2. scipy_tin 全图向量化加速：
+       - 在内存允许时（估算 < max_memory_gb * 0.6）一次性构造全图坐标并调用插值器，
+         减少分块 Python 循环与临时数组反复分配的开销；
+       - 分块路径作为内存超限时的回退，仍保持串行（线程安全），但凸包判定改为
+         向量化叉积（同一路径，无双重筛选）；
+       - 新增各阶段耗时日志：全图/分块路径选择、CT 实际调用像素数、NN 填充像素数、
+         断裂线锁定像素数、CloughTocher 耗时与速度。
+
 主要改进（v3.18 相较 v3.17）：
     1. scipy_tin 逻辑正确性修复：
-       - 断裂线锁定像素不再按“最后覆盖”写入，改为“距离像素中心最近的等值线”优先，
+       - 断裂线锁定像素不再按"最后覆盖"写入，改为"距离像素中心最近的等值线"优先，
          避免多条等值线穿过同像素时出现不稳定覆盖；
        - 值域钳制改为基于实际插值输入点（含断裂线加密点）计算，避免仅按离散采样点
          计算导致的过度钳制；
@@ -22,7 +39,7 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.18）
        - 顶点去重容差由固定 1e-9m 调整为 max(1e-6m, 0.01*resolution)，避免米制坐标
          下的过严阈值造成无意义顶点保留。
     2. scipy_tin 关键性能优化（保持线程安全）：
-       - 新增“全图一次性向量化调用”路径：在内存允许时一次调用 scipy 插值器，减少
+       - 新增"全图一次性向量化调用"路径：在内存允许时一次调用 scipy 插值器，减少
          Python 分块循环与函数调度开销；
        - 分块路径改为广播写入坐标缓冲（避免每块 np.tile/np.repeat 大量重复分配）；
        - 断裂线加密采样改为累计长度 + np.interp 向量化重采样，减少逐线段 Python 循环；
@@ -253,9 +270,9 @@ KML格式PGA等值线转换为Ia栅格文件工具（重构版 v3.18）
     6. QgsFeature设置fields定义，确保属性值不丢失
     7. 方法名重命名消除误导（_determine_utm_projection → _setup_output_crs）
 
-作者: acao (重构版 v3.17)
-日期: 2026-06-01
-版本: 3.17
+作者: acao (重构版 v3.19)
+日期: 2026-06-02
+版本: 3.19
 QGIS版本: 3.40.15
 
 支持插值方法:
@@ -2188,6 +2205,54 @@ class KmlToIaConverter:
 
     # ==================== scipy TIN 插值方法 ====================
 
+    @staticmethod
+    def _points_in_convex_hull(
+        points_xy: np.ndarray,
+        hull_vertices_xy: np.ndarray,
+        eps: float = 1e-6,
+    ) -> np.ndarray:
+        """
+        判断一批点是否在凸多边形内（向量化叉积法，O(N·V)，纯 numpy）。
+
+        参数:
+            points_xy:        形状 (N, 2) 的查询点坐标数组
+            hull_vertices_xy: 形状 (V, 2) 的凸包顶点坐标数组（按 ConvexHull.vertices 顺序，
+                              逆时针或顺时针均可，本函数自动处理两种方向）
+            eps:              边界容差。在凸包边界附近 eps 范围内的点也视为内部，
+                              避免浮点误差导致边界像素被错判为外部。
+
+        返回:
+            形状 (N,) 的布尔数组，True 表示在凸包内（含边界容差范围内）
+        """
+        verts = hull_vertices_xy  # (V, 2)
+        n_v = verts.shape[0]
+        if n_v < 3:
+            # 退化多边形（少于3个顶点）：无法判定内外，全部视为外部
+            return np.zeros(points_xy.shape[0], dtype=bool)
+
+        v_next = np.roll(verts, -1, axis=0)  # (V, 2)
+        edge = v_next - verts                 # (V, 2)  边向量
+
+        # pts_rel[i, j] = points_xy[i] - verts[j]   形状 (N, V, 2)
+        pts_rel = points_xy[:, np.newaxis, :] - verts[np.newaxis, :, :]
+        # 叉积 z 分量：cross[i,j] = edge[j,0]*rel[i,j,1] - edge[j,1]*rel[i,j,0]
+        cross = (edge[np.newaxis, :, 0] * pts_rel[:, :, 1]
+                 - edge[np.newaxis, :, 1] * pts_rel[:, :, 0])  # (N, V)
+
+        # 用有符号面积（shoelace 公式）判断顶点顺序：正值=逆时针(CCW)，负值=顺时针(CW)
+        signed_area = 0.5 * float(np.sum(
+            verts[:, 0] * v_next[:, 1] - v_next[:, 0] * verts[:, 1]
+        ))
+
+        if signed_area >= 0:
+            # CCW：内部点对所有边的叉积 >= 0；加容差为 >= -eps
+            inside = np.all(cross >= -eps, axis=1)
+        else:
+            # CW：内部点对所有边的叉积 <= 0；加容差为 <= eps
+            inside = np.all(cross <= eps, axis=1)
+
+        return inside
+
     def _run_scipy_tin_interpolation(
         self,
         x_arr: np.ndarray,
@@ -2196,7 +2261,7 @@ class KmlToIaConverter:
         output_tif_path: str,
     ) -> None:
         """
-        使用“完整等值线 Hard Line 约束采样 + 自然邻域语义平滑”方式执行 scipy_tin。
+        使用"完整等值线 Hard Line 约束采样 + 自然邻域语义平滑"方式执行 scipy_tin。
 
         本实现重点保证两点：
             1. 输出 GeoTIFF 合法且可被 ArcGIS Pro/GDAL/QGIS 打开：
@@ -2260,20 +2325,21 @@ class KmlToIaConverter:
             sample_rate_threshold = 5000.0
             progress_log_interval_chunks = 5
             slow_chunk_log_seconds = 30.0
-            hull_tri = None
-            has_hull_find_simplex = False
+            hull_vertices = None   # (V, 2) 凸包顶点坐标，按顺序排列
+            hull_eps = max(1e-6, 0.5 * float(self.resolution))
 
             try:
-                from scipy.spatial import Delaunay as _ScipyDelaunay
-                hull_tri = _ScipyDelaunay(points)
-                has_hull_find_simplex = hasattr(hull_tri, "find_simplex")
+                from scipy.spatial import ConvexHull as _ScipyConvexHull
+                _ch = _ScipyConvexHull(points)
+                hull_vertices = points[_ch.vertices]  # (V, 2)，顶点顺序由 ConvexHull 给出
+                del _ch
+                logger.info("scipy_tin 凸包构建完成: 顶点数=%d, 容差 eps=%.3g", hull_vertices.shape[0], hull_eps)
             except Exception as hull_exc:
                 logger.warning(
-                    "scipy_tin 凸包预筛选 Delaunay 构建失败，退化为全像素参与插值判定: %s",
+                    "scipy_tin 凸包构建失败，退化为全像素参与插值判定: %s",
                     hull_exc,
                 )
-                hull_tri = None
-                has_hull_find_simplex = False
+                hull_vertices = None
 
             def _build_linear_interp():
                 return _LinearNDInterpolator(
@@ -2313,8 +2379,8 @@ class KmlToIaConverter:
                 sample_pts = np.empty((self._n_cols, 2), dtype=np.float64)
                 sample_pts[:, 0] = self._x_min + (np.arange(self._n_cols) + 0.5) * self._res_lon
                 sample_pts[:, 1] = sample_grid_y[0]
-                if has_hull_find_simplex:
-                    sample_inside_mask = hull_tri.find_simplex(sample_pts) >= 0
+                if hull_vertices is not None:
+                    sample_inside_mask = self._points_in_convex_hull(sample_pts, hull_vertices, eps=hull_eps)
                     sample_eval_pts = sample_pts[sample_inside_mask]
                 else:
                     sample_inside_mask = None
@@ -2412,126 +2478,221 @@ class KmlToIaConverter:
                 for row_idx, cells in breakline_cells.items()
             }
 
-            # 内层函数：计算单个分块（高阶 TIN + 最近邻填充 + 等值线锁定）
-            # 返回 (row_start, result_2d, n_interp_valid, n_nn_filled, n_breakline_locked)
-            def _compute_chunk_tin(
-                row_start: int,
-            ) -> Tuple[int, np.ndarray, int, int, int]:
-                row_end = min(row_start + chunk_rows, n_rows)
-                actual_rows = row_end - row_start
-                grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
-                pts = np.empty((actual_rows * n_cols, 2), dtype=np.float64)
-                pts_grid = pts.reshape(actual_rows, n_cols, 2)
-                pts_grid[:, :, 0] = grid_x
-                pts_grid[:, :, 1] = grid_y[:, None]
+            # ----------------------------------------------------------------
+            # 辅助：对一批坐标点执行凸包内外判定
+            # hull_vertices is None → 全部视为内部（无凸包约束）
+            # ----------------------------------------------------------------
+            def _make_inside_mask(pts_2d: np.ndarray) -> np.ndarray:
+                """返回布尔掩码，True 表示在凸包内（或无凸包时全 True）。"""
+                if hull_vertices is not None:
+                    return self._points_in_convex_hull(pts_2d, hull_vertices, eps=hull_eps)
+                return np.ones(pts_2d.shape[0], dtype=bool)
 
-                chunk_vals_tin = np.full(pts.shape[0], np.nan, dtype=np.float64)
-                if has_hull_find_simplex:
-                    inside_mask = hull_tri.find_simplex(pts) >= 0
-                    interp_idx = np.flatnonzero(inside_mask)
-                else:
-                    inside_mask = None
-                    interp_idx = np.arange(pts.shape[0], dtype=np.int64)
-
-                if interp_idx.size > 0:
-                    interp_vals = interp(pts[interp_idx])
-                    if hasattr(interp_vals, "filled"):
-                        interp_vals = interp_vals.filled(np.nan)
-                    interp_vals = np.asarray(interp_vals, dtype=np.float64)
-                    chunk_vals_tin[interp_idx] = interp_vals
-                    n_interp_valid = int(np.count_nonzero(np.isfinite(interp_vals)))
-                    del interp_vals
-                else:
-                    n_interp_valid = 0
-
-                nan_mask = ~np.isfinite(chunk_vals_tin)
-                n_nn_filled = 0
-
-                if np.any(nan_mask):
-                    if has_hull_find_simplex:
-                        nan_idx = np.flatnonzero(nan_mask)
-                        nan_inside_mask = hull_tri.find_simplex(pts[nan_idx]) >= 0
-                        fill_idx = nan_idx[nan_inside_mask]
-                        del nan_idx
-                    else:
-                        fill_idx = np.flatnonzero(nan_mask)
-                    n_nn_filled = int(fill_idx.size)
-                    if n_nn_filled > 0:
-                        chunk_vals_tin[fill_idx] = nn_interp(pts[fill_idx])
-                    del fill_idx
-
-                del interp_idx
-                if inside_mask is not None:
-                    del inside_mask
-
-                del pts
-
-                chunk_vals_tin = chunk_vals_tin.reshape(actual_rows, n_cols)
-                n_breakline_locked = 0
-                for local_row, global_row in enumerate(range(row_start, row_end)):
-                    row_arrays = breakline_row_arrays.get(global_row)
-                    if row_arrays is None:
-                        continue
-                    cols, vals = row_arrays
-                    chunk_vals_tin[local_row, cols] = vals
-                    n_breakline_locked += int(cols.size)
-
-                nodata_mask = (~np.isfinite(chunk_vals_tin)) | (chunk_vals_tin < -9998.0)
-                np.clip(chunk_vals_tin, v_min, v_max, out=chunk_vals_tin)
-                chunk_vals_tin[nodata_mask] = -9999.0
-                chunk_vals_tin = chunk_vals_tin.astype(np.float32, copy=False)
-                return (
-                    row_start, chunk_vals_tin,
-                    n_interp_valid, n_nn_filled, n_breakline_locked,
-                )
+            # ----------------------------------------------------------------
+            # 决定是否走"全图向量化"路径：估算峰值内存占用
+            # 内存系数 6 来自：
+            #   坐标缓冲 x/y 各 1 个 float64（2×8 bytes/pixel）
+            #   + 结果数组 1 个 float64（8 bytes/pixel）
+            #   + CloughTocher 内部临时缓冲约 3 倍结果数组（3×8 bytes/pixel）
+            #   合计 ≈ 6×8 bytes/pixel
+            # 内存预算取 max_memory_gb 的 60%，留 40% 给其他运行时开销
+            # （GDAL 波段写入缓冲、Python 对象元数据、OS 页面缓存等）
+            # ----------------------------------------------------------------
+            total_pixels = n_rows * n_cols
+            _MEM_FACTOR = 6          # 峰值内存系数（见上方注释）
+            _MEM_BUDGET_FRAC = 0.6   # 只使用可用内存的 60%，留余量给运行时开销
+            estimated_gb = total_pixels * 8 * _MEM_FACTOR / (1024 ** 3)
+            mem_budget_gb = float(getattr(self, "max_memory_gb", 2.0)) * _MEM_BUDGET_FRAC
+            use_full_image_path = estimated_gb <= mem_budget_gb
 
             start_time = time.time()
-            logger.info(
-                "scipy_tin 插值开始：采用分块串行计算（分块数=%d，避免插值器线程不安全崩溃）。",
-                len(chunk_starts),
-            )
-
             total_interp_valid = 0
             total_nn_filled = 0
             total_breakline_locked = 0
 
-            for chunk_idx, rs in enumerate(chunk_starts):
+            if use_full_image_path:
+                # ============================================================
+                # 全图向量化路径：一次性构造所有坐标，调用插值器
+                # ============================================================
+                logger.info(
+                    "scipy_tin 插值开始：采用全图向量化路径（估算内存=%.2fGB < 预算=%.2fGB）。",
+                    estimated_gb, mem_budget_gb,
+                )
                 self._check_cancelled()
-                chunk_start_time = time.time()
-                try:
-                    (row_start_res, chunk_vals,
-                     n_interp_valid_chunk, n_nn_filled_chunk,
-                     n_breakline_locked_chunk) = _compute_chunk_tin(rs)
-                except Exception as exc:
-                    logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
-                    raise
 
-                band.WriteArray(chunk_vals, 0, row_start_res)
-                del chunk_vals
+                all_grid_y = self._y_max - (np.arange(n_rows) + 0.5) * self._res_lat
+                pts_all = np.empty((total_pixels, 2), dtype=np.float64)
+                pts_grid = pts_all.reshape(n_rows, n_cols, 2)
+                pts_grid[:, :, 0] = grid_x
+                pts_grid[:, :, 1] = all_grid_y[:, None]
+                del all_grid_y, pts_grid
 
-                # 累计统计
-                total_interp_valid += n_interp_valid_chunk
-                total_nn_filled += n_nn_filled_chunk
-                total_breakline_locked += n_breakline_locked_chunk
+                vals_all = np.full(total_pixels, np.nan, dtype=np.float64)
 
-                row_end = min(rs + chunk_rows, n_rows)
-                chunk_elapsed = time.time() - chunk_start_time
-                elapsed = time.time() - start_time
-                if (
-                    (chunk_idx + 1) % progress_log_interval_chunks == 0
-                    or row_end == n_rows
-                    or chunk_elapsed > slow_chunk_log_seconds
-                ):
-                    logger.info(
-                        "scipy_tin 进度: 已完成 %d/%d 行 (%.1f%%), chunk 用时: %.1fs, 累计已用时: %.1fs",
-                        row_end, n_rows, 100.0 * row_end / n_rows, chunk_elapsed, elapsed,
+                inside_mask = _make_inside_mask(pts_all)
+                interp_idx = np.flatnonzero(inside_mask)
+                del inside_mask
+
+                ct_start = time.time()
+                self._check_cancelled()
+                if interp_idx.size > 0:
+                    interp_vals = interp(pts_all[interp_idx])
+                    if hasattr(interp_vals, "filled"):
+                        interp_vals = interp_vals.filled(np.nan)
+                    interp_vals = np.asarray(interp_vals, dtype=np.float64)
+                    vals_all[interp_idx] = interp_vals
+                    total_interp_valid = int(np.count_nonzero(np.isfinite(interp_vals)))
+                    del interp_vals
+                ct_elapsed = time.time() - ct_start
+                self._check_cancelled()
+                logger.info(
+                    "scipy_tin CT 插值完成: 调用像素=%d, 耗时=%.2fs, 速度=%.0f 像素/秒",
+                    interp_idx.size, ct_elapsed,
+                    float(interp_idx.size) / max(ct_elapsed, 1e-9),
+                )
+
+                # NN 兜底：凸包内 CT 返回 NaN 的像素（单一判定路径，无双重筛选）
+                # interp_idx 已是凸包内索引；其中 vals_all[interp_idx] 为 NaN 的需 NN 填充
+                nan_in_hull = interp_idx[~np.isfinite(vals_all[interp_idx])]
+                total_nn_filled = int(nan_in_hull.size)
+                if total_nn_filled > 0:
+                    vals_all[nan_in_hull] = nn_interp(pts_all[nan_in_hull])
+                del interp_idx, nan_in_hull
+                del pts_all
+
+                logger.info("scipy_tin NN 填充（凸包内 CT NaN）: %d 像素", total_nn_filled)
+
+                # 重塑为 2D，施加断裂线锁定
+                arr_2d = vals_all.reshape(n_rows, n_cols)
+                del vals_all
+
+                if breakline_row_arrays:
+                    rows_idx_list = []
+                    cols_idx_list = []
+                    vals_idx_list = []
+                    for global_row, (cols_arr, vals_arr) in breakline_row_arrays.items():
+                        rows_idx_list.append(np.full(cols_arr.shape[0], global_row, dtype=np.int64))
+                        cols_idx_list.append(cols_arr)
+                        vals_idx_list.append(vals_arr)
+                        total_breakline_locked += int(cols_arr.size)
+                    if rows_idx_list:
+                        r_idx = np.concatenate(rows_idx_list)
+                        c_idx = np.concatenate(cols_idx_list)
+                        v_idx = np.concatenate(vals_idx_list)
+                        arr_2d[r_idx, c_idx] = v_idx
+                        del r_idx, c_idx, v_idx
+                    del rows_idx_list, cols_idx_list, vals_idx_list
+                logger.info("scipy_tin 断裂线锁定: %d 像素", total_breakline_locked)
+
+                nodata_mask = (~np.isfinite(arr_2d)) | (arr_2d < -9998.0)
+                np.clip(arr_2d, v_min, v_max, out=arr_2d)
+                arr_2d[nodata_mask] = -9999.0
+                band.WriteArray(arr_2d.astype(np.float32, copy=False), 0, 0)
+                del arr_2d, nodata_mask
+
+            else:
+                # ============================================================
+                # 分块串行路径（内存不足时的回退）
+                # ============================================================
+                logger.info(
+                    "scipy_tin 插值开始：采用分块串行计算（分块数=%d，避免插值器线程不安全崩溃）。"
+                    "（估算内存=%.2fGB > 预算=%.2fGB，回退分块路径）",
+                    len(chunk_starts), estimated_gb, mem_budget_gb,
+                )
+
+                # 内层函数：计算单个分块（高阶 TIN + 最近邻填充 + 等值线锁定）
+                # 返回 (row_start, result_2d, n_interp_valid, n_nn_filled, n_breakline_locked)
+                def _compute_chunk_tin(
+                    row_start: int,
+                ) -> Tuple[int, np.ndarray, int, int, int]:
+                    row_end = min(row_start + chunk_rows, n_rows)
+                    actual_rows = row_end - row_start
+                    grid_y = self._y_max - (np.arange(row_start, row_end) + 0.5) * self._res_lat
+                    pts = np.empty((actual_rows * n_cols, 2), dtype=np.float64)
+                    pts_grid = pts.reshape(actual_rows, n_cols, 2)
+                    pts_grid[:, :, 0] = grid_x
+                    pts_grid[:, :, 1] = grid_y[:, None]
+
+                    chunk_vals_tin = np.full(pts.shape[0], np.nan, dtype=np.float64)
+                    inside_mask = _make_inside_mask(pts)
+                    interp_idx = np.flatnonzero(inside_mask)
+
+                    if interp_idx.size > 0:
+                        interp_vals = interp(pts[interp_idx])
+                        if hasattr(interp_vals, "filled"):
+                            interp_vals = interp_vals.filled(np.nan)
+                        interp_vals = np.asarray(interp_vals, dtype=np.float64)
+                        chunk_vals_tin[interp_idx] = interp_vals
+                        n_interp_valid = int(np.count_nonzero(np.isfinite(interp_vals)))
+                        del interp_vals
+                    else:
+                        n_interp_valid = 0
+
+                    # NN 兜底：凸包内 CT 返回 NaN 的像素（单一判定路径）
+                    # interp_idx 已是凸包内索引；其中 NaN 子集用 NN 填充
+                    nan_in_hull = interp_idx[~np.isfinite(chunk_vals_tin[interp_idx])]
+                    n_nn_filled = int(nan_in_hull.size)
+                    if n_nn_filled > 0:
+                        chunk_vals_tin[nan_in_hull] = nn_interp(pts[nan_in_hull])
+                    del nan_in_hull, interp_idx, inside_mask
+
+                    del pts
+
+                    chunk_vals_tin = chunk_vals_tin.reshape(actual_rows, n_cols)
+                    n_breakline_locked = 0
+                    for local_row, global_row in enumerate(range(row_start, row_end)):
+                        row_arrays = breakline_row_arrays.get(global_row)
+                        if row_arrays is None:
+                            continue
+                        cols, vals = row_arrays
+                        chunk_vals_tin[local_row, cols] = vals
+                        n_breakline_locked += int(cols.size)
+
+                    nodata_mask = (~np.isfinite(chunk_vals_tin)) | (chunk_vals_tin < -9998.0)
+                    np.clip(chunk_vals_tin, v_min, v_max, out=chunk_vals_tin)
+                    chunk_vals_tin[nodata_mask] = -9999.0
+                    chunk_vals_tin = chunk_vals_tin.astype(np.float32, copy=False)
+                    return (
+                        row_start, chunk_vals_tin,
+                        n_interp_valid, n_nn_filled, n_breakline_locked,
                     )
+
+                for chunk_idx, rs in enumerate(chunk_starts):
+                    self._check_cancelled()
+                    chunk_start_time = time.time()
+                    try:
+                        (row_start_res, chunk_vals,
+                         n_interp_valid_chunk, n_nn_filled_chunk,
+                         n_breakline_locked_chunk) = _compute_chunk_tin(rs)
+                    except Exception as exc:
+                        logger.error("scipy_tin 插值分块 row_start=%d 失败: %s", rs, exc)
+                        raise
+
+                    band.WriteArray(chunk_vals, 0, row_start_res)
+                    del chunk_vals
+
+                    # 累计统计
+                    total_interp_valid += n_interp_valid_chunk
+                    total_nn_filled += n_nn_filled_chunk
+                    total_breakline_locked += n_breakline_locked_chunk
+
+                    row_end = min(rs + chunk_rows, n_rows)
+                    chunk_elapsed = time.time() - chunk_start_time
+                    elapsed = time.time() - start_time
+                    if (
+                        (chunk_idx + 1) % progress_log_interval_chunks == 0
+                        or row_end == n_rows
+                        or chunk_elapsed > slow_chunk_log_seconds
+                    ):
+                        logger.info(
+                            "scipy_tin 进度: 已完成 %d/%d 行 (%.1f%%), chunk 用时: %.1fs, 累计已用时: %.1fs",
+                            row_end, n_rows, 100.0 * row_end / n_rows, chunk_elapsed, elapsed,
+                        )
 
             band.ComputeStatistics(False)
             band.FlushCache()
             out_ds.FlushCache()
 
-            total_pixels = self._n_rows * self._n_cols
             logger.info(
                 "scipy_tin 像素统计（高阶TIN / 最近邻填充 / 断裂线锁定）: "
                 "高阶TIN=%d (%.2f%%), 最近邻填充=%d (%.2f%%), 断裂线锁定=%d (%.2f%%)",
