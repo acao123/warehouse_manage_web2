@@ -27,7 +27,7 @@ from PIL import Image
 # 天地图 WMTS 配置（vec_c + cva_c）
 # ============================================================
 
-TIANDITU_TK = "1ef76ef90c6eb961cb49618f9b1a399d"
+TIANDITU_TK = "bb2a5138bbefdb3e73bdea0cb2c856ee"
 
 TIANDITU_VEC_URL = (
     "http://t{s}.tianditu.gov.cn/vec_c/wmts?"

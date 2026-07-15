@@ -3809,7 +3809,7 @@ class KmlToIaConverter:
 if __name__ == "__main__":
     converter = KmlToIaConverter(
         kml_path="E:\\code\\python\\地质\\PGA666.kml",  # 输入KML文件路径
-        ia_output_path="E:\\code\\python\\地质\\Ia6688.tif",  # Ia输出路径
+        ia_output_path="E:\\code\\python\\地质\\Ia888.tif",  # Ia输出路径
 
         # PGA输出（可选，使用矢量栅格化非插值）
         pga_output_path="../../data/geology/kml/PGA.tif",  # 不需要PGA时设为None

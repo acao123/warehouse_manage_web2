@@ -122,7 +122,7 @@ except ImportError:
 # ============================================================
 
 # 天地图配置
-TIANDITU_TK = '1ef76ef90c6eb961cb49618f9b1a399d'
+TIANDITU_TK = 'bb2a5138bbefdb3e73bdea0cb2c856ee'
 
 # 数据文件路径（优先从 Django settings 读取）
 _DEFAULT_BASE = "../../data/geology/"

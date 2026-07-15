@@ -90,8 +90,8 @@ from core.tianditu_basemap_downloader import download_tianditu_annotation_tiles
 
 # 天地图配置
 TIANDITU_TK = (
-    getattr(_django_settings, 'TIANDITU_TK', '1ef76ef90c6eb961cb49618f9b1a399d')
-    if _DJANGO_AVAILABLE else '1ef76ef90c6eb961cb49618f9b1a399d'
+    getattr(_django_settings, 'TIANDITU_TK', 'bb2a5138bbefdb3e73bdea0cb2c856ee')
+    if _DJANGO_AVAILABLE else 'bb2a5138bbefdb3e73bdea0cb2c856ee'
 )
 # 天地图矢量底图XYZ URL模板
 TIANDITU_VEC_URL = (

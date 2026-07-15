@@ -22,8 +22,8 @@ except Exception:
     _django_settings = None
 
 TIANDITU_TK = (
-    getattr(_django_settings, 'TIANDITU_TK', '1ef76ef90c6eb961cb49618f9b1a399d')
-    if _django_settings is not None else '1ef76ef90c6eb961cb49618f9b1a399d'
+    getattr(_django_settings, 'TIANDITU_TK', 'bb2a5138bbefdb3e73bdea0cb2c856ee')
+    if _django_settings is not None else 'bb2a5138bbefdb3e73bdea0cb2c856ee'
 )
 
 from qgis.core import QgsRasterLayer

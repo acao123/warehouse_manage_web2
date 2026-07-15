@@ -242,7 +242,7 @@ AC_TIF_PATH = 'C:/地质/ac/全国ac分布/ac.tif'
 LANDSLIDE_ASSESSMENT_TIF_PATH = MAP_DATA_BASE_PATH + '图12/ChinaRecla1.tif'
 
 # 天地图 Key
-TIANDITU_TK = '1ef76ef90c6eb961cb49618f9b1a399d'
+TIANDITU_TK = 'bb2a5138bbefdb3e73bdea0cb2c856ee'
 
 # ============================================================
 # 企业级日志配置
