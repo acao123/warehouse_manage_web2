@@ -184,6 +184,7 @@ FILE_BASE_PATH = 'E:/data/report/'
 
 # 报告Word模板路径
 REPORT_TEMPLATE_PATH = 'E:/data/word/第X期 XXX地XX级地震滑坡危险性评估报告.docx'
+REPORT_TEMPLATE_PATH_FLASH = 'E:/data/word/第X期 XXX地XX级地震滑坡危险性评估报告速报.docx'
 
 # ============================================================
 # 地图底图数据路径配置

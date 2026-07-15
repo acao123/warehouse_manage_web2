@@ -874,27 +874,16 @@ def execute_report_task(task_id: int) -> None:
 
         # ---- 11. 保存记录 ----
         try:
-            ReportTaskRecord.objects.create(**record_kwargs)
+            record = ReportTaskRecord.objects.create(**record_kwargs)
             logger.info('[任务 %s] 已保存 report_task_record', task_id)
         except Exception as exc:
             logger.error('[任务 %s] 保存 report_task_record 失败: %s', task_id, exc, exc_info=True)
             _mark_failed(task, error_message=f'保存记录失败: {exc}')
             return
 
-        # ---- 12. 生成Word文档 ----
-        try:
-            report_path = generate_report_word(task, output_dir, record_kwargs)
-            if report_path:
-                # 更新 report_path 到 ReportTaskRecord
-                ReportTaskRecord.objects.filter(task_id=task_id).update(
-                    report_path=report_path
-                )
-            _update_task_progress(task_id, PROGRESS_STEPS['report_done'],
-                                  append_message='报告生成完成，')
-        except Exception as exc:
-            logger.error('[任务 %s] Word报告生成失败: %s', task_id, exc, exc_info=True)
-            _update_task_progress(task_id, PROGRESS_STEPS['report_done'],
-                                  error_message=f'Word报告生成失败: {exc}')
+        # ---- 12. 生成完整报告和速报 ----
+        if not _complete_report_generation(task, output_dir, record):
+            return
 
         # ---- 13. 检查是否取消；标记成功 ----
         if _is_cancelled(task_id):
@@ -1220,264 +1209,147 @@ def _get_image_size_config(img_key: str) -> dict:
     return IMAGE_SIZE_CONFIG.get(img_key, IMAGE_SIZE_CONFIG['default'])
 
 
-def generate_report_word(task: ReportTask, output_dir: str, record_data: dict) -> Optional[str]:
-    """
-    根据 Word 模板生成报告文档，使用占位符替换方式。
+FULL_REPORT_IMAGE_KEYS = tuple(f'img{i}' for i in range(1, 13))
+FLASH_REPORT_IMAGE_KEYS = ('img11', 'img12')
 
-    模板占位符说明（使用 Jinja2 语法）：
-        - {{current_year}}: 当前年份
-        - {{task_id}}: 任务ID（期号）
-        - {{current_Time}}: 当前日期时间
-        - {{address}}: 地震位置（如：XX省XX市）
-        - {{base_info}}: 地震基本信息描述
-        - {{img1_info}}: 历史地震说明文字
-        - {{img1}}: 历史地震分布图
-        - {{scope}}: 历史地震统计范围（如150）
-        - {{img2_info}}: 烈度说明文字
-        - {{img2}}: 烈度分布图
-        - {{img3}} ~ {{img9}}: 其他专题图
-        - {{img9_info}}: 滑坡分布说明
 
-    图片尺寸处理：
-        - 自动读取图片实际像素尺寸和 DPI 信息
-        - 根据配置计算合适的显示尺寸（毫米）
-        - 同时设置宽度和高度，确保与手动插入效果一致
+def _build_report_context(doc, task: ReportTask, record: ReportTaskRecord,
+                          image_keys: Tuple[str, ...]) -> dict:
+    """构建指定报告模板所需的文字和图片上下文。"""
+    now = datetime.now()
+    if task.ori_time:
+        t = task.ori_time
+        ori_time_str = f'{t.year}年{t.month}月{t.day}日{t.hour}时{t.minute}分'
+    else:
+        ori_time_str = ''
 
-    执行流程：
-        1. 检查并导入 docxtpl 库
-        2. 查询 ReportTaskRecord 记录
-        3. 加载 Word 模板文件
-        4. 构建模板上下文（包括文字和图片）
-        5. 渲染模板并保存
-        6. 更新数据库记录
+    context = {
+        'current_year': now.strftime('%Y'),
+        'task_id': task.id,
+        'current_Time': f'{now.year}年{now.month}月{now.day}日',
+        'address': f'{task.address}{task.magnitude}',
+        'base_info': (
+            f'{ori_time_str}，在{task.address}（北纬{float(task.latitude):.2f}度，'
+            f'东经{float(task.longitude):.2f}度）发生{task.magnitude}级地震，'
+            f'震源深度{int(task.foc_depth)}千米'
+        ),
+        'scope': _get_map_scope_km(task.magnitude),
+        'img1_info': record.img1_info or '',
+        'img2_info': record.img2_info or '',
+        'img9_info': record.img9_info or '',
+        'img11_info': record.img11_info or '',
+        'img12_info': record.img12_info or '',
+    }
 
-    参数:
-        task: ReportTask 模型对象
-        output_dir: 输出目录路径
-        record_data: 已生成的图片路径字典
-
-    返回:
-        文档路径字符串，失败时返回 None
-    """
-    try:
-        # 尝试导入 docxtpl 库（支持 Jinja2 模板语法）
-        from docxtpl import DocxTemplate, InlineImage
-        from docx.shared import Inches, Mm
-    except ImportError:
-        logger.error('[任务 %s] docxtpl 未安装，尝试使用 python-docx 备用方案', task.id)
-        return _generate_report_word_fallback(task, output_dir, record_data)
-
-    try:
-        task_id = task.id
-
-        # ---- 获取 ReportTaskRecord 记录 ----
-        record = (ReportTaskRecord.objects.filter(task_id=task_id)
-                  .order_by('-id')
-                  .first())
-        if not record:
-            logger.warning('[任务 %s] 未找到 ReportTaskRecord，跳过Word文档生成', task_id)
-            return None
-
-        # ---- 获取模板路径 ----
-        template_path = getattr(settings, 'REPORT_TEMPLATE_PATH', None)
-        if not template_path or not os.path.exists(template_path):
-            logger.warning('[任务 %s] Word模板文件不存在: %s，使用备用方案', task_id, template_path)
-            return _generate_report_word_fallback(task, output_dir, record_data)
-
-        # ---- 加载模板 ----
-        doc = DocxTemplate(template_path)
-        logger.info('[任务 %s] 已加载Word模板: %s', task_id, template_path)
-
-        # ---- 准备日期时间字符串 ----
-        now = datetime.now()
-        current_year = now.strftime('%Y')
-        current_time = f'{now.year}年{now.month}月{now.day}日'
-
-        # ---- 准备地震基本信息 ----
-        # 格式：北京时间2026年3月15日14时30分，XX省XX市发生X.X级地震，震中位于北纬XX.XX度，东经XX.XX度，震源深度约XXkm
-        if task.ori_time:
-            t = task.ori_time
-            ori_time_str = f'{t.year}年{t.month}月{t.day}日{t.hour}时{t.minute}分'
+    for image_key in image_keys:
+        image_path = getattr(record, f'{image_key}_path', None)
+        if image_path and os.path.exists(image_path):
+            context[image_key] = _create_inline_image(
+                doc,
+                image_path,
+                **_get_image_size_config(image_key),
+            )
+            logger.info('[任务 %s] 已准备%s: %s', task.id, image_key, image_path)
         else:
-            ori_time_str = ''
-        base_info = (
-            f"{ori_time_str}，在{task.address}（北纬{float(task.latitude):.2f}度，东经{float(task.longitude):.2f}度）"
-            f"发生{task.magnitude}级地震，"
-            f"震源深度{int(task.foc_depth)}千米"
+            context[image_key] = ''
+            logger.warning('[任务 %s] %s不存在: %s', task.id, image_key, image_path)
+
+    return context
+
+
+def _render_report_word(task: ReportTask, output_dir: str,
+                        record: ReportTaskRecord, *, template_path: str,
+                        doc_name: str, image_keys: Tuple[str, ...]) -> str:
+    """使用指定模板渲染一份 Word 报告，不修改数据库。"""
+    if not template_path or not os.path.exists(template_path):
+        raise FileNotFoundError(f'Word模板文件不存在: {template_path}')
+
+    try:
+        from docxtpl import DocxTemplate
+    except ImportError as exc:
+        raise RuntimeError('docxtpl 未安装，无法生成Word报告') from exc
+
+    doc = DocxTemplate(template_path)
+    logger.info('[任务 %s] 已加载Word模板: %s', task.id, template_path)
+    doc.render(_build_report_context(doc, task, record, image_keys))
+
+    doc_path = os.path.join(output_dir, doc_name)
+    doc.save(doc_path)
+    if not os.path.isfile(doc_path):
+        raise RuntimeError(f'Word报告保存失败: {doc_path}')
+
+    logger.info('[任务 %s] Word文档已保存: %s', task.id, doc_path)
+    return doc_path
+
+
+def generate_report_words(task: ReportTask, output_dir: str,
+                          record: ReportTaskRecord) -> Tuple[str, str]:
+    """生成完整报告和速报，任一失败时抛出异常。"""
+    base_name = f'第{task.id}期 {task.address}{task.magnitude}级地震滑坡危险性评估报告'
+    try:
+        report_path = _render_report_word(
+            task,
+            output_dir,
+            record,
+            template_path=getattr(settings, 'REPORT_TEMPLATE_PATH', None),
+            doc_name=f'{base_name}.docx',
+            image_keys=FULL_REPORT_IMAGE_KEYS,
         )
-
-        # ---- 获取历史地震统计范围 ----
-        scope = _get_map_scope_km(task.magnitude)
-
-        # ---- 构建模板上下文 ----
-        context = {
-            'current_year': current_year,
-            'task_id': task_id,
-            'current_Time': current_time,
-            'address': f"{task.address}{task.magnitude}",
-            'base_info': base_info,
-            'scope': scope,
-            # 文字说明
-            'img1_info': record.img1_info or '',
-            'img2_info': record.img2_info or '',
-            'img9_info': record.img9_info or '',
-            'img11_info': record.img11_info or '',
-            'img12_info': record.img12_info or '',
-        }
-
-        # ---- 准备图片对象（使用自动尺寸计算） ----
-
-        # 图片一：历史地震分布图
-        img1_path = record.img1_path
-        if img1_path and os.path.exists(img1_path):
-            config = _get_image_size_config('img1')
-            context['img1'] = _create_inline_image(doc, img1_path, **config)
-            logger.info('[任务 %s] 已准备图一: %s', task_id, img1_path)
-        else:
-            context['img1'] = ''
-            logger.warning('[任务 %s] 图一不存在: %s', task_id, img1_path)
-
-        # 图片二：烈度分布图
-        img2_path = record.img2_path
-        if img2_path and os.path.exists(img2_path):
-            config = _get_image_size_config('img2')
-            context['img2'] = _create_inline_image(doc, img2_path, **config)
-            logger.info('[任务 %s] 已准备图二: %s', task_id, img2_path)
-        else:
-            context['img2'] = ''
-            logger.warning('[任务 %s] 图二不存在: %s', task_id, img2_path)
-
-        # 图片三：地质构造图
-        img3_path = record.img3_path
-        if img3_path and os.path.exists(img3_path):
-            config = _get_image_size_config('img3')
-            context['img3'] = _create_inline_image(doc, img3_path, **config)
-            logger.info('[任务 %s] 已准备图三: %s', task_id, img3_path)
-        else:
-            context['img3'] = ''
-            logger.warning('[任务 %s] 图三不存在: %s', task_id, img3_path)
-
-        # 图片四：数字高程图
-        img4_path = record.img4_path
-        if img4_path and os.path.exists(img4_path):
-            config = _get_image_size_config('img4')
-            context['img4'] = _create_inline_image(doc, img4_path, **config)
-            logger.info('[任务 %s] 已准备图四: %s', task_id, img4_path)
-        else:
-            context['img4'] = ''
-            logger.warning('[任务 %s] 图四不存在: %s', task_id, img4_path)
-
-        # 图片五：土地利用类型图
-        img5_path = record.img5_path
-        if img5_path and os.path.exists(img5_path):
-            config = _get_image_size_config('img5')
-            context['img5'] = _create_inline_image(doc, img5_path, **config)
-            logger.info('[任务 %s] 已准备图五: %s', task_id, img5_path)
-        else:
-            context['img5'] = ''
-            logger.warning('[任务 %s] 图五不存在: %s', task_id, img5_path)
-
-        # 图片六：人口分布图
-        img6_path = record.img6_path
-        if img6_path and os.path.exists(img6_path):
-            config = _get_image_size_config('img6')
-            context['img6'] = _create_inline_image(doc, img6_path, **config)
-            logger.info('[任务 %s] 已准备图六: %s', task_id, img6_path)
-        else:
-            context['img6'] = ''
-            logger.warning('[任务 %s] 图六不存在: %s', task_id, img6_path)
-
-        # 图片七：GDP网格图
-        img7_path = record.img7_path
-        if img7_path and os.path.exists(img7_path):
-            config = _get_image_size_config('img7')
-            context['img7'] = _create_inline_image(doc, img7_path, **config)
-            logger.info('[任务 %s] 已准备图七: %s', task_id, img7_path)
-        else:
-            context['img7'] = ''
-            logger.warning('[任务 %s] 图七不存在: %s', task_id, img7_path)
-
-        # 图片八：道路交通图
-        img8_path = record.img8_path
-        if img8_path and os.path.exists(img8_path):
-            config = _get_image_size_config('img8')
-            context['img8'] = _create_inline_image(doc, img8_path, **config)
-            logger.info('[任务 %s] 已准备图八: %s', task_id, img8_path)
-        else:
-            context['img8'] = ''
-            logger.warning('[任务 %s] 图八不存在: %s', task_id, img8_path)
-
-        # 图片九：滑坡分布图
-        img9_path = record.img9_path
-        if img9_path and os.path.exists(img9_path):
-            config = _get_image_size_config('img9')
-            context['img9'] = _create_inline_image(doc, img9_path, **config)
-            logger.info('[任务 %s] 已准备图九: %s', task_id, img9_path)
-        else:
-            context['img9'] = ''
-            logger.warning('[任务 %s] 图九不存在: %s', task_id, img9_path)
-
-        # 图片十：newmark
-        img10_path = record.img10_path
-        if img10_path and os.path.exists(img10_path):
-            config = _get_image_size_config('img10')
-            context['img10'] = _create_inline_image(doc, img10_path, **config)
-            logger.info('[任务 %s] 已准备图十: %s', task_id, img10_path)
-        else:
-            context['img10'] = ''
-            logger.warning('[任务 %s] 图十不存在: %s', task_id, img10_path)
-
-        # 图片十一：地震危险性图
-        img11_path = record.img11_path
-        if img11_path and os.path.exists(img11_path):
-            config = _get_image_size_config('img11')
-            context['img11'] = _create_inline_image(doc, img11_path, **config)
-            logger.info('[任务 %s] 已准备图十一: %s', task_id, img11_path)
-        else:
-            context['img11'] = ''
-            logger.warning('[任务 %s] 图十一不存在: %s', task_id, img11_path)
-
-        # 图片十二：地震滑坡评估图
-        img12_path = record.img12_path
-        if img12_path and os.path.exists(img12_path):
-            config = _get_image_size_config('img12')
-            context['img12'] = _create_inline_image(doc, img12_path, **config)
-            logger.info('[任务 %s] 已准备图十二: %s', task_id, img12_path)
-        else:
-            context['img12'] = ''
-            logger.warning('[任务 %s] 图十二不存在: %s', task_id, img12_path)
-
-        # ---- 渲染模板 ----
-        doc.render(context)
-        logger.info('[任务 %s] 模板渲染完成', task_id)
-
-        # ---- 保存文档 ----
-        # 文档名称 第X期 XXX地XX级地震滑坡危险性评估报告
-        doc_name = f'第{task_id}期 {task.address}{task.magnitude}级地震滑坡危险性评估报告.docx'
-        doc_path = os.path.join(output_dir, doc_name)
-        doc.save(doc_path)
-        logger.info('[任务 %s] Word文档已保存: %s', task_id, doc_path)
-
-        # ---- 更新数据库记录 ----
-        record.report_path = doc_path
-        record.save(update_fields=['report_path', 'updated_at'])
-        logger.info('[任务 %s] report_task_record.report_path 已更新', task_id)
-
-        return doc_path
-
     except Exception as exc:
-        logger.error('[任务 %s] Word文档生成失败: %s', task.id, exc, exc_info=True)
-        # 尝试使用备用方案
-        return _generate_report_word_fallback(task, output_dir, record_data)
+        raise RuntimeError(f'完整报告生成失败: {exc}') from exc
+
+    try:
+        report_flash_path = _render_report_word(
+            task,
+            output_dir,
+            record,
+            template_path=getattr(settings, 'REPORT_TEMPLATE_PATH_FLASH', None),
+            doc_name=f'{base_name}速报.docx',
+            image_keys=FLASH_REPORT_IMAGE_KEYS,
+        )
+    except Exception as exc:
+        raise RuntimeError(f'速报生成失败: {exc}') from exc
+
+    return report_path, report_flash_path
 
 
-def _generate_report_word_fallback(task: ReportTask, output_dir: str, record_data: dict) -> Optional[str]:
-    """
-    备用方案：使用 python-docx 直接操作 Word 文档。
+def _generate_and_persist_report_words(task: ReportTask, output_dir: str,
+                                       record: ReportTaskRecord) -> Tuple[str, str]:
+    """两份报告均生成成功后，一次性保存数据库路径。"""
+    report_path, report_flash_path = generate_report_words(task, output_dir, record)
+    for path in (report_path, report_flash_path):
+        if not path or not os.path.isfile(path):
+            raise RuntimeError(f'Word报告文件不存在: {path}')
 
-    当 docxtpl 不可用或模板不存在时调用此函数。
-    """
-    pass
+    record.report_path = report_path
+    record.report_flash_path = report_flash_path
+    record.save(update_fields=['report_path', 'report_flash_path', 'updated_at'])
+    logger.info('[任务 %s] 完整报告和速报路径已更新', task.id)
+    return report_path, report_flash_path
+
+
+def _complete_report_generation(task: ReportTask, output_dir: str,
+                                record: ReportTaskRecord) -> bool:
+    """完成双报告生成阶段，失败时标记任务并通知调用方终止。"""
+    try:
+        _generate_and_persist_report_words(task, output_dir, record)
+    except Exception as exc:
+        error_message = f'Word报告生成失败: {exc}'
+        logger.error('[任务 %s] %s', task.id, error_message, exc_info=True)
+        _update_task_progress(
+            task.id,
+            PROGRESS_STEPS['report_done'],
+            error_message=error_message,
+        )
+        _mark_failed(task, error_message=error_message)
+        return False
+
+    _update_task_progress(
+        task.id,
+        PROGRESS_STEPS['report_done'],
+        append_message='完整报告和速报生成完成，',
+    )
+    return True
 
 
 # ============================================================

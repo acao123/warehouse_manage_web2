@@ -19,6 +19,11 @@ from .models import ReportTask, ReportTaskRecord
 # 获取日志记录器
 logger = logging.getLogger('report')
 
+REPORT_DOWNLOAD_FIELDS = {
+    'full': ('report_path', '报告'),
+    'flash': ('report_flash_path', '速报'),
+}
+
 # ============================================================
 # 页面渲染视图
 # ============================================================
@@ -457,10 +462,56 @@ def execute_task_view(request):
 @require_GET
 def download_report_view(request):
     """
-    下载报告文档接口：根据 task_id 查询 report_task_record 中的 report_path 并返回文件
+    根据 task_id 和 report_type 下载完整报告或速报。
     :param request: HTTP 请求对象
     :return: 文件响应或 JSON 错误信息
     """
+    user_id = request.session.get('user_id')
+    if not user_id:
+        return JsonResponse({'code': 1, 'msg': '用户未登录'})
+
+    task_id = request.GET.get('task_id', '').strip()
+    if not task_id:
+        return JsonResponse({'code': 1, 'msg': '缺少任务ID'})
+
+    report_type = request.GET.get('report_type', 'full').strip() or 'full'
+    if report_type not in REPORT_DOWNLOAD_FIELDS:
+        return JsonResponse({'code': 1, 'msg': '报告类型错误'})
+    path_field, report_label = REPORT_DOWNLOAD_FIELDS[report_type]
+
+    try:
+        task = ReportTask.objects.get(id=task_id)
+    except ReportTask.DoesNotExist:
+        return JsonResponse({'code': 1, 'msg': '任务不存在'})
+
+    if task.task_status == ReportTask.STATUS_RUNNING:
+        return JsonResponse({'code': 1, 'msg': '任务正在执行，请稍后'})
+
+    if task.task_status != ReportTask.STATUS_SUCCESS:
+        return JsonResponse({'code': 1, 'msg': '报告尚未生成，请先执行任务'})
+
+    record = ReportTaskRecord.objects.filter(task_id=task_id).order_by('-id').first()
+    report_path = getattr(record, path_field, None) if record else None
+    if not report_path:
+        return JsonResponse({'code': 1, 'msg': f'{report_label}文件不存在'})
+
+    if not os.path.isfile(report_path):
+        return JsonResponse({'code': 1, 'msg': f'{report_label}文件不存在'})
+
+    file_handle = open(report_path, 'rb')
+    response = FileResponse(
+        file_handle,
+        as_attachment=True,
+        filename=os.path.basename(report_path),
+        content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    )
+    logger.info('任务 %s 的%s文档被用户 %s 下载', task_id, report_label, user_id)
+    return response
+
+
+@require_GET
+def download_report_info_view(request):
+    """返回完整报告和速报的下载可用性，不暴露服务器文件路径。"""
     user_id = request.session.get('user_id')
     if not user_id:
         return JsonResponse({'code': 1, 'msg': '用户未登录'})
@@ -476,27 +527,23 @@ def download_report_view(request):
 
     if task.task_status == ReportTask.STATUS_RUNNING:
         return JsonResponse({'code': 1, 'msg': '任务正在执行，请稍后'})
-
     if task.task_status != ReportTask.STATUS_SUCCESS:
         return JsonResponse({'code': 1, 'msg': '报告尚未生成，请先执行任务'})
 
-    record = ReportTaskRecord.objects.filter(task_id=task_id,
-                                             report_path__isnull=False,
-                                             ).order_by('-id').first()
-    if not record or not record.report_path:
-        return JsonResponse({'code': 1, 'msg': '报告文件不存在'})
+    record = ReportTaskRecord.objects.filter(task_id=task_id).order_by('-id').first()
+    if not record:
+        return JsonResponse({'code': 1, 'msg': '报告记录不存在'})
 
-    if not os.path.exists(record.report_path):
-        return JsonResponse({'code': 1, 'msg': '报告文件不存在'})
+    data = {}
+    for report_type, (path_field, _report_label) in REPORT_DOWNLOAD_FIELDS.items():
+        report_path = getattr(record, path_field, None)
+        available = bool(report_path and os.path.isfile(report_path))
+        data[report_type] = {
+            'available': available,
+            'filename': os.path.basename(report_path) if available else '',
+        }
 
-    file_handle = open(record.report_path, 'rb')
-    response = FileResponse(
-        file_handle,
-        as_attachment=True,
-        filename=os.path.basename(record.report_path),
-    )
-    logger.info('任务 %s 的报告文档被用户 %s 下载', task_id, user_id)
-    return response
+    return JsonResponse({'code': 0, 'msg': '成功', 'data': data})
 
 
 @require_GET
@@ -785,6 +832,7 @@ def _record_to_dict(record: ReportTaskRecord) -> dict:
         'img12_info': record.img12_info or '',
         'img12_path': record.img12_path or '',
         'report_path': record.report_path or '',
+        'report_flash_path': record.report_flash_path or '',
         'created_at': record.created_at.strftime('%Y-%m-%d %H:%M:%S') if record.created_at else '',
         'updated_at': record.updated_at.strftime('%Y-%m-%d %H:%M:%S') if record.updated_at else '',
     }

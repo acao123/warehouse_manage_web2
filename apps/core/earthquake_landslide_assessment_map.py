@@ -200,21 +200,88 @@ COUNTY_DASH_PATTERN = [7.0, COUNTY_DASH_GAP_MM / COUNTY_LINE_WIDTH_MM]
 CITY_LABEL_FONT_SIZE_PT = 9
 CITY_LABEL_COLOR = QColor(0, 0, 0)
 
-# === 图例字体 ===
-LEGEND_TITLE_FONT_SIZE_PT = 12
-LEGEND_ITEM_FONT_SIZE_PT = 10
+# === 图例统一样式 ===
+LEGEND_STYLE = {
+    "title_font_family": "SimHei",
+    "title_font_size_pt": 12,
+    "item_font_family": "SimSun",
+    "item_font_size_pt": 10,
+    "section_title_font_family": "SimHei",
+    "section_title_font_size_pt": 10,
+    "text_color_rgba": (0, 0, 0, 255),
+    "background_color_rgba": (255, 255, 255, 255),
+    "outline_color_rgba": (0, 0, 0, 255),
+    "outline_width_mm": 0.35,
+    "title_top_offset_mm": 1.0,
+    "title_height_mm": 5.0,
+    "base_top_offset_mm": 7.0,
+    "base_columns": 2,
+    "base_rows": 3,
+    "base_left_pad_mm": 2.0,
+    "base_right_pad_mm": 2.0,
+    "base_column_gap_mm": 1.0,
+    "base_row_height_mm": 8.0,
+    "icon_width_mm": 4.0,
+    "icon_height_mm": 2.5,
+    "icon_text_gap_mm": 1.0,
+    "item_text_top_offset_mm": 0.5,
+    "item_text_height_trim_mm": 1.0,
+    "section_top_gap_mm": 2.0,
+    "section_title_height_mm": 5.0,
+    "section_items_gap_mm": 2.0,
+    "colorbar_width_mm": 8.0,
+    "colorbar_height_mm": 7.5,
+    "colorbar_gap_mm": 2.5,
+    "colorbar_left_pad_mm": 3.0,
+    "colorbar_label_gap_mm": 2.0,
+    "colorbar_right_pad_mm": 2.0,
+    "colorbar_outline_color_rgba": (80, 80, 80, 255),
+    "colorbar_outline_width_mm": 0.15,
+    "scale_reserve_mm": 18.0,
+    "content_bottom_pad_mm": 2.0,
+    "scale_bottom_pad_mm": 4.0,
+    "scale_font_family": "Times New Roman",
+    "scale_font_size_pt": 8,
+    "scale_target_fraction": 0.18,
+    "scale_nice_value_factor": 1.5,
+    "scale_min_bar_width_mm": 20.0,
+    "scale_segments": 4,
+    "scale_width_extra_mm": 16.0,
+    "scale_height_mm": 14.0,
+    "scale_horizontal_padding_mm": 4.0,
+    "scale_label_top_offset_mm": 0.5,
+    "scale_label_height_mm": 4.5,
+    "scale_bar_top_offset_mm": 5.5,
+    "scale_bar_height_mm": 1.8,
+    "scale_segment_outline_width_mm": 0.15,
+    "scale_tick_gap_mm": 0.3,
+    "scale_tick_height_mm": 3.5,
+    "star_font_family": "SimSun",
+    "star_font_size_pt": 10,
+    "star_y_offset_mm": 0.5,
+    "star_height_extra_mm": 1.0,
+    "city_icon_scale": 0.6,
+    "city_inner_scale": 0.4,
+    "city_outline_width_mm": 0.15,
+    "line_min_height_mm": 0.5,
+    "dash_length_gap_multiplier": 3.5,
+    "dash_min_length_mm": 0.8,
+}
+
+LEGEND_TITLE_FONT_SIZE_PT = LEGEND_STYLE["title_font_size_pt"]
+LEGEND_ITEM_FONT_SIZE_PT = LEGEND_STYLE["item_font_size_pt"]
 
 # === 基本图例项配置（可单独设置） ===
-BASIC_LEGEND_FONT_SIZE_PT = 10  # 基本图例项字体大小
-BASIC_LEGEND_ROW_HEIGHT_MM = 8.0  # 基本图例项行高
+BASIC_LEGEND_FONT_SIZE_PT = LEGEND_STYLE["item_font_size_pt"]
+BASIC_LEGEND_ROW_HEIGHT_MM = LEGEND_STYLE["base_row_height_mm"]
 
 # === 滑坡评估图例项配置（可单独设置） ===
-ASSESSMENT_LEGEND_FONT_SIZE_PT = 10  # 滑坡评估图例项字体大小
-ASSESSMENT_LEGEND_ROW_HEIGHT_MM = 7.5  # 滑坡评估图例项行高（毫米，色块高度）
-ASSESSMENT_LEGEND_GAP_MM = 1.5  # 滑坡评估图例色块之间的间距（毫米，分开显示）
+ASSESSMENT_LEGEND_FONT_SIZE_PT = LEGEND_STYLE["item_font_size_pt"]
+ASSESSMENT_LEGEND_ROW_HEIGHT_MM = LEGEND_STYLE["colorbar_height_mm"]
+ASSESSMENT_LEGEND_GAP_MM = LEGEND_STYLE["colorbar_gap_mm"]
 
 # === 比例尺字体 ===
-SCALE_FONT_SIZE_PT = 8
+SCALE_FONT_SIZE_PT = LEGEND_STYLE["scale_font_size_pt"]
 
 # === 烈度圈样式 ===
 INTENSITY_LINE_COLOR = QColor(0, 0, 0)
@@ -2256,24 +2323,27 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
 
     # 标题文本格式
     title_format = QgsTextFormat()
-    title_format.setFont(QFont("SimHei", LEGEND_TITLE_FONT_SIZE_PT))
-    title_format.setSize(LEGEND_TITLE_FONT_SIZE_PT)
+    title_format.setFont(QFont(LEGEND_STYLE["title_font_family"],
+                               LEGEND_STYLE["title_font_size_pt"]))
+    title_format.setSize(LEGEND_STYLE["title_font_size_pt"])
     title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    title_format.setColor(QColor(0, 0, 0))
+    title_format.setColor(QColor(*LEGEND_STYLE["text_color_rgba"]))
 
     # 基本图例项文本格式
     basic_item_format = QgsTextFormat()
-    basic_item_format.setFont(QFont("SimSun", BASIC_LEGEND_FONT_SIZE_PT))
-    basic_item_format.setSize(BASIC_LEGEND_FONT_SIZE_PT)
+    basic_item_format.setFont(QFont(LEGEND_STYLE["item_font_family"],
+                                    LEGEND_STYLE["item_font_size_pt"]))
+    basic_item_format.setSize(LEGEND_STYLE["item_font_size_pt"])
     basic_item_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    basic_item_format.setColor(QColor(0, 0, 0))
+    basic_item_format.setColor(QColor(*LEGEND_STYLE["text_color_rgba"]))
 
     # 滑坡评估图例文本格式
     assessment_format = QgsTextFormat()
-    assessment_format.setFont(QFont("SimSun", ASSESSMENT_LEGEND_FONT_SIZE_PT))
-    assessment_format.setSize(ASSESSMENT_LEGEND_FONT_SIZE_PT)
+    assessment_format.setFont(QFont(LEGEND_STYLE["item_font_family"],
+                                     LEGEND_STYLE["item_font_size_pt"]))
+    assessment_format.setSize(LEGEND_STYLE["item_font_size_pt"])
     assessment_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-    assessment_format.setColor(QColor(0, 0, 0))
+    assessment_format.setColor(QColor(*LEGEND_STYLE["text_color_rgba"]))
 
     # 图例背景
     legend_bg = QgsLayoutItemShape(layout)
@@ -2281,22 +2351,26 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     legend_bg.attemptMove(QgsLayoutPoint(legend_x, legend_y, QgsUnitTypes.LayoutMillimeters))
     legend_bg.attemptResize(QgsLayoutSize(legend_width, legend_height, QgsUnitTypes.LayoutMillimeters))
     legend_bg_symbol = QgsFillSymbol.createSimple({
-        'color': '255,255,255,255',
-        'outline_color': '0,0,0,255',
-        'outline_width': str(BORDER_WIDTH_MM),
+        'color': ','.join(str(value) for value in LEGEND_STYLE["background_color_rgba"]),
+        'outline_color': ','.join(str(value) for value in LEGEND_STYLE["outline_color_rgba"]),
+        'outline_width': str(LEGEND_STYLE["outline_width_mm"]),
         'outline_width_unit': 'MM',
     })
     legend_bg.setSymbol(legend_bg_symbol)
     legend_bg.setFrameEnabled(True)
-    legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(BORDER_WIDTH_MM, QgsUnitTypes.LayoutMillimeters))
+    legend_bg.setFrameStrokeWidth(QgsLayoutMeasurement(
+        LEGEND_STYLE["outline_width_mm"], QgsUnitTypes.LayoutMillimeters))
     layout.addLayoutItem(legend_bg)
 
     # 标题 "图  例"
     title_label = QgsLayoutItemLabel(layout)
     title_label.setText("图  例")
     title_label.setTextFormat(title_format)
-    title_label.attemptMove(QgsLayoutPoint(legend_x, legend_y + 1.0, QgsUnitTypes.LayoutMillimeters))
-    title_label.attemptResize(QgsLayoutSize(legend_width, 5.0, QgsUnitTypes.LayoutMillimeters))
+    title_label.attemptMove(QgsLayoutPoint(
+        legend_x, legend_y + LEGEND_STYLE["title_top_offset_mm"],
+        QgsUnitTypes.LayoutMillimeters))
+    title_label.attemptResize(QgsLayoutSize(
+        legend_width, LEGEND_STYLE["title_height_mm"], QgsUnitTypes.LayoutMillimeters))
     title_label.setHAlign(Qt.AlignHCenter)
     title_label.setVAlign(Qt.AlignVCenter)
     title_label.setFrameEnabled(False)
@@ -2304,17 +2378,17 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     layout.addLayoutItem(title_label)
 
     # ===== 上部图例：3行2列（基本图例项） =====
-    top_legend_start_y = legend_y + 7.0
+    top_legend_start_y = legend_y + LEGEND_STYLE["base_top_offset_mm"]
 
-    col_count = 2
-    row_count = 3
-    left_pad = 2.0
-    right_pad = 2.0
-    col_gap = 1.0
-    row_height = BASIC_LEGEND_ROW_HEIGHT_MM
-    icon_width = 4.0
-    icon_height = 2.5
-    icon_text_gap = 1.0
+    col_count = LEGEND_STYLE["base_columns"]
+    row_count = LEGEND_STYLE["base_rows"]
+    left_pad = LEGEND_STYLE["base_left_pad_mm"]
+    right_pad = LEGEND_STYLE["base_right_pad_mm"]
+    col_gap = LEGEND_STYLE["base_column_gap_mm"]
+    row_height = LEGEND_STYLE["base_row_height_mm"]
+    icon_width = LEGEND_STYLE["icon_width_mm"]
+    icon_height = LEGEND_STYLE["icon_height_mm"]
+    icon_text_gap = LEGEND_STYLE["icon_text_gap_mm"]
 
     available_width = legend_width - left_pad - right_pad - (col_count - 1) * col_gap
     col_width = available_width / col_count
@@ -2360,8 +2434,12 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         text_label = QgsLayoutItemLabel(layout)
         text_label.setText(display_name)
         text_label.setTextFormat(basic_item_format)
-        text_label.attemptMove(QgsLayoutPoint(text_x, item_y + 0.5, QgsUnitTypes.LayoutMillimeters))
-        text_label.attemptResize(QgsLayoutSize(text_width, row_height - 1.0, QgsUnitTypes.LayoutMillimeters))
+        text_label.attemptMove(QgsLayoutPoint(
+            text_x, item_y + LEGEND_STYLE["item_text_top_offset_mm"],
+            QgsUnitTypes.LayoutMillimeters))
+        text_label.attemptResize(QgsLayoutSize(
+            text_width, row_height - LEGEND_STYLE["item_text_height_trim_mm"],
+            QgsUnitTypes.LayoutMillimeters))
         text_label.setHAlign(Qt.AlignLeft)
         text_label.setVAlign(Qt.AlignVCenter)
         text_label.setFrameEnabled(False)
@@ -2373,15 +2451,16 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
     # ===== 下部：滑坡评估图例 =====
     if landslide_legend_list:
         # 标题"滑坡评估"
-        assessment_title_y = top_legend_start_y + top_legend_height + 2.0
+        assessment_title_y = (
+            top_legend_start_y + top_legend_height + LEGEND_STYLE["section_top_gap_mm"])
 
         assessment_title_format = QgsTextFormat()
-        assessment_title_font = QFont("SimHei")
-        assessment_title_font.setPointSizeF(10.0)
-        assessment_title_format.setFont(assessment_title_font)
-        assessment_title_format.setSize(10.0)
+        assessment_title_format.setFont(QFont(
+            LEGEND_STYLE["section_title_font_family"],
+            LEGEND_STYLE["section_title_font_size_pt"]))
+        assessment_title_format.setSize(LEGEND_STYLE["section_title_font_size_pt"])
         assessment_title_format.setSizeUnit(QgsUnitTypes.RenderPoints)
-        assessment_title_format.setColor(QColor(0, 0, 0))
+        assessment_title_format.setColor(QColor(*LEGEND_STYLE["text_color_rgba"]))
 
         assessment_title_label = QgsLayoutItemLabel(layout)
         assessment_title_label.setText("滑坡危险性等级")
@@ -2389,31 +2468,48 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         assessment_title_label.attemptMove(
             QgsLayoutPoint(legend_x, assessment_title_y, QgsUnitTypes.LayoutMillimeters))
         assessment_title_label.attemptResize(
-            QgsLayoutSize(legend_width, 5.0, QgsUnitTypes.LayoutMillimeters))
+            QgsLayoutSize(legend_width, LEGEND_STYLE["section_title_height_mm"],
+                          QgsUnitTypes.LayoutMillimeters))
         assessment_title_label.setHAlign(Qt.AlignHCenter)
         assessment_title_label.setVAlign(Qt.AlignVCenter)
         assessment_title_label.setFrameEnabled(False)
         assessment_title_label.setBackgroundEnabled(False)
         layout.addLayoutItem(assessment_title_label)
 
-        item_start_y = assessment_title_y + 5.0
+        item_start_y = (assessment_title_y
+                        + LEGEND_STYLE["section_title_height_mm"]
+                        + LEGEND_STYLE["section_items_gap_mm"])
 
-        colorbar_width = 8.0  # 色块宽度（毫米）
-        colorbar_height = ASSESSMENT_LEGEND_ROW_HEIGHT_MM  # 单个色块高度（毫米）
-        colorbar_gap = ASSESSMENT_LEGEND_GAP_MM  # 色块之间间距（毫米，分开显示）
-        colorbar_left_pad = 3.0  # 色块左边距（毫米）
-        label_gap = 2.0  # 色块与标签之间间距（毫米）
-        assessment_right_pad = 2.0
+        colorbar_width = LEGEND_STYLE["colorbar_width_mm"]
+        colorbar_height = LEGEND_STYLE["colorbar_height_mm"]
+        colorbar_gap = LEGEND_STYLE["colorbar_gap_mm"]
+        colorbar_left_pad = LEGEND_STYLE["colorbar_left_pad_mm"]
+        label_gap = LEGEND_STYLE["colorbar_label_gap_mm"]
+        assessment_right_pad = LEGEND_STYLE["colorbar_right_pad_mm"]
 
         text_area_width = (legend_width - colorbar_left_pad
                            - colorbar_width - label_gap - assessment_right_pad)
+
+        scale_bar_reserve = LEGEND_STYLE["scale_reserve_mm"] if scale is not None else 0.0
+        item_count = len(landslide_legend_list)
+        total_needed = colorbar_height * item_count
+        total_needed += colorbar_gap * max(item_count - 1, 0)
+        available_height = (legend_y + legend_height - item_start_y - scale_bar_reserve
+                            - LEGEND_STYLE["content_bottom_pad_mm"])
+        if total_needed > available_height and available_height > 0:
+            compress_ratio = available_height / total_needed
+            colorbar_height *= compress_ratio
+            colorbar_gap *= compress_ratio
+            print(f"[信息] 图例高度不足，压缩色块高度至 {colorbar_height:.2f}mm，"
+                  f"间距至 {colorbar_gap:.2f}mm")
 
         current_y = item_start_y
         displayed_count = 0
 
         for idx, (color_rgba, label) in enumerate(landslide_legend_list):
             # 防止超出图例背景范围
-            if current_y + colorbar_height > legend_y + legend_height - 2.0:
+            if (current_y + colorbar_height
+                    > legend_y + legend_height - LEGEND_STYLE["content_bottom_pad_mm"]):
                 break
 
             # 绘制色块矩形（带黑色细边框）
@@ -2426,8 +2522,9 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
             color_str = f"{color_rgba[0]},{color_rgba[1]},{color_rgba[2]},{color_rgba[3]}"
             box_symbol = QgsFillSymbol.createSimple({
                 'color': color_str,
-                'outline_color': '80,80,80,255',
-                'outline_width': '0.15',
+                'outline_color': ','.join(
+                    str(value) for value in LEGEND_STYLE["colorbar_outline_color_rgba"]),
+                'outline_width': str(LEGEND_STYLE["colorbar_outline_width_mm"]),
                 'outline_width_unit': 'MM',
             })
             color_box.setSymbol(box_symbol)
@@ -2463,24 +2560,24 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         lon_range_deg = extent.xMaximum() - extent.xMinimum()
         map_total_km = lon_range_deg * 111.0 * math.cos(math.radians(center_lat))
         km_per_mm = map_total_km / MAP_WIDTH_MM if MAP_WIDTH_MM > 0 else 1.0
-        target_bar_km = MAP_WIDTH_MM * 0.18 * km_per_mm
+        target_bar_km = MAP_WIDTH_MM * LEGEND_STYLE["scale_target_fraction"] * km_per_mm
 
         nice_values = [1, 2, 5, 10, 20, 50, 100, 200, 500]
         bar_km = nice_values[0]
         for nv in nice_values:
-            if nv <= target_bar_km * 1.5:
+            if nv <= target_bar_km * LEGEND_STYLE["scale_nice_value_factor"]:
                 bar_km = nv
             else:
                 break
 
         bar_length_mm = bar_km / km_per_mm if km_per_mm > 0 else 20.0
-        bar_length_mm = max(bar_length_mm, 20.0)
-        num_segments = 4
+        bar_length_mm = max(bar_length_mm, LEGEND_STYLE["scale_min_bar_width_mm"])
+        num_segments = LEGEND_STYLE["scale_segments"]
 
-        std_bar_width = bar_length_mm + 16.0
-        std_bar_height = 14.0
+        std_bar_width = bar_length_mm + LEGEND_STYLE["scale_width_extra_mm"]
+        std_bar_height = LEGEND_STYLE["scale_height_mm"]
 
-        avail_width = legend_width - 4.0
+        avail_width = legend_width - LEGEND_STYLE["scale_horizontal_padding_mm"]
         if std_bar_width > avail_width:
             scale_factor = avail_width / std_bar_width
             std_bar_width = avail_width
@@ -2491,12 +2588,12 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
 
         # 比例尺垂直位置：距底部留 4mm 空间
         sb_height = std_bar_height
-        sb_y = legend_y + legend_height - sb_height - 4.0
+        sb_y = legend_y + legend_height - sb_height - LEGEND_STYLE["scale_bottom_pad_mm"]
         sb_x = legend_x + (legend_width - std_bar_width) / 2.0
 
-        scale_font_size = SCALE_FONT_SIZE_PT
+        scale_font_size = LEGEND_STYLE["scale_font_size_pt"]
         scale_tf = QgsTextFormat()
-        scale_tf.setFont(QFont("Times New Roman", scale_font_size))
+        scale_tf.setFont(QFont(LEGEND_STYLE["scale_font_family"], scale_font_size))
         scale_tf.setSize(scale_font_size)
         scale_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
         scale_tf.setColor(QColor(0, 0, 0))
@@ -2504,8 +2601,11 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         lbl_scale = QgsLayoutItemLabel(layout)
         lbl_scale.setText(f"1:{scale:,}")
         lbl_scale.setTextFormat(scale_tf)
-        lbl_scale.attemptMove(QgsLayoutPoint(sb_x, sb_y + 0.5, QgsUnitTypes.LayoutMillimeters))
-        lbl_scale.attemptResize(QgsLayoutSize(std_bar_width, 4.5 * scale_factor,
+        lbl_scale.attemptMove(QgsLayoutPoint(
+            sb_x, sb_y + LEGEND_STYLE["scale_label_top_offset_mm"],
+            QgsUnitTypes.LayoutMillimeters))
+        lbl_scale.attemptResize(QgsLayoutSize(
+            std_bar_width, LEGEND_STYLE["scale_label_height_mm"] * scale_factor,
                                               QgsUnitTypes.LayoutMillimeters))
         lbl_scale.setHAlign(Qt.AlignHCenter)
         lbl_scale.setVAlign(Qt.AlignVCenter)
@@ -2514,8 +2614,8 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
         layout.addLayoutItem(lbl_scale)
 
         bar_start_x = sb_x + (std_bar_width - bar_length_mm) / 2.0
-        bar_y = sb_y + 5.5 * scale_factor
-        bar_h = 1.8 * scale_factor
+        bar_y = sb_y + LEGEND_STYLE["scale_bar_top_offset_mm"] * scale_factor
+        bar_h = LEGEND_STYLE["scale_bar_height_mm"] * scale_factor
         seg_width_mm = bar_length_mm / num_segments
 
         for i in range(num_segments):
@@ -2529,7 +2629,7 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
             seg_symbol = QgsFillSymbol.createSimple({
                 'color': fill_color,
                 'outline_color': '0,0,0,255',
-                'outline_width': '0.15',
+                'outline_width': str(LEGEND_STYLE["scale_segment_outline_width_mm"]),
                 'outline_width_unit': 'MM',
             })
             seg_shape.setSymbol(seg_symbol)
@@ -2537,13 +2637,13 @@ def _add_legend(layout, map_item, project, map_height_mm, output_height_mm,
             layout.addLayoutItem(seg_shape)
 
         tick_tf = QgsTextFormat()
-        tick_tf.setFont(QFont("Times New Roman", scale_font_size))
+        tick_tf.setFont(QFont(LEGEND_STYLE["scale_font_family"], scale_font_size))
         tick_tf.setSize(scale_font_size)
         tick_tf.setSizeUnit(QgsUnitTypes.RenderPoints)
         tick_tf.setColor(QColor(0, 0, 0))
 
-        label_y = bar_y + bar_h + 0.3
-        label_h = 3.5 * scale_factor
+        label_y = bar_y + bar_h + LEGEND_STYLE["scale_tick_gap_mm"]
+        label_h = LEGEND_STYLE["scale_tick_height_mm"] * scale_factor
 
         lbl_0 = QgsLayoutItemLabel(layout)
         lbl_0.setText("0")
@@ -2603,14 +2703,19 @@ def _draw_star_icon(layout, x, center_y, width, height):
     star_label.setText("★")
 
     star_format = QgsTextFormat()
-    star_format.setFont(QFont("SimSun", 10))
-    star_format.setSize(10)
+    star_format.setFont(QFont(LEGEND_STYLE["star_font_family"],
+                              LEGEND_STYLE["star_font_size_pt"]))
+    star_format.setSize(LEGEND_STYLE["star_font_size_pt"])
     star_format.setSizeUnit(QgsUnitTypes.RenderPoints)
     star_format.setColor(EPICENTER_COLOR)
     star_label.setTextFormat(star_format)
 
-    star_label.attemptMove(QgsLayoutPoint(x, center_y - height / 2.0 - 0.5, QgsUnitTypes.LayoutMillimeters))
-    star_label.attemptResize(QgsLayoutSize(width, height + 1.0, QgsUnitTypes.LayoutMillimeters))
+    star_label.attemptMove(QgsLayoutPoint(
+        x, center_y - height / 2.0 - LEGEND_STYLE["star_y_offset_mm"],
+        QgsUnitTypes.LayoutMillimeters))
+    star_label.attemptResize(QgsLayoutSize(
+        width, height + LEGEND_STYLE["star_height_extra_mm"],
+        QgsUnitTypes.LayoutMillimeters))
     star_label.setHAlign(Qt.AlignHCenter)
     star_label.setVAlign(Qt.AlignVCenter)
     star_label.setFrameEnabled(False)
@@ -2629,7 +2734,7 @@ def _draw_city_icon(layout, x, center_y, width, height):
         width (float): 宽度
         height (float): 高度
     """
-    icon_size = min(width, height) * 0.6
+    icon_size = min(width, height) * LEGEND_STYLE["city_icon_scale"]
     center_x = x + width / 2.0
 
     outer_circle = QgsLayoutItemShape(layout)
@@ -2640,14 +2745,14 @@ def _draw_city_icon(layout, x, center_y, width, height):
     outer_symbol = QgsFillSymbol.createSimple({
         'color': '255,255,255,255',
         'outline_color': '0,0,0,255',
-        'outline_width': '0.15',
+        'outline_width': str(LEGEND_STYLE["city_outline_width_mm"]),
         'outline_width_unit': 'MM',
     })
     outer_circle.setSymbol(outer_symbol)
     outer_circle.setFrameEnabled(False)
     layout.addLayoutItem(outer_circle)
 
-    inner_size = icon_size * 0.4
+    inner_size = icon_size * LEGEND_STYLE["city_inner_scale"]
     inner_circle = QgsLayoutItemShape(layout)
     inner_circle.setShapeType(QgsLayoutItemShape.Ellipse)
     inner_circle.attemptMove(QgsLayoutPoint(center_x - inner_size / 2.0, center_y - inner_size / 2.0,
@@ -2678,7 +2783,7 @@ def _draw_line_icon(layout, x, center_y, width, color, line_width_mm, solid=True
     line_shape = QgsLayoutItemShape(layout)
     line_shape.setShapeType(QgsLayoutItemShape.Rectangle)
 
-    line_height = max(line_width_mm, 0.5)
+    line_height = max(line_width_mm, LEGEND_STYLE["line_min_height_mm"])
     line_shape.attemptMove(QgsLayoutPoint(x, center_y - line_height / 2.0, QgsUnitTypes.LayoutMillimeters))
     line_shape.attemptResize(QgsLayoutSize(width, line_height, QgsUnitTypes.LayoutMillimeters))
 
@@ -2706,10 +2811,12 @@ def _draw_dash_line_icon(layout, x, center_y, width, color, line_width_mm, dash_
         line_width_mm (float): 线宽(mm)
         dash_gap_mm (float): 虚线间隔(mm)
     """
-    line_height = max(line_width_mm, 0.5)
+    line_height = max(line_width_mm, LEGEND_STYLE["line_min_height_mm"])
     color_str = f"{color.red()},{color.green()},{color.blue()},255"
 
-    dash_length_mm = max(dash_gap_mm * 3.5, 0.8)
+    dash_length_mm = max(
+        dash_gap_mm * LEGEND_STYLE["dash_length_gap_multiplier"],
+        LEGEND_STYLE["dash_min_length_mm"])
     pattern_length = dash_length_mm + dash_gap_mm
 
     current_x = x

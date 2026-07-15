@@ -58,6 +58,7 @@ class ReportTaskRecord(models.Model):
 
     # 报告文件
     report_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='报告文件地址')
+    report_flash_path = models.CharField(max_length=100, null=True, blank=True, verbose_name='速报文件地址')
 
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')

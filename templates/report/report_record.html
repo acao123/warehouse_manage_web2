@@ -203,12 +203,24 @@
                     }
                 },
                 {
-                    field: 'report_path', title: '报告', width: 90,
+                    field: 'report_path', title: '报告', width: 190,
                     templet: function(d) {
+                        var buttons = [];
                         if (d.report_path) {
-                            return '<a href="/report/record/tif/download/?path=' + encodeURIComponent(d.report_path) + '">下载报告</a>';
+                            buttons.push(
+                                '<a class="layui-btn layui-btn-primary layui-btn-xs" ' +
+                                'href="/report/task/download/?task_id=' + encodeURIComponent(d.task_id) +
+                                '&report_type=full"><i class="layui-icon layui-icon-download-circle"></i> 完整报告</a>'
+                            );
                         }
-                        return '-';
+                        if (d.report_flash_path) {
+                            buttons.push(
+                                '<a class="layui-btn layui-btn-primary layui-btn-xs" ' +
+                                'href="/report/task/download/?task_id=' + encodeURIComponent(d.task_id) +
+                                '&report_type=flash"><i class="layui-icon layui-icon-download-circle"></i> 速报</a>'
+                            );
+                        }
+                        return buttons.length ? buttons.join(' ') : '-';
                     }
                 },
                 { field: 'created_at', title: '创建时间', width: 160, fixed: 'right' },

@@ -84,6 +84,32 @@
         .layui-table tbody tr:hover td {
             background-color: #edf4ff !important;
         }
+        .report-download-dialog {
+            padding: 8px 20px;
+        }
+        .report-download-item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 112px;
+            gap: 16px;
+            align-items: center;
+            min-height: 68px;
+            border-bottom: 1px solid #eee;
+        }
+        .report-download-item:last-child {
+            border-bottom: 0;
+        }
+        .report-download-name {
+            color: #666;
+            font-size: 12px;
+            line-height: 20px;
+            overflow-wrap: anywhere;
+        }
+        .report-download-action {
+            width: 112px;
+            margin: 0;
+            box-sizing: border-box;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -379,7 +405,7 @@
                     layer.msg('报告尚未生成，请先执行任务');
                     return;
                 }
-                window.location.href = '/report/task/download/?task_id=' + data.id;
+                openReportDownloadDialog(data.id);
             } else if(obj.event === 'stop'){
                 layer.confirm('确定要结束该任务吗？', {icon: 3, title: '结束确认'}, function(index){
                     $.post('/report/task/stop/', {task_id: data.id}, function(res){
@@ -395,6 +421,50 @@
                 });
             }
         });
+
+        function escapeHtml(value) {
+            return $('<div>').text(value || '').html();
+        }
+
+        function renderReportDownloadItem(taskId, type, label, item) {
+            var action;
+            if(item.available){
+                var url = '/report/task/download/?task_id=' + encodeURIComponent(taskId) +
+                    '&report_type=' + encodeURIComponent(type);
+                action = '<a class="layui-btn layui-btn-normal layui-btn-sm report-download-action" href="' + url + '">' +
+                    '<i class="layui-icon layui-icon-download-circle"></i> 下载</a>';
+            } else {
+                action = '<span class="layui-btn layui-btn-disabled layui-btn-sm report-download-action">未生成</span>';
+            }
+            var filename = item.available ? escapeHtml(item.filename) : '该任务没有生成此文档';
+            return '<div class="report-download-item">' +
+                '<div><strong>' + label + '</strong><div class="report-download-name">' + filename + '</div></div>' +
+                action + '</div>';
+        }
+
+        function openReportDownloadDialog(taskId) {
+            var loadIndex = layer.load(1, {shade: [0.2, '#000']});
+            $.get('/report/task/download-info/', {task_id: taskId}, function(res){
+                layer.close(loadIndex);
+                if(res.code !== 0){
+                    layer.msg(res.msg || '获取报告信息失败');
+                    return;
+                }
+                var content = '<div class="report-download-dialog">' +
+                    renderReportDownloadItem(taskId, 'full', '完整报告', res.data.full) +
+                    renderReportDownloadItem(taskId, 'flash', '速报', res.data.flash) +
+                    '</div>';
+                layer.open({
+                    type: 1,
+                    title: '导出报告',
+                    area: ['520px', 'auto'],
+                    content: content
+                });
+            }).fail(function(){
+                layer.close(loadIndex);
+                layer.msg('获取报告信息失败，请重试');
+            });
+        }
 
         // ---- 基本文件折叠/展开 ----
         var filesExpanded = false;
